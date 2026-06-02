@@ -4,9 +4,9 @@
 
 # QUINTE
 
-**Five-agent structured debate architecture for AI conclusion confidence.**
+**Five-Agent structured debate architecture for AI conclusion confidence.**
 
-Single-model AI hits a confidence ceiling. QUINTE breaks through — five independent agents debate your questions through structured rounds of analysis, cross-examination, and final verdict.
+Single-model AI hits a confidence ceiling. QUINTE breaks through — five independent agents debate your questions through structured rounds of analysis, Cross-examination, and Final verdict.
 
 ---
 
