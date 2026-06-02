@@ -1,4 +1,4 @@
-# Quinte — Multi-Agent Debate Architecture
+# QUINTE — Multi-Agent Debate Architecture
 
 **2026-06-02** | **DeepSeek v4-pro** | **reasoning=max** | **永不降级 flash**
 
