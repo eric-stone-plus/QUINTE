@@ -58,25 +58,4 @@
   <!-- Description -->
   <text x="600" y="360" text-anchor="middle" fill="#505068" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" letter-spacing="1">Five independent AI agents · Structured rounds · Adversarial cross-review · Final verdict</text>
 
-  <!-- Agent Badges -->
-  <g transform="translate(600,430)">
-    <rect x="-350" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#60c0f0" stroke-width="1.2"/>
-    <text x="-290" y="6" text-anchor="middle" fill="#60c0f0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="18" font-weight="700">⚖️ Hermes</text>
-
-    <rect x="-210" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#f0a060" stroke-width="1.2"/>
-    <text x="-150" y="6" text-anchor="middle" fill="#f0a060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="700">📐 Claude</text>
-
-    <rect x="-70" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#60f0a0" stroke-width="1.2"/>
-    <text x="-10" y="6" text-anchor="middle" fill="#60f0a0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="700">🔬 CodeWhale</text>
-
-    <rect x="70" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#c060f0" stroke-width="1.2"/>
-    <text x="130" y="6" text-anchor="middle" fill="#c060f0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="700">🧠 Reasonix</text>
-
-    <rect x="230" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#f06090" stroke-width="1.2"/>
-    <text x="290" y="6" text-anchor="middle" fill="#f06090" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="700">🔄 omp</text>
-  </g>
-
-  <!-- Footer bar -->
-  <rect x="0" y="560" width="1200" height="70" fill="#08080f" opacity="0.8"/>
-  <text x="600" y="595" text-anchor="middle" fill="#404058" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12" letter-spacing="4">DeepSeek v4-pro · reasoning=max · flash forbidden · 2026 · hermes-core-rules-mac</text>
 </svg>
