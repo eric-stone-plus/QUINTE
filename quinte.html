@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quinte — Multi-Agent Debate Architecture</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --card: #12121a;
+    --border: #1e1e30;
+    --gold: #f0c060;
+    --hermes: #60c0f0;
+    --cc: #f0a060;
+    --cw: #60f0a0;
+    --rx: #c060f0;
+    --omp: #f06090;
+    --text: #c0c0d0;
+    --dim: #606080;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: 'SF Mono', 'JetBrains Mono', 'Menlo', monospace; overflow-x: hidden; }
+  
+  /* ── Hero ── */
+  .hero { min-height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; position: relative; overflow: hidden; }
+  .hero::before { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 30%, rgba(240,192,96,0.08) 0%, transparent 70%); }
+  .hero h1 { font-size: clamp(4rem, 10vw, 8rem); font-weight: 900; letter-spacing: -0.03em; background: linear-gradient(135deg, var(--gold) 0%, #f0a040 50%, #e0c080 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.3em; }
+  .hero .sub { font-size: 1.4rem; color: var(--dim); letter-spacing: 0.2em; margin-bottom: 2em; }
+  .hero .desc { max-width: 600px; font-size: 1.1rem; line-height: 1.8; color: var(--text); }
+  .hero .badge { display: inline-block; padding: 0.3em 1em; border: 1px solid var(--border); border-radius: 20px; margin: 0.5em; font-size: 0.85rem; color: var(--dim); }
+  
+  /* ── Stats bar ── */
+  .stats { display: flex; justify-content: center; gap: 3em; padding: 3em 1em; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .stat { text-align: center; }
+  .stat .num { font-size: 2.5rem; font-weight: 900; color: var(--gold); }
+  .stat .label { font-size: 0.8rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.15em; margin-top: 0.3em; }
+  
+  /* ── Architecture ── */
+  .arch { padding: 4em 1em; max-width: 900px; margin: 0 auto; }
+  .arch h2 { text-align: center; font-size: 2rem; color: var(--gold); margin-bottom: 2em; }
+  .flow { display: flex; flex-direction: column; gap: 2em; }
+  
+  .round { border: 1px solid var(--border); border-radius: 12px; padding: 1.5em; background: var(--card); position: relative; }
+  .round h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.2em; color: var(--dim); margin-bottom: 1em; }
+  .agents { display: flex; gap: 1em; flex-wrap: wrap; justify-content: center; }
+  
+  .agent { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 1em 1.5em; text-align: center; min-width: 130px; transition: transform 0.3s, box-shadow 0.3s; }
+  .agent:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+  .agent .icon { font-size: 2rem; margin-bottom: 0.3em; }
+  .agent .name { font-weight: 700; font-size: 0.95rem; }
+  .agent .role { font-size: 0.7rem; color: var(--dim); margin-top: 0.3em; }
+  .agent.h { border-color: var(--hermes); }
+  .agent.c { border-color: var(--cc); }
+  .agent.w { border-color: var(--cw); }
+  .agent.r { border-color: var(--rx); }
+  .agent.o { border-color: var(--omp); }
+  
+  .arrow-row { text-align: center; font-size: 1.5rem; color: var(--gold); opacity: 0.5; }
+  
+  /* ── Substitution animation ── */
+  .sub-flow { display: flex; align-items: center; gap: 1em; justify-content: center; flex-wrap: wrap; padding: 2em; }
+  .sub-flow .arrow-sub { font-size: 1.5rem; color: var(--gold); }
+  .sub-note { text-align: center; color: var(--dim); font-size: 0.8rem; margin-top: 1em; }
+  
+  /* ── Confidence ── */
+  .confidence { padding: 4em 1em; background: linear-gradient(180deg, var(--bg) 0%, rgba(240,192,96,0.03) 50%, var(--bg) 100%); }
+  .confidence h2 { text-align: center; font-size: 2rem; color: var(--gold); margin-bottom: 1em; }
+  .confidence .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5em; max-width: 900px; margin: 0 auto; }
+  .confidence .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1.5em; text-align: center; }
+  .confidence .card .pct { font-size: 3rem; font-weight: 900; background: linear-gradient(135deg, var(--gold), #f0a040); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .confidence .card .lbl { font-size: 0.85rem; color: var(--text); margin-top: 0.5em; }
+  
+  /* ── Timeline ── */
+  .timeline { padding: 4em 1em; max-width: 700px; margin: 0 auto; }
+  .timeline h2 { text-align: center; font-size: 2rem; color: var(--gold); margin-bottom: 2em; }
+  .tl-item { display: flex; gap: 1.5em; padding-bottom: 2em; border-left: 2px solid var(--border); padding-left: 2em; position: relative; }
+  .tl-item::before { content: ''; position: absolute; left: -5px; top: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); }
+  .tl-item .tl-time { font-size: 0.7rem; color: var(--dim); min-width: 70px; }
+  .tl-item .tl-title { font-weight: 700; }
+  .tl-item .tl-desc { font-size: 0.85rem; color: var(--dim); margin-top: 0.3em; }
+  
+  /* ── Footer ── */
+  footer { text-align: center; padding: 3em 1em; color: var(--dim); font-size: 0.75rem; border-top: 1px solid var(--border); }
+  
+  /* ── Animations ── */
+  @keyframes pulse { 0%,100% { opacity: 0.3; } 50% { opacity: 1; } }
+  .pulse { animation: pulse 2s ease-in-out infinite; }
+  
+  @keyframes slideUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
+  .slide { animation: slideUp 0.8s ease-out forwards; }
+  .slide.d1 { animation-delay: 0.1s; }
+  .slide.d2 { animation-delay: 0.2s; }
+  .slide.d3 { animation-delay: 0.3s; }
+  
+  /* ── Particle bg ── */
+  .particles { position: fixed; inset: 0; pointer-events: none; z-index: -1; }
+  .particle { position: absolute; width: 2px; height: 2px; background: var(--gold); border-radius: 50%; animation: float 6s linear infinite; opacity: 0; }
+  @keyframes float { 0% { opacity: 0; transform: translateY(100vh); } 10% { opacity: 0.6; } 90% { opacity: 0.6; } 100% { opacity: 0; transform: translateY(-10vh); } }
+</style>
+</head>
+<body>
+
+<div class="particles" id="particles"></div>
+
+<!-- ═══ HERO ═══ -->
+<section class="hero">
+  <div class="badge">DeepSeek v4-pro · reasoning=max</div>
+  <h1>QUINTE</h1>
+  <div class="sub">MULTI-AGENT DEBATE ARCHITECTURE</div>
+  <p class="desc">
+    Five independent AI agents collaborate through structured debate — independent analysis, cross-examination, and final verdict — to produce conclusions with dramatically higher confidence than any single model.
+  </p>
+  <div style="margin-top:1.5em">
+    <span class="badge">Hermes</span><span class="badge">Claude Code</span><span class="badge">CodeWhale</span><span class="badge">Reasonix</span><span class="badge">omp</span>
+  </div>
+</section>
+
+<!-- ═══ STATS ═══ -->
+<section class="stats">
+  <div class="stat"><div class="num">5</div><div class="label">Agents</div></div>
+  <div class="stat"><div class="num">3</div><div class="label">Rounds</div></div>
+  <div class="stat"><div class="num">10+</div><div class="label">Debates Run</div></div>
+  <div class="stat"><div class="num">100%</div><div class="label">DeepSeek v4-pro</div></div>
+  <div class="stat"><div class="num">0</div><div class="label">Flash Degradations</div></div>
+</section>
+
+<!-- ═══ ARCHITECTURE ═══ -->
+<section class="arch">
+  <h2>▸ Debate Architecture ◂</h2>
+  
+  <div class="flow">
+    <div class="round slide d1">
+      <h3>Round 1 — Independent Analysis</h3>
+      <div class="agents">
+        <div class="agent h"><div class="icon">⚖️</div><div class="name">Hermes</div><div class="role">Orchestrator</div></div>
+        <div class="agent c"><div class="icon">📐</div><div class="name">Claude Code</div><div class="role">Broad Coverage</div></div>
+        <div class="agent w"><div class="icon">🔬</div><div class="name">CodeWhale</div><div class="role">Deep Research</div></div>
+      </div>
+      <div class="sub-flow" style="margin-top:1em">
+        <span style="font-size:0.75rem;color:var(--dim)">cc timeout 180s?</span>
+        <span class="arrow-sub">→</span>
+        <div class="agent o"><div class="icon">🔄</div><div class="name">omp</div><div class="role">Hot Spare</div></div>
+        <span class="arrow-sub">→</span>
+        <span style="font-size:0.75rem;color:var(--dim)">fills R1</span>
+      </div>
+    </div>
+    
+    <div class="arrow-row pulse">▼ Cross-Examination ▼</div>
+    
+    <div class="round slide d2">
+      <h3>Round 2 — Cross-Review <span style="font-weight:400;color:var(--dim)">(review others, never self)</span></h3>
+      <div class="agents">
+        <div class="agent h"><div class="icon">⚖️</div><div class="name">Hermes</div><div class="role">Reviews cc+cw+rx+omp</div></div>
+        <div class="agent c"><div class="icon">📐</div><div class="name">Claude Code</div><div class="role">Reviews h+cw+rx+omp</div></div>
+        <div class="agent w"><div class="icon">🔬</div><div class="name">CodeWhale</div><div class="role">Reviews h+cc+rx+omp</div></div>
+        <div class="agent r"><div class="icon">🧠</div><div class="name">Reasonix</div><div class="role">Pure Reasoning Judge</div></div>
+        <div class="agent o"><div class="icon">🔄</div><div class="name">omp</div><div class="role">Reviews all if activated</div></div>
+      </div>
+    </div>
+    
+    <div class="arrow-row pulse">▼ Final Synthesis ▼</div>
+    
+    <div class="round slide d3" style="border-color:var(--gold)">
+      <h3>Round 3 — Final Verdict</h3>
+      <div class="agents">
+        <div class="agent h" style="min-width:200px"><div class="icon">⚖️</div><div class="name">Hermes</div><div class="role">Synthesizes all findings → Final Ruling</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ CONFIDENCE ═══ -->
+<section class="confidence">
+  <h2>▸ Why Quinte? ◂</h2>
+  <div class="grid">
+    <div class="card"><div class="pct">5×</div><div class="lbl">Independent analyses per question — no single-model bias</div></div>
+    <div class="card"><div class="pct">3</div><div class="lbl">Structured debate rounds — analysis → cross-exam → verdict</div></div>
+    <div class="card"><div class="pct">0%</div><div class="lbl">No Flash degradation — all agents use DeepSeek v4-pro reasoning=max</div></div>
+    <div class="card"><div class="pct">4/5</div><div class="lbl">Consensus required — disputed findings surfaced explicitly</div></div>
+  </div>
+</section>
+
+<!-- ═══ TIMELINE ═══ -->
+<section class="timeline">
+  <h2>▸ Development Timeline ◂</h2>
+  <div class="tl-item"><div class="tl-time">2026-05-28</div><div><div class="tl-title">First Quattro Debate</div><div class="tl-desc">4-agent debate on Codex+DeepSeek compatibility. Established the protocol.</div></div></div>
+  <div class="tl-item"><div class="tl-time">2026-06-02</div><div><div class="tl-title">cc Silent Hang Discovered</div><div class="tl-desc">Claude Code bare mode + DeepSeek = 100% hang. Fixed with script wrapper.</div></div></div>
+  <div class="tl-item"><div class="tl-time">2026-06-02</div><div><div class="tl-title">omp Joins as Spare</div><div class="tl-desc">cc timeout → omp fills R1. R2 both participate for richer cross-review.</div></div></div>
+  <div class="tl-item"><div class="tl-time">2026-06-02</div><div><div class="tl-title">Quattro → Quinte</div><div class="tl-desc">Global rename across 11 files. Five-agent architecture formalized.</div></div></div>
+  <div class="tl-item"><div class="tl-time">Now</div><div><div class="tl-title">Production Ready</div><div class="tl-desc">Any rigorous conclusion defaults to Quinte debate. Terminal background CLI, no delegate_task.</div></div></div>
+</section>
+
+<footer>
+  Quinte · Multi-Agent Debate Architecture · hermes-core-rules-mac · 2026
+</footer>
+
+<script>
+// Floating particles
+const container = document.getElementById('particles');
+for (let i = 0; i < 60; i++) {
+  const p = document.createElement('div');
+  p.className = 'particle';
+  p.style.left = Math.random() * 100 + '%';
+  p.style.animationDelay = Math.random() * 6 + 's';
+  p.style.animationDuration = (4 + Math.random() * 8) + 's';
+  container.appendChild(p);
+}
+</script>
+</body>
+</html>
