@@ -27,7 +27,7 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 | **Claude Code** | DeepSeek v4-pro max | ✅ | ✅ | Broadest coverage, structured reporting |
 | **CodeWhale** | DeepSeek v4-pro max | ✅ | ✅ | Deepest research, concurrency analysis |
 | **Reasonix** | DeepSeek v4-pro max | — | ✅ | Pure reasoning judge (content-embedded) |
-| **omp** | DeepSeek v4-pro xhigh | ⚡ | ✅ | Hot spare + cross-reviewer |
+| **Oh-my-pi** | DeepSeek v4-pro xhigh | ⚡ | ✅ | Hot spare + cross-reviewer |
 
 ⚡ Activates if Claude Code times out (180s no output)
 
@@ -36,8 +36,8 @@ Round 1 — Independent     Round 2 — Cross-Review       Round 3
 Hermes ──→ analysis       Hermes ──→ reviews all       Hermes ──→ verdict
 Claude Code ──→ analysis  Claude Code ──→ reviews all
 CodeWhale ──→ analysis    CodeWhale ──→ reviews all
-(cc timeout → omp fills)  Reasonix ──→ pure judge
-                           omp ──→ reviews all
+(cc timeout → Oh-my-pi fills)  Reasonix ──→ pure judge
+                           Oh-my-pi ──→ reviews all
 ```
 
 ## Design Principles
@@ -71,9 +71,9 @@ QUINTE orchestrates five independent AI agents. **None are developed by this pro
 | [**Claude Code**](https://github.com/anthropics/claude-code) | Anthropic's coding agent. Broadest coverage, structured reports. | MIT |
 | [**CodeWhale**](https://github.com/deepseek-ai/codewhale) | DeepSeek-native agent. Deepest research, concurrency analysis. | MIT |
 | [**Reasonix**](https://github.com/deepseek-ai/reasonix) | DeepSeek-native reasoning. R2 pure judge, content-embedded. | MIT |
-| [**omp**](https://github.com/can1357/oh-my-pi) | Pi-fork agent. Hot spare, LSP/DAP, 40+ providers. | MIT |
+| [**Oh-my-pi**](https://github.com/can1357/oh-my-pi) | Pi-fork agent. Hot spare, LSP/DAP, 40+ providers. | MIT |
 
-All agents run on **DeepSeek v4-pro**, reasoning **max** (xhigh for omp). Flash is explicitly forbidden.
+All agents run on **DeepSeek v4-pro**, reasoning **max** (xhigh for Oh-my-pi). Flash is explicitly forbidden.
 
 ## License
 
