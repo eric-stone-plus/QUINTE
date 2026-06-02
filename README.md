@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="quinte-cover.svg" alt="QUINTE" width="100%">
+<img src="quinte-cover.svg?v=5" alt="QUINTE" width="100%">
 
 # QUINTE
 
