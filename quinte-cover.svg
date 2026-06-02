@@ -1,19 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" style="background:#0a0a0f">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" style="background:#08080f">
   <defs>
-    <radialGradient id="g" cx="50%" cy="35%" r="55%"><stop offset="0%" stop-color="#f0c060" stop-opacity="0.06"/><stop offset="100%" stop-color="#0a0a0f" stop-opacity="0"/></radialGradient>
-    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#f0c060"/><stop offset="0.5" stop-color="#f0a040"/><stop offset="1" stop-color="#e0c080"/></linearGradient>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f0c060"/><stop offset="1" stop-color="#f0a040"/></linearGradient>
   </defs>
-  <rect width="1200" height="630" fill="#0a0a0f"/>
-  <rect width="1200" height="630" fill="url(#g)"/>
-  <circle cx="200" cy="100" r="1" fill="#f0c060" opacity="0.4"><animate attributeName="opacity" values="0.1;0.5;0.1" dur="4s" repeatCount="indefinite"/></circle>
-  <circle cx="800" cy="80" r="1.5" fill="#f0c060" opacity="0.3"><animate attributeName="opacity" values="0.2;0.6;0.2" dur="5s" repeatCount="indefinite"/></circle>
-  <circle cx="1000" cy="200" r="1" fill="#f0c060" opacity="0.4"><animate attributeName="opacity" values="0.1;0.4;0.1" dur="3s" repeatCount="indefinite"/></circle>
-  <circle cx="300" cy="400" r="1.5" fill="#f0c060" opacity="0.2"><animate attributeName="opacity" values="0.1;0.3;0.1" dur="6s" repeatCount="indefinite"/></circle>
-  <line x1="200" y1="200" x2="400" y2="200" stroke="#f0c060" opacity="0.08" stroke-width="0.5"/>
-  <line x1="800" y1="200" x2="1000" y2="200" stroke="#f0c060" opacity="0.08" stroke-width="0.5"/>
-  <text x="600" y="230" text-anchor="middle" fill="url(#gold)" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="150" font-weight="900" letter-spacing="14">QUINTE</text>
-  <line x1="350" y1="265" x2="850" y2="265" stroke="#f0c060" stroke-width="1" opacity="0.3"/>
-  <line x1="450" y1="268" x2="750" y2="268" stroke="#f0c060" stroke-width="1" opacity="0.15"/>
-  <text x="600" y="320" text-anchor="middle" fill="#606080" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="22" letter-spacing="10">MULTI-AGENT DEBATE ARCHITECTURE</text>
-  <text x="600" y="370" text-anchor="middle" fill="#505068" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" letter-spacing="1">Five AI agents · Structured debate · Cross-examination · Final verdict</text>
+  <rect width="1200" height="600" fill="#08080f"/>
+  <!-- Left panel -->
+  <rect x="0" y="0" width="550" height="600" fill="#0a0a14" opacity="0.6"/>
+  <!-- Divider -->
+  <line x1="550" y1="0" x2="550" y2="600" stroke="#f0c060" stroke-width="1" opacity="0.25"/>
+  <!-- QUINTE centered in left panel -->
+  <text x="275" y="260" text-anchor="middle" fill="url(#g)" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="130" font-weight="900" letter-spacing="10">QUINTE</text>
+  <line x1="140" y1="295" x2="410" y2="295" stroke="#f0c060" stroke-width="0.8" opacity="0.3"/>
+  <text x="275" y="335" text-anchor="middle" fill="#606080" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="18" letter-spacing="4">MULTI-AGENT DEBATE</text>
+  <!-- Agent list right side -->
+  <text x="850" y="220" text-anchor="middle" fill="#f0c060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="16" font-weight="700" letter-spacing="2">HERMES</text>
+  <text x="850" y="260" text-anchor="middle" fill="#c0c0d0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="32" font-weight="300">+</text>
+  <text x="710" y="290" text-anchor="middle" fill="#f0a060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">CLAUDE CODE</text>
+  <text x="990" y="290" text-anchor="middle" fill="#f0a060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">CODEWHALE</text>
+  <text x="710" y="330" text-anchor="middle" fill="#c060f0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">REASONIX</text>
+  <text x="990" y="330" text-anchor="middle" fill="#f06090" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">OH-MY-PI</text>
+  <!-- Bottom -->
+  <text x="850" y="420" text-anchor="middle" fill="#505068" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="2">DeepSeek v4-pro · Maximum reasoning · 2026</text>
 </svg>
