@@ -61,6 +61,20 @@ bash quinte-demo.sh       # Simulate a debate round
 
 10+ debates conducted across code review, architecture decisions, naming conventions, and tool evaluation.
 
+## Built With
+
+QUINTE orchestrates five independent AI agents. **None are developed by this project.** Each is a standalone tool used as a debate participant.
+
+| Agent | Description | Repository |
+|-------|-------------|------------|
+| [**Hermes**](https://github.com/nousresearch/hermes-agent) | Orchestrator + debater. Coordinates rounds and produces final verdict. | MIT |
+| [**Claude Code**](https://github.com/anthropics/claude-code) | Anthropic's coding agent. Broadest coverage, structured reports. | MIT |
+| [**CodeWhale**](https://github.com/deepseek-ai/codewhale) | DeepSeek-native agent. Deepest research, concurrency analysis. | MIT |
+| [**Reasonix**](https://github.com/deepseek-ai/reasonix) | DeepSeek-native reasoning. R2 pure judge, content-embedded. | MIT |
+| [**omp**](https://github.com/can1357/oh-my-pi) | Pi-fork agent. Hot spare, LSP/DAP, 40+ providers. | MIT |
+
+All agents run on **DeepSeek v4-pro**, reasoning **max** (xhigh for omp). Flash is explicitly forbidden.
+
 ## License
 
-MIT
+MIT — the protocol and orchestration layer. Individual agents carry their own licenses (see [Built With](#built-with)).
