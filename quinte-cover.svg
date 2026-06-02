@@ -3,21 +3,16 @@
     <linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f0c060"/><stop offset="1" stop-color="#f0a040"/></linearGradient>
   </defs>
   <rect width="1200" height="600" fill="#08080f"/>
-  <!-- Left panel -->
   <rect x="0" y="0" width="550" height="600" fill="#0a0a14" opacity="0.6"/>
-  <!-- Divider -->
   <line x1="550" y1="0" x2="550" y2="600" stroke="#f0c060" stroke-width="1" opacity="0.25"/>
-  <!-- QUINTE centered in left panel -->
-  <text x="275" y="260" text-anchor="middle" fill="url(#g)" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="130" font-weight="900" letter-spacing="10">QUINTE</text>
-  <line x1="140" y1="295" x2="410" y2="295" stroke="#f0c060" stroke-width="0.8" opacity="0.3"/>
-  <text x="275" y="335" text-anchor="middle" fill="#606080" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="18" letter-spacing="4">MULTI-AGENT DEBATE</text>
-  <!-- Agent list right side -->
-  <text x="850" y="220" text-anchor="middle" fill="#f0c060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="16" font-weight="700" letter-spacing="2">HERMES</text>
-  <text x="850" y="260" text-anchor="middle" fill="#c0c0d0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="32" font-weight="300">+</text>
-  <text x="710" y="290" text-anchor="middle" fill="#f0a060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">CLAUDE CODE</text>
-  <text x="990" y="290" text-anchor="middle" fill="#f0a060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">CODEWHALE</text>
-  <text x="710" y="330" text-anchor="middle" fill="#c060f0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">REASONIX</text>
-  <text x="990" y="330" text-anchor="middle" fill="#f06090" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">OH-MY-PI</text>
-  <!-- Bottom -->
-  <text x="850" y="420" text-anchor="middle" fill="#505068" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="2">DeepSeek v4-pro · Maximum reasoning · 2026</text>
+  <text x="275" y="260" text-anchor="middle" fill="url(#g)" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="140" font-weight="900" letter-spacing="8">QUINTE</text>
+  <line x1="120" y1="295" x2="430" y2="295" stroke="#f0c060" stroke-width="0.8" opacity="0.3"/>
+  <text x="275" y="340" text-anchor="middle" fill="#606080" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="18" letter-spacing="4">Multi-Agent Debate Architecture</text>
+  <text x="800" y="220" text-anchor="middle" fill="#f0c060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="16" font-weight="700" letter-spacing="2">HERMES</text>
+  <text x="800" y="270" text-anchor="middle" fill="#c0c0d0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="32" font-weight="200">+</text>
+  <text x="700" y="310" text-anchor="middle" fill="#f0a060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">CLAUDE CODE</text>
+  <text x="900" y="310" text-anchor="middle" fill="#60f0a0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">CODEWHALE</text>
+  <text x="700" y="350" text-anchor="middle" fill="#c060f0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">REASONIX</text>
+  <text x="900" y="350" text-anchor="middle" fill="#f06090" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">OH-MY-PI</text>
+  <text x="800" y="440" text-anchor="middle" fill="#505068" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="2">DeepSeek v4-pro · Maximum reasoning · 2026</text>
 </svg>
