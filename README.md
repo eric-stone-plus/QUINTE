@@ -69,8 +69,8 @@ QUINTE orchestrates five independent AI agents. **None are developed by this pro
 |-------|-------------|------------|
 | [**Hermes**](https://github.com/nousresearch/hermes-agent) | Orchestrator + debater. Coordinates rounds and produces final verdict. | MIT |
 | [**Claude Code**](https://github.com/anthropics/claude-code) | Anthropic's coding agent. Broadest coverage, structured reports. | MIT |
-| [**CodeWhale**](https://github.com/deepseek-ai/codewhale) | DeepSeek-native agent. Deepest research, concurrency analysis. | MIT |
-| [**Reasonix**](https://github.com/deepseek-ai/reasonix) | DeepSeek-native reasoning. R2 pure judge, content-embedded. | MIT |
+| [**CodeWhale**](https://github.com/Hmbown/CodeWhale) | DeepSeek-native agent. Deepest research, concurrency analysis. | MIT |
+| [**Reasonix**](https://github.com/esengine/DeepSeek-Reasonix) | DeepSeek-native reasoning. R2 pure judge, content-embedded. | MIT |
 | [**Oh-my-pi**](https://github.com/can1357/oh-my-pi) | Pi-fork agent. Hot spare, LSP/DAP, 40+ providers. | MIT |
 
 All agents run on **DeepSeek v4-pro**, reasoning **max** (xhigh for Oh-my-pi). Flash is explicitly forbidden.
