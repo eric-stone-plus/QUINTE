@@ -4,9 +4,9 @@
 
 ---
 
-## 1. What is Quinte?
+## 1. What is QUINTE?
 
-Quinte is a five-agent structured debate system that produces conclusions with dramatically higher confidence than any single AI model. It's the evolution of Quattro (4-agent) into a 5-agent system with built-in fault tolerance.
+QUINTE is a five-agent structured debate system that produces conclusions with dramatically higher confidence than any single AI model. It's the evolution of Quattro (4-agent) into a 5-agent system with built-in fault tolerance.
 
 ### The Five Agents
 
@@ -104,13 +104,13 @@ Minimum viable debate: Hermes + 1 other party.
 - Codex + DeepSeek compatibility (5-party consensus: impossible without bridge)
 - hermes-core-rules-mac sync audit (11 stale files found, all fixed)
 - omp role definition (5-party consensus: synthesis engine, not browser tool)
-- Quattro → Quinte global rename (37 replacements, zero errors)
+- Quattro → QUINTE global rename (37 replacements, zero errors)
 
 ---
 
 ## 7. Why This Matters
 
-Single-model AI outputs have an inherent confidence ceiling. No matter how powerful the model, you're getting one perspective. Quinte breaks through by:
+Single-model AI outputs have an inherent confidence ceiling. No matter how powerful the model, you're getting one perspective. QUINTE breaks through by:
 
 1. **Independent analysis** — Each agent brings its own framework (cc: broad coverage, cw: deep research, Reasonix: pure reasoning)
 2. **Cross-examination** — Agents review each other's work, catching blind spots, false positives, and missed issues

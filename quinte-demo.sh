@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# quinte-demo.sh — Simulate a Quinte debate round
+# quinte-demo.sh — Simulate a QUINTE debate round
 # Demonstrates the architecture: R1 parallel → R2 cross-review → R3 verdict
 set -e
 
@@ -132,7 +132,7 @@ Raw WebSocket CDP scripts — lighter than Playwright, more precise than omp bro
 Removed from browser automation. Retained as:
 - Grok/Gemini reply comparison & synthesis
 - LSP/DAP debugging (unique capability)
-- Quinte debate participant (hot spare + R2 reviewer)
+- QUINTE debate participant (hot spare + R2 reviewer)
 EOF
 echo "  ✓ final_verdict.md"
 
