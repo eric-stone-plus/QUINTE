@@ -1,18 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" style="background:#08080f">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" style="background:#050508">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f0c060"/><stop offset="1" stop-color="#f0a040"/></linearGradient>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f0d080"/><stop offset="0.5" stop-color="#f0a030"/><stop offset="1" stop-color="#d08020"/></linearGradient>
+    <filter id="blur"><feGaussianBlur stdDeviation="20"/></filter>
   </defs>
-  <rect width="1200" height="600" fill="#08080f"/>
-  <rect x="0" y="0" width="550" height="600" fill="#0a0a14" opacity="0.6"/>
-  <line x1="550" y1="0" x2="550" y2="600" stroke="#f0c060" stroke-width="1" opacity="0.25"/>
-  <text x="275" y="260" text-anchor="middle" fill="url(#g)" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="140" font-weight="900" letter-spacing="8">QUINTE</text>
-  <line x1="120" y1="295" x2="430" y2="295" stroke="#f0c060" stroke-width="0.8" opacity="0.3"/>
-  <text x="275" y="340" text-anchor="middle" fill="#606080" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="18" letter-spacing="4">Multi-Agent Debate Architecture</text>
-  <text x="800" y="220" text-anchor="middle" fill="#f0c060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="16" font-weight="700" letter-spacing="2">HERMES</text>
-  <text x="800" y="270" text-anchor="middle" fill="#c0c0d0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="32" font-weight="200">+</text>
-  <text x="700" y="310" text-anchor="middle" fill="#f0a060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">CLAUDE CODE</text>
-  <text x="900" y="310" text-anchor="middle" fill="#60f0a0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">CODEWHALE</text>
-  <text x="700" y="350" text-anchor="middle" fill="#c060f0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">REASONIX</text>
-  <text x="900" y="350" text-anchor="middle" fill="#f06090" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="1">OH-MY-PI</text>
-  <text x="800" y="440" text-anchor="middle" fill="#505068" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="13" letter-spacing="2">DeepSeek v4-pro · Maximum reasoning · 2026</text>
+  <rect width="1200" height="600" fill="#050508"/>
+  <!-- Burst lines from center -->
+  <g opacity="0.04" stroke="#f0c060" stroke-width="0.5">
+    <line x1="600" y1="300" x2="0" y2="0"/>
+    <line x1="600" y1="300" x2="200" y2="0"/>
+    <line x1="600" y1="300" x2="400" y2="0"/>
+    <line x1="600" y1="300" x2="600" y2="0"/>
+    <line x1="600" y1="300" x2="800" y2="0"/>
+    <line x1="600" y1="300" x2="1000" y2="0"/>
+    <line x1="600" y1="300" x2="1200" y2="0"/>
+    <line x1="600" y1="300" x2="0" y2="600"/>
+    <line x1="600" y1="300" x2="1200" y2="600"/>
+  </g>
+  <ellipse cx="600" cy="280" rx="300" ry="120" fill="#f0a030" opacity="0.04" filter="url(#blur)"/>
+  <text x="600" y="260" text-anchor="middle" fill="url(#g)" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="180" font-weight="900" letter-spacing="20">QUINTE</text>
+  <text x="600" y="340" text-anchor="middle" fill="#707088" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="20" letter-spacing="10">FIVE-AGENT DEBATE · MAXIMUM CONFIDENCE</text>
+  <text x="600" y="430" text-anchor="middle" fill="#505068" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" letter-spacing="3">HERMES · CLAUDE CODE · CODEWHALE · REASONIX · OH-MY-PI</text>
 </svg>
