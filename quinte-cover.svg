@@ -47,7 +47,7 @@
   </g>
 
   <!-- QUINTE — Hero Title -->
-  <text x="600" y="210" text-anchor="middle" fill="url(#gold)" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="150" font-weight="900" letter-spacing="14" filter="url(#titleGlow)">QUINTE</text>
+  <text x="600" y="210" text-anchor="middle" fill="url(#gold)" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="150" font-weight="900" letter-spacing="14">QUINTE</text>
 
   <!-- Subtitle -->
   <text x="600" y="290" text-anchor="middle" fill="#606080" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="22" letter-spacing="10">MULTI-AGENT DEBATE ARCHITECTURE</text>
@@ -60,19 +60,19 @@
 
   <!-- Agent Badges -->
   <g transform="translate(600,430)">
-    <rect x="-350" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#60c0f0" stroke-width="1.2" filter="url(#badgeH)"/>
+    <rect x="-350" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#60c0f0" stroke-width="1.2"/>
     <text x="-290" y="6" text-anchor="middle" fill="#60c0f0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="18" font-weight="700">⚖️ Hermes</text>
 
-    <rect x="-210" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#f0a060" stroke-width="1.2" filter="url(#badgeC)"/>
+    <rect x="-210" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#f0a060" stroke-width="1.2"/>
     <text x="-150" y="6" text-anchor="middle" fill="#f0a060" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="700">📐 Claude</text>
 
-    <rect x="-70" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#60f0a0" stroke-width="1.2" filter="url(#badgeW)"/>
+    <rect x="-70" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#60f0a0" stroke-width="1.2"/>
     <text x="-10" y="6" text-anchor="middle" fill="#60f0a0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="700">🔬 CodeWhale</text>
 
-    <rect x="70" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#c060f0" stroke-width="1.2" filter="url(#badgeR)"/>
+    <rect x="70" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#c060f0" stroke-width="1.2"/>
     <text x="130" y="6" text-anchor="middle" fill="#c060f0" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="700">🧠 Reasonix</text>
 
-    <rect x="230" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#f06090" stroke-width="1.2" filter="url(#badgeO)"/>
+    <rect x="230" y="-24" width="120" height="48" rx="8" fill="#0c0c18" stroke="#f06090" stroke-width="1.2"/>
     <text x="290" y="6" text-anchor="middle" fill="#f06090" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="700">🔄 omp</text>
   </g>
 
