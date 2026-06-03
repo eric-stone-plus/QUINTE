@@ -24,7 +24,7 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 | **Hermes** | DeepSeek v4-pro · xhigh | ✅ | ✅ | Orchestration + final verdict |
 | **Claude Code** | DeepSeek v4-pro · max | ✅ | ✅ | Broadest coverage, structured reporting |
 | **CodeWhale** | DeepSeek v4-pro · max | ✅ | ✅ | Deepest research, concurrency analysis |
-| **omp** | DeepSeek v4-pro · xhigh | ✅ | ✅ | Full participant all rounds, LSP/DAP tools |
+| **OMP** | DeepSeek v4-pro · xhigh | ✅ | ✅ | Full participant all rounds, LSP/DAP tools |
 | **Reasonix** | DeepSeek v4-pro · max | — | ✅ | Pure reasoning judge (R1 tool limitation — temporary) |
 
 R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool calls, R1 expands to 5.
@@ -81,7 +81,7 @@ QUINTE orchestrates five independent AI agents. **None are developed by this pro
 | [**Hermes**](https://github.com/nousresearch/hermes-agent) | Orchestrator + debater. Coordinates rounds and produces final verdict. | MIT |
 | [**Claude Code**](https://github.com/anthropics/claude-code) | Anthropic's coding agent. Broadest coverage, structured reports. | MIT |
 | [**CodeWhale**](https://github.com/Hmbown/CodeWhale) | DeepSeek-native agent. Deepest research, concurrency analysis. | MIT |
-| [**omp**](https://github.com/can1357/oh-my-pi) | oh-my-pi fork. Full debate participant, LSP/DAP, 40+ providers. | MIT |
+| [**OMP**](https://github.com/can1357/oh-my-pi) | oh-my-pi fork. Full debate participant, LSP/DAP, 40+ providers. | MIT |
 | [**Reasonix**](https://github.com/esengine/DeepSeek-Reasonix) | DeepSeek-native reasoning. R2 pure judge, content-embedded. | MIT |
 
 All agents run on **DeepSeek v4-pro**. Hermes/OMP use `xhigh`, others use `max`. Flash is explicitly forbidden.
