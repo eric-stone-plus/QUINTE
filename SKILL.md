@@ -34,13 +34,21 @@ version: 2.1.0
 
 ## Participation
 
-| Agent | Engine | R1 | R2 | Role |
-|-------|--------|:--:|:--:|------|
-| Hermes (hm) | v4-pro · xhigh | ✅ | ✅ | Orchestrator + final verdict |
-| Claude Code (cc) | v4-pro · max | ✅ | ✅ | Broadest coverage, structured reports |
-| CodeWhale (cw) | v4-pro · max | ✅ | ✅ | Deepest research, concurrency analysis |
-| OMP | v4-pro · xhigh | ✅ | ✅ | Full participant, all rounds |
-| Reasonix (rx) | v4-pro · max | — | ✅ | R2 pure reasoning judge |
+<table>
+<colgroup>
+<col width="140">
+<col width="200">
+<col width="50">
+<col width="50">
+<col width="440">
+</colgroup>
+<tr><th>Agent</th><th>Engine</th><th>R1</th><th>R2</th><th>Role</th></tr>
+<tr><td><b>Hermes</b></td><td>DeepSeek v4-pro · xhigh</td><td>✅</td><td>✅</td><td>Orchestrator + final verdict</td></tr>
+<tr><td><b>Claude Code</b></td><td>DeepSeek v4-pro · max</td><td>✅</td><td>✅</td><td>Broadest coverage, structured reporting</td></tr>
+<tr><td><b>CodeWhale</b></td><td>DeepSeek v4-pro · max</td><td>✅</td><td>✅</td><td>Deepest research, concurrency analysis</td></tr>
+<tr><td><b>OMP</b></td><td>DeepSeek v4-pro · xhigh</td><td>✅</td><td>✅</td><td>Full participant, all rounds</td></tr>
+<tr><td><b>Reasonix</b></td><td>DeepSeek v4-pro · max</td><td>—</td><td>✅</td><td>R2 pure reasoning judge</td></tr>
+</table>
 
 ⛔ rx 绝不参与 R1 — run 模式不执行工具。
 
