@@ -13,25 +13,27 @@ version: 2.1.0
 ## Architecture
 
 ```
-           Hermes (Orchestrator + Participant)
+              Hermes (Orchestrator + Participant)
                │
-      ┌──────────────┼──────────────┬──────────────┐
-      ▼           ▼           ▼              ▼
-     Round 1     Round 1     Round 1     Round 1
-   Hermes         Claude         CodeWhale       OMP
-   (v4 xhigh)     (v4 max)    (v4 max)    (v4 xhigh)
-      │           │           │              │
-      └──────────────┼──────────────┼──────────────┘
+    ┌──────────┼──────────┬──────────┐
+    ▼          ▼          ▼          ▼
+  Round 1   Round 1    Round 1    Round 1
+  Hermes    Claude     CodeWhale  OMP
+  (v4       (v4       (v4       (v4
+   xhigh)    max)      max)      xhigh)
+    │          │          │          │
+    └──────────┼──────────┼──────────┘
                ▼
-               Hermes flags divergences
+         Hermes flags divergences
                │
-      ┌──────────────┼──────────────┬──────────────┬──────────────┬──────────────┐
-      ▼           ▼           ▼           ▼              ▼
-     Round 2     Round 2     Round 2     Round 2     Round 2
-   Hermes         Claude         CodeWhale       Reasonix        OMP
-   (v4 xhigh)     (v4 max)    (v4 max)    (v4 max)     (v4 xhigh)
-      │           │           │           │              │
-      └──────────────┼──────────────┼──────────────┼──────────────┼──────────────┘
+    ┌──────────┼──────────┬──────────┬──────────┐
+    ▼          ▼          ▼          ▼          ▼
+  Round 2   Round 2    Round 2    Round 2    Round 2
+  Hermes    Claude     CodeWhale  Reasonix   OMP
+  (v4       (v4       (v4       (v4       (v4
+   xhigh)    max)      max)      max)      xhigh)
+    │          │          │          │          │
+    └──────────┼──────────┼──────────┼──────────┘
                ▼
        Hermes final verdict
 ```
@@ -52,13 +54,13 @@ version: 2.1.0
 
 **R1: 4 agents. R2: 5 agents (Reasonix joins).** When Reasonix run mode supports tool calls, R1 expands to 5.
 
-**No degradation:** all 5 must participate. Timeout → retry with smaller prompt, never skip.
+**No degradation:** all 5 must participate. Timeout → retry with smaller prOMPt, never skip.
 
 ## Key Updates
 
 - **2026-06-03 v2.2**: hm/rx shorthands added, rx R1 prohibition, execution discipline
 - **2026-06-03 v2.1**: OMP promoted from hot spare to full R1 participant. Architecture: R1=4 agents, R2=5.
-- **2026-06-03 v2.0**: Skill absorbed into `multi-agent-debate`. `oh-my-pi` → `omp` naming standardized. No-degradation policy.
+- **2026-06-03 v2.0**: Skill absorbed into `multi-agent-debate`. `oh-my-pi` → `OMP` naming standardized. No-degradation policy.
 
 ## See Also
 

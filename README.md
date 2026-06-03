@@ -30,25 +30,27 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool calls, R1 expands to 5.
 
 ```
-           Hermes (Orchestrator + Participant)
+              Hermes (Orchestrator + Participant)
                │
-      ┌──────────────┼──────────────┬──────────────┐
-      ▼           ▼           ▼              ▼
-     Round 1     Round 1     Round 1     Round 1
-   Hermes         Claude         CodeWhale       OMP
-   (v4 xhigh)     (v4 max)    (v4 max)    (v4 xhigh)
-      │           │           │              │
-      └──────────────┼──────────────┼──────────────┘
+    ┌──────────┼──────────┬──────────┐
+    ▼          ▼          ▼          ▼
+  Round 1   Round 1    Round 1    Round 1
+  Hermes    Claude     CodeWhale  OMP
+  (v4       (v4       (v4       (v4
+   xhigh)    max)      max)      xhigh)
+    │          │          │          │
+    └──────────┼──────────┼──────────┘
                ▼
-               Hermes flags divergences
+         Hermes flags divergences
                │
-      ┌──────────────┼──────────────┬──────────────┬──────────────┬──────────────┐
-      ▼           ▼           ▼           ▼              ▼
-     Round 2     Round 2     Round 2     Round 2     Round 2
-   Hermes         Claude         CodeWhale       Reasonix        OMP
-   (v4 xhigh)     (v4 max)    (v4 max)    (v4 max)     (v4 xhigh)
-      │           │           │           │              │
-      └──────────────┼──────────────┼──────────────┼──────────────┼──────────────┘
+    ┌──────────┼──────────┬──────────┬──────────┐
+    ▼          ▼          ▼          ▼          ▼
+  Round 2   Round 2    Round 2    Round 2    Round 2
+  Hermes    Claude     CodeWhale  Reasonix   OMP
+  (v4       (v4       (v4       (v4       (v4
+   xhigh)    max)      max)      max)      xhigh)
+    │          │          │          │          │
+    └──────────┼──────────┼──────────┼──────────┘
                ▼
        Hermes final verdict
 ```
@@ -56,7 +58,7 @@ R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool cal
 ## Design Principles
 
 - **All DeepSeek v4-pro · Hermes/OMP xhigh, rest max · flash forbidden**
-- **No degradation** — all 5 agents must participate. Timeout → retry with smaller prompt, never skip.
+- **No degradation** — all 5 agents must participate. Timeout → retry with smaller prOMPt, never skip.
 - **3 rounds max** — early consensus skips remaining rounds
 - **Cross-review is adversarial** — review others, never yourself
 - **Terminal + background CLI** — no delegate_task
