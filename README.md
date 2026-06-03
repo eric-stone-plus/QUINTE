@@ -29,31 +29,7 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 
 R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool calls, R1 expands to 5.
 
-```
-              Hermes (Orchestrator + Participant)
-               │
-    ┌──────────┼──────────┬──────────┐
-    ▼          ▼          ▼          ▼
-  Round 1   Round 1    Round 1    Round 1
-  Hermes    Claude     CodeWhale  OMP
-  (v4       (v4       (v4       (v4
-   xhigh)    max)      max)      xhigh)
-    │          │          │          │
-    └──────────┼──────────┼──────────┘
-               ▼
-         Hermes flags divergences
-               │
-    ┌──────────┼──────────┬──────────┬──────────┐
-    ▼          ▼          ▼          ▼          ▼
-  Round 2   Round 2    Round 2    Round 2    Round 2
-  Hermes    Claude     CodeWhale  Reasonix   OMP
-  (v4       (v4       (v4       (v4       (v4
-   xhigh)    max)      max)      max)      xhigh)
-    │          │          │          │          │
-    └──────────┼──────────┼──────────┼──────────┘
-               ▼
-       Hermes final verdict
-```
+<img src="quinte-arch.svg" alt="QUINTE Architecture" width="100%">
 
 ## Design Principles
 

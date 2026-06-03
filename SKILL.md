@@ -12,31 +12,7 @@ version: 2.1.0
 
 ## Architecture
 
-```
-              Hermes (Orchestrator + Participant)
-               │
-    ┌──────────┼──────────┬──────────┐
-    ▼          ▼          ▼          ▼
-  Round 1   Round 1    Round 1    Round 1
-  Hermes    Claude     CodeWhale  OMP
-  (v4       (v4       (v4       (v4
-   xhigh)    max)      max)      xhigh)
-    │          │          │          │
-    └──────────┼──────────┼──────────┘
-               ▼
-         Hermes flags divergences
-               │
-    ┌──────────┼──────────┬──────────┬──────────┐
-    ▼          ▼          ▼          ▼          ▼
-  Round 2   Round 2    Round 2    Round 2    Round 2
-  Hermes    Claude     CodeWhale  Reasonix   OMP
-  (v4       (v4       (v4       (v4       (v4
-   xhigh)    max)      max)      max)      xhigh)
-    │          │          │          │          │
-    └──────────┼──────────┼──────────┼──────────┘
-               ▼
-       Hermes final verdict
-```
+<img src="quinte-arch.svg" alt="QUINTE Architecture" width="100%">
 
 ## Participation
 

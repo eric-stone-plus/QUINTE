@@ -34,7 +34,7 @@
   <text x="760" y="205" text-anchor="middle" fill="#606080" font-family="monospace" font-size="11">Deep Research</text>
   <text x="760" y="225" text-anchor="middle" fill="#30c070" font-family="monospace" font-size="10">DS v4-pro · max</text>
 
-  <!-- cc timeout → omp -->
+  <!-- cc timeout → OMP -->
   <text x="590" y="270" text-anchor="middle" fill="#606080" font-family="monospace" font-size="9">cc timeout 180s? → OMP fills R1</text>
 
   <!-- Arrow R1→R2 -->
