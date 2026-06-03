@@ -13,7 +13,7 @@ version: 2.1.0
 ## Architecture
 
 ```
-                        Hermes (Orchestrator + Participant)
+                         Hermes (Orchestrator + Participant)
                                               ▼
                   ┌─────────────────────────────────────────────────────────┐
                     Round 1         Round 1         Round 1        Round 1
