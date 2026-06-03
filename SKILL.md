@@ -43,11 +43,11 @@ version: 2.1.0
 <col width="440">
 </colgroup>
 <tr><th>Agent</th><th>Engine</th><th>R1</th><th>R2</th><th>Role</th></tr>
-<tr><td><b>Hermes</b></td><td>DeepSeek v4-pro · xhigh</td><td>✅</td><td>✅</td><td>Orchestrator + final verdict</td></tr>
-<tr><td><b>Claude Code</b></td><td>DeepSeek v4-pro · max</td><td>✅</td><td>✅</td><td>Broadest coverage, structured reporting</td></tr>
-<tr><td><b>CodeWhale</b></td><td>DeepSeek v4-pro · max</td><td>✅</td><td>✅</td><td>Deepest research, concurrency analysis</td></tr>
-<tr><td><b>OMP</b></td><td>DeepSeek v4-pro · xhigh</td><td>✅</td><td>✅</td><td>Full participant, all rounds</td></tr>
-<tr><td><b>Reasonix</b></td><td>DeepSeek v4-pro · max</td><td>—</td><td>✅</td><td>R2 pure reasoning judge</td></tr>
+<tr><td><b>Hermes</b></td><td>v4-pro · xhigh</td><td>✅</td><td>✅</td><td>Orchestrator + final verdict</td></tr>
+<tr><td><b>Claude Code</b></td><td>v4-pro · max</td><td>✅</td><td>✅</td><td>Broadest coverage, structured reporting</td></tr>
+<tr><td><b>CodeWhale</b></td><td>v4-pro · max</td><td>✅</td><td>✅</td><td>Deepest research, concurrency analysis</td></tr>
+<tr><td><b>OMP</b></td><td>v4-pro · xhigh</td><td>✅</td><td>✅</td><td>Full participant, all rounds</td></tr>
+<tr><td><b>Reasonix</b></td><td>v4-pro · max</td><td>—</td><td>✅</td><td>R2 pure reasoning judge</td></tr>
 </table>
 
 ⛔ rx 绝不参与 R1 — run 模式不执行工具。
@@ -56,7 +56,7 @@ version: 2.1.0
 
 **R1: 4 agents. R2: 5 agents (Reasonix joins).** When Reasonix run mode supports tool calls, R1 expands to 5.
 
-**No degradation:** all 5 must participate. Timeout → retry with smaller prOMPt, never skip.
+**No degradation:** all 5 must participate. Timeout → retry with smaller prompt, never skip.
 
 ## Key Updates
 
