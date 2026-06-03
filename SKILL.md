@@ -36,11 +36,11 @@ version: 2.1.0
 
 | Agent | Model | R1 | R2 | Role |
 |-------|-------|----|----|------|
-| **Hermes** | v4-pro · xhigh | ✅ | ✅ | Orchestrator + final verdict |
-| **Claude Code** | v4-pro · max | ✅ | ✅ | Broadest coverage, structured reports |
-| **CodeWhale** | v4-pro · max | ✅ | ✅ | Deepest research, concurrency |
-| **OMP** | v4-pro · xhigh | ✅ | ✅ | Full participant, all rounds |
-| **Reasonix** | v4-pro · max | — | ✅ | R2 pure reasoning judge |
+| **Hermes** | deepseek-v4-pro | ✅ | ✅ | Orchestrator + final verdict |
+| **Claude Code** | deepseek-v4-pro | ✅ | ✅ | Broadest coverage, structured reports |
+| **CodeWhale** | deepseek-v4-pro | ✅ | ✅ | Deepest research, concurrency |
+| **OMP** | deepseek-v4-pro | ✅ | ✅ | Full participant, all rounds |
+| **Reasonix** | deepseek-v4-pro | — | ✅ | R2 pure reasoning judge |
 
 ⛔ rx 绝不参与 R1 — run 模式不执行工具。
 

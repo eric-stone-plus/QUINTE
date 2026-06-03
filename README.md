@@ -21,11 +21,11 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 
 | Agent | Model | R1 | R2 | Strengths |
 |-------|-------|----|----|-----------|
-| **Hermes** | v4-pro · xhigh | ✅ | ✅ | Orchestration + final verdict |
-| **Claude Code** | v4-pro · max | ✅ | ✅ | Broadest coverage, structured reports |
-| **CodeWhale** | v4-pro · max | ✅ | ✅ | Deepest research, concurrency |
-| **OMP** | v4-pro · xhigh | ✅ | ✅ | Full participant, LSP/DAP |
-| **Reasonix** | v4-pro · max | — | ✅ | Pure reasoning judge (R1 — limited) |
+| **Hermes** | deepseek-v4-pro | ✅ | ✅ | Orchestration + final verdict |
+| **Claude Code** | deepseek-v4-pro | ✅ | ✅ | Broadest coverage, structured reports |
+| **CodeWhale** | deepseek-v4-pro | ✅ | ✅ | Deepest research, concurrency |
+| **OMP** | deepseek-v4-pro | ✅ | ✅ | Full participant, LSP/DAP |
+| **Reasonix** | deepseek-v4-pro | — | ✅ | Pure reasoning judge (R1 — limited) |
 
 R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool calls, R1 expands to 5.
 
