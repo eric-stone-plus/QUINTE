@@ -61,5 +61,5 @@ version: 2.1.0
 
 ## See Also
 
-- `multi-agent-debate` skill — full protocol, triggers, invocation, pitfalls
-- https://github.com/eric-stone-plus/hermes-core-rules-mac
+- `SKILL.md` in this repo — the full QUINTE architecture reference
+- `multi-agent-debate` skill — full protocol, triggers, invocation, pitfalls (available in Hermes Agent skill registry)

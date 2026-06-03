@@ -102,7 +102,7 @@ Minimum viable debate: Hermes + 1 other party.
 
 10+ debates conducted across:
 - Codex + DeepSeek compatibility (5-party consensus: impossible without bridge)
-- hermes-core-rules-mac sync audit (11 stale files found, all fixed)
+- QUINTE skill audit (5-agent consensus: multiple issues found and resolved)
 - omp role definition (5-party consensus: synthesis engine, not browser tool)
 - Quattro → QUINTE global rename (37 replacements, zero errors)
 
