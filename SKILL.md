@@ -19,7 +19,6 @@ version: 2.1.0
     ▼          ▼          ▼          ▼
   Round 1   Round 1    Round 1    Round 1
   Hermes(v4·xhigh) Claude(v4·max) CodeWhale(v4·max) OMP(v4·xhigh)
-   xhigh)    max)      max)      xhigh)
     │          │          │          │
     └──────────┼──────────┼──────────┘
                ▼
@@ -29,7 +28,6 @@ version: 2.1.0
     ▼          ▼          ▼          ▼          ▼
   Round 2   Round 2    Round 2    Round 2    Round 2
   Hermes(v4·xhigh) Claude(v4·max) CodeWhale(v4·max) Reasonix(v4·max) OMP(v4·xhigh)
-   xhigh)    max)      max)      max)      xhigh)
     │          │          │          │          │
     └──────────┼──────────┼──────────┼──────────┘
                ▼
