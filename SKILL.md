@@ -18,7 +18,7 @@ version: 2.1.0
     ┌──────────┼──────────┬──────────┐
     ▼          ▼          ▼          ▼
   Round 1   Round 1    Round 1    Round 1
-  Hermes    Claude     CodeWhale  omp
+  Hermes    Claude     CodeWhale  OMP
   (v4       (v4       (v4       (v4
    xhigh)    max)      max)      xhigh)
     │          │          │          │
@@ -29,7 +29,7 @@ version: 2.1.0
     ┌──────────┼──────────┬──────────┬──────────┐
     ▼          ▼          ▼          ▼          ▼
   Round 2   Round 2    Round 2    Round 2    Round 2
-  Hermes    Claude     CodeWhale  Reasonix   omp
+  Hermes    Claude     CodeWhale  Reasonix   OMP
   (v4       (v4       (v4       (v4       (v4
    xhigh)    max)      max)      max)      xhigh)
     │          │          │          │          │
@@ -45,12 +45,12 @@ version: 2.1.0
 | Hermes (hm) | v4-pro · xhigh | ✅ | ✅ | Orchestrator + final verdict |
 | Claude Code (cc) | v4-pro · max | ✅ | ✅ | Broadest coverage, structured reports |
 | CodeWhale (cw) | v4-pro · max | ✅ | ✅ | Deepest research, concurrency analysis |
-| omp | v4-pro · xhigh | ✅ | ✅ | Full participant, all rounds |
+| OMP | v4-pro · xhigh | ✅ | ✅ | Full participant, all rounds |
 | Reasonix (rx) | v4-pro · max | — | ✅ | R2 pure reasoning judge |
 
 ⛔ rx 绝不参与 R1 — run 模式不执行工具。
 
-**All DeepSeek v4-pro. Hermes/omp xhigh, rest max. No flash degradation. Token budget unlimited.**
+**All DeepSeek v4-pro. Hermes/OMP xhigh, rest max. No flash degradation. Token budget unlimited.**
 
 **R1: 4 agents. R2: 5 agents (Reasonix joins).** When Reasonix run mode supports tool calls, R1 expands to 5.
 
@@ -59,7 +59,7 @@ version: 2.1.0
 ## Key Updates
 
 - **2026-06-03 v2.2**: hm/rx shorthands added, rx R1 prohibition, execution discipline
-- **2026-06-03 v2.1**: omp promoted from hot spare to full R1 participant. Architecture: R1=4 agents, R2=5.
+- **2026-06-03 v2.1**: OMP promoted from hot spare to full R1 participant. Architecture: R1=4 agents, R2=5.
 - **2026-06-03 v2.0**: Skill absorbed into `multi-agent-debate`. `oh-my-pi` → `omp` naming standardized. No-degradation policy.
 
 ## See Also

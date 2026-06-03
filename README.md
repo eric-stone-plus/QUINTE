@@ -35,7 +35,7 @@ R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool cal
     ┌──────────┼──────────┬──────────┐
     ▼          ▼          ▼          ▼
   Round 1   Round 1    Round 1    Round 1
-  Hermes    Claude     CodeWhale  omp
+  Hermes    Claude     CodeWhale  OMP
   (v4       (v4       (v4       (v4
    xhigh)    max)      max)      xhigh)
     │          │          │          │
@@ -46,7 +46,7 @@ R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool cal
     ┌──────────┼──────────┬──────────┬──────────┐
     ▼          ▼          ▼          ▼          ▼
   Round 2   Round 2    Round 2    Round 2    Round 2
-  Hermes    Claude     CodeWhale  Reasonix   omp
+  Hermes    Claude     CodeWhale  Reasonix   OMP
   (v4       (v4       (v4       (v4       (v4
    xhigh)    max)      max)      max)      xhigh)
     │          │          │          │          │
@@ -57,7 +57,7 @@ R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool cal
 
 ## Design Principles
 
-- **All DeepSeek v4-pro · Hermes/omp xhigh, rest max · flash forbidden**
+- **All DeepSeek v4-pro · Hermes/OMP xhigh, rest max · flash forbidden**
 - **No degradation** — all 5 agents must participate. Timeout → retry with smaller prompt, never skip.
 - **3 rounds max** — early consensus skips remaining rounds
 - **Cross-review is adversarial** — review others, never yourself
@@ -84,7 +84,7 @@ QUINTE orchestrates five independent AI agents. **None are developed by this pro
 | [**omp**](https://github.com/can1357/oh-my-pi) | oh-my-pi fork. Full debate participant, LSP/DAP, 40+ providers. | MIT |
 | [**Reasonix**](https://github.com/esengine/DeepSeek-Reasonix) | DeepSeek-native reasoning. R2 pure judge, content-embedded. | MIT |
 
-All agents run on **DeepSeek v4-pro**. Hermes/omp use `xhigh`, others use `max`. Flash is explicitly forbidden.
+All agents run on **DeepSeek v4-pro**. Hermes/OMP use `xhigh`, others use `max`. Flash is explicitly forbidden.
 
 ## License
 

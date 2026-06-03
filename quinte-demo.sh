@@ -5,7 +5,7 @@ set -e
 
 echo "╔══════════════════════════════════════════╗"
 echo "║         QUINTE DEBATE DEMO              ║"
-echo "║  Hermes + cc + cw + Reasonix + omp      ║"
+echo OMP      ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
@@ -66,7 +66,7 @@ EOF
 echo "  ✓ codewhale_r1.md"
 
 echo ""
-echo "  [cc status: OK, no timeout needed. omp stays as spare]"
+echo OMP stays as spare]"
 echo ""
 
 # ── Round 2: Cross-Review ──
@@ -93,8 +93,8 @@ EOF
 echo "  ✓ reasonix_r2.md"
 
 for agent in hermes claude codewhale omp; do
-  if [ "$agent" = "omp" ]; then
-    echo "[omp] Cross-reviewing (spare activated for R2)..."
+  if [ "$agent" = "OMP" ]; then
+    echo OMP] Cross-reviewing (spare activated for R2)..."
   else
     echo "[${agent}] Cross-reviewing..."
   fi

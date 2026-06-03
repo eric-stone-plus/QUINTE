@@ -35,7 +35,7 @@
   <text x="760" y="225" text-anchor="middle" fill="#30c070" font-family="monospace" font-size="10">DS v4-pro · max</text>
 
   <!-- cc timeout → omp -->
-  <text x="590" y="270" text-anchor="middle" fill="#606080" font-family="monospace" font-size="9">cc timeout 180s? → omp fills R1</text>
+  <text x="590" y="270" text-anchor="middle" fill="#606080" font-family="monospace" font-size="9">cc timeout 180s? → OMP fills R1</text>
 
   <!-- Arrow R1→R2 -->
   <line x1="500" y1="285" x2="500" y2="330" stroke="#f0c060" stroke-width="1.5" marker-end="url(#arrowGold)" stroke-dasharray="4,4"/>
