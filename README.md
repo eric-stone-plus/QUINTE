@@ -35,7 +35,8 @@ R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool cal
     ┌──────────┼──────────┬──────────┐
     ▼          ▼          ▼          ▼
   Round 1   Round 1    Round 1    Round 1
-  Hermes(v4·xhigh) Claude(v4·max) CodeWhale(v4·max) OMP(v4·xhigh)
+  Hermes    Claude     CodeWhale  OMP
+  (v4 xhigh)(v4 max)  (v4 max)  (v4 xhigh)
     │          │          │          │
     └──────────┼──────────┼──────────┘
                ▼
@@ -44,7 +45,8 @@ R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool cal
     ┌──────────┼──────────┬──────────┬──────────┐
     ▼          ▼          ▼          ▼          ▼
   Round 2   Round 2    Round 2    Round 2    Round 2
-  Hermes(v4·xhigh) Claude(v4·max) CodeWhale(v4·max) Reasonix(v4·max) OMP(v4·xhigh)
+  Hermes    Claude     CodeWhale  Reasonix   OMP
+  (v4 xhigh)(v4 max)  (v4 max)  (v4 max)  (v4 xhigh)
     │          │          │          │          │
     └──────────┼──────────┼──────────┼──────────┘
                ▼
