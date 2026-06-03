@@ -19,26 +19,18 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 
 ## Architecture
 
-<table>
-<colgroup>
-<col width="140">
-<col width="200">
-<col width="50">
-<col width="50">
-<col width="440">
-</colgroup>
-<tr><th>Agent</th><th>Engine</th><th>R1</th><th>R2</th><th>Strengths</th></tr>
-<tr><td><b>Hermes</b></td><td>v4-pro · xhigh</td><td>✅</td><td>✅</td><td nowrap>Orchestration + final verdict</td></tr>
-<tr><td><b>Claude Code</b></td><td>v4-pro · max</td><td>✅</td><td>✅</td><td nowrap>Broadest coverage, structured reporting</td></tr>
-<tr><td><b>CodeWhale</b></td><td>v4-pro · max</td><td>✅</td><td>✅</td><td nowrap>Deepest research, concurrency analysis</td></tr>
-<tr><td><b>OMP</b></td><td>v4-pro · xhigh</td><td>✅</td><td>✅</td><td nowrap>Full participant all rounds, LSP/DAP tools</td></tr>
-<tr><td><b>Reasonix</b></td><td>v4-pro · max</td><td>—</td><td>✅</td><td nowrap>Pure reasoning judge (R1 tool limitation — temporary)</td></tr>
-</table>
+| Agent | Model | R1 | R2 | Strengths |
+|-------|-------|----|----|-----------|
+| **Hermes** | v4-pro · xhigh | ✅ | ✅ | Orchestration + final verdict |
+| **Claude Code** | v4-pro · max | ✅ | ✅ | Broadest coverage, structured reports |
+| **CodeWhale** | v4-pro · max | ✅ | ✅ | Deepest research, concurrency |
+| **OMP** | v4-pro · xhigh | ✅ | ✅ | Full participant, LSP/DAP |
+| **Reasonix** | v4-pro · max | — | ✅ | Pure reasoning judge (R1 — limited) |
 
 R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool calls, R1 expands to 5.
 
 ```
-                          Hermes (Orchestrator + Participant)
+                             Hermes (Orchestrator + Participant)
                                               ▼
                   ┌─────────────────────────────────────────────────────────┐
                     Round 1         Round 1         Round 1        Round 1
