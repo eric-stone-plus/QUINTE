@@ -1,12 +1,14 @@
 ---
 name: quinte
-description: "QUINTE — Five-agent structured debate architecture. Hermes+cc+cw+Reasonix+oh-my-pi, all DeepSeek v4-pro max reasoning. R1 independent analysis → R2 cross-review → R3 final verdict."
-version: 1.0.0
+description: "QUINTE — Five-agent structured debate architecture. Now absorbed into multi-agent-debate skill."
+version: 2.0.0
 ---
 
 # QUINTE — Multi-Agent Debate Architecture
 
-Five independent AI agents debate questions through structured rounds: independent analysis, adversarial cross-review, and final verdict. Dramatically higher confidence than any single model.
+> **⚠️ This standalone skill has been absorbed into `multi-agent-debate` as of 2026-06-03.**
+> The full protocol, 5-agent architecture, invocation details, and known pitfalls now live in the `multi-agent-debate` skill.
+> This repo is retained as a reference for the QUINTE architecture diagram and demo assets.
 
 ## Architecture
 
@@ -16,24 +18,15 @@ Five independent AI agents debate questions through structured rounds: independe
 | Claude Code | v4-pro · max | ✅ | ✅ | Broadest coverage, structured reports |
 | CodeWhale | v4-pro · max | ✅ | ✅ | Deepest research, concurrency analysis |
 | Reasonix | v4-pro · max | — | ✅ | R2 pure reasoning judge |
-| oh-my-pi | v4-pro · xhigh | ⚡ | ✅ | Hot spare (cc timeout 180s) |
+| omp | v4-pro · xhigh | ⚡ | ✅ | Hot spare (cc timeout 180s) |
 
-## Invocation
+## Key Update (2026-06-03)
 
-All agents via `terminal(background=true)`, direct CLI. No `delegate_task`.
+- **oh-my-pi → omp**: Standardized naming across all QUINTE skills
+- **No degradation**: All 5 agents must participate. Timeout → retry with smaller prompt, never skip.
+- **Reasonix R2-only is temporary**: run mode may support tool calls in future versions.
 
-## Built With
+## See Also
 
-- [Hermes](https://github.com/nousresearch/hermes-agent)
-- [Claude Code](https://github.com/anthropics/claude-code)
-- [CodeWhale](https://github.com/Hmbown/CodeWhale)
-- [Reasonix](https://github.com/esengine/DeepSeek-Reasonix)
-- [oh-my-pi](https://github.com/can1357/oh-my-pi)
-
-## License
-
-MIT — protocol and orchestration. Individual agents carry their own licenses.
-
-## Repo
-
-https://github.com/eric-stone-plus/quinte
+- `multi-agent-debate` skill for the full protocol, triggers, and invocation details
+- https://github.com/eric-stone-plus/hermes-core-rules-mac
