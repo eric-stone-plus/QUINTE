@@ -13,27 +13,27 @@ version: 2.1.0
 ## Architecture
 
 ```
-              Hermes (Orchestrator + Participant)
+           Hermes (Orchestrator + Participant)
                │
       ┌──────────────┼──────────────┬──────────────┐
-      ▼              ▼              ▼              ▼
-     Round 1        Round 1        Round 1        Round 1
+      ▼           ▼           ▼              ▼
+     Round 1     Round 1     Round 1     Round 1
    Hermes         Claude         CodeWhale       OMP
-   (v4 xhigh)     (v4 max)       (v4 max)       (v4 xhigh)
-      │              │              │              │
+   (v4 xhigh)     (v4 max)    (v4 max)    (v4 xhigh)
+      │           │           │              │
       └──────────────┼──────────────┼──────────────┘
                ▼
-               Hermes 标注分歧
+               Hermes flags divergences
                │
       ┌──────────────┼──────────────┬──────────────┬──────────────┬──────────────┐
-      ▼              ▼              ▼              ▼              ▼
-     Round 2        Round 2        Round 2        Round 2        Round 2
+      ▼           ▼           ▼           ▼              ▼
+     Round 2     Round 2     Round 2     Round 2     Round 2
    Hermes         Claude         CodeWhale       Reasonix        OMP
-   (v4 xhigh)     (v4 max)       (v4 max)       (v4 max)        (v4 xhigh)
-      │              │              │              │              │
+   (v4 xhigh)     (v4 max)    (v4 max)    (v4 max)     (v4 xhigh)
+      │           │           │           │              │
       └──────────────┼──────────────┼──────────────┼──────────────┼──────────────┘
                ▼
-       Hermes 终裁合成
+       Hermes final verdict
 ```
 
 ## Participation
