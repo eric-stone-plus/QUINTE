@@ -32,23 +32,23 @@ R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool cal
 ```
               Hermes (Orchestrator + Participant)
                │
-    ┌──────────┼──────────┬──────────┐
-    ▼          ▼          ▼          ▼
-  Round 1   Round 1    Round 1    Round 1
-  Hermes    Claude     CodeWhale  OMP
-  (v4 xhigh)(v4 max)  (v4 max)  (v4 xhigh)
-    │          │          │          │
-    └──────────┼──────────┼──────────┘
+      ┌──────────────┼──────────────┬──────────────┐
+      ▼              ▼              ▼              ▼
+     Round 1        Round 1        Round 1        Round 1
+   Hermes         Claude         CodeWhale       OMP
+   (v4 xhigh)     (v4 max)       (v4 max)       (v4 xhigh)
+      │              │              │              │
+      └──────────────┼──────────────┼──────────────┘
                ▼
-         Hermes 标注分歧
+               Hermes 标注分歧
                │
-    ┌──────────┼──────────┬──────────┬──────────┐
-    ▼          ▼          ▼          ▼          ▼
-  Round 2   Round 2    Round 2    Round 2    Round 2
-  Hermes    Claude     CodeWhale  Reasonix   OMP
-  (v4 xhigh)(v4 max)  (v4 max)  (v4 max)  (v4 xhigh)
-    │          │          │          │          │
-    └──────────┼──────────┼──────────┼──────────┘
+      ┌──────────────┼──────────────┬──────────────┬──────────────┬──────────────┐
+      ▼              ▼              ▼              ▼              ▼
+     Round 2        Round 2        Round 2        Round 2        Round 2
+   Hermes         Claude         CodeWhale       Reasonix        OMP
+   (v4 xhigh)     (v4 max)       (v4 max)       (v4 max)        (v4 xhigh)
+      │              │              │              │              │
+      └──────────────┼──────────────┼──────────────┼──────────────┼──────────────┘
                ▼
        Hermes 终裁合成
 ```
