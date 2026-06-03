@@ -6,7 +6,7 @@
 
 **Five-Agent structured debate architecture for AI conclusion confidence.**
 
-Single-model AI hits a confidence ceiling. QUINTE breaks through — five independent agents debate your questions through structured rounds of analysis, Cross-examination, and Final verdict.
+Single-model AI hits a confidence ceiling. QUINTE breaks through — five independent agents debate your questions through structured rounds of analysis, cross-examination, and final verdict.
 
 ---
 
@@ -24,25 +24,42 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 | **Hermes** | DeepSeek v4-pro · xhigh | ✅ | ✅ | Orchestration + final verdict |
 | **Claude Code** | DeepSeek v4-pro · max | ✅ | ✅ | Broadest coverage, structured reporting |
 | **CodeWhale** | DeepSeek v4-pro · max | ✅ | ✅ | Deepest research, concurrency analysis |
-| **Reasonix** | DeepSeek v4-pro · max | — | ✅ | Pure reasoning judge (content-embedded) |
-| **oh-my-pi** | DeepSeek v4-pro · xhigh | ⚡ | ✅ | Hot spare + cross-reviewer |
+| **omp** | DeepSeek v4-pro · xhigh | ✅ | ✅ | Full participant all rounds, LSP/DAP tools |
+| **Reasonix** | DeepSeek v4-pro · max | — | ✅ | Pure reasoning judge (R1 tool limitation — temporary) |
 
-⚡ Activates if Claude Code times out (180s no output)
+R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool calls, R1 expands to 5.
 
 ```
-Round 1 — Independent     Round 2 — Cross-Review       Round 3
-Hermes ──→ analysis       Hermes ──→ reviews all       Hermes ──→ verdict
-Claude Code ──→ analysis  Claude Code ──→ reviews all
-CodeWhale ──→ analysis    CodeWhale ──→ reviews all
-(cc timeout → oh-my-pi fills)  Reasonix ──→ pure judge
-                           oh-my-pi ──→ reviews all
+              Hermes (Orchestrator + Participant)
+               │
+    ┌──────────┼──────────┬──────────┐
+    ▼          ▼          ▼          ▼
+  Round 1   Round 1    Round 1    Round 1
+  Hermes    Claude     CodeWhale  omp
+  (v4       (v4       (v4       (v4
+   xhigh)    max)      max)      xhigh)
+    │          │          │          │
+    └──────────┼──────────┼──────────┘
+               ▼
+         Hermes 标注分歧
+               │
+    ┌──────────┼──────────┬──────────┬──────────┐
+    ▼          ▼          ▼          ▼          ▼
+  Round 2   Round 2    Round 2    Round 2    Round 2
+  Hermes    Claude     CodeWhale  Reasonix   omp
+  (v4       (v4       (v4       (v4       (v4
+   xhigh)    max)      max)      max)      xhigh)
+    │          │          │          │          │
+    └──────────┼──────────┼──────────┼──────────┘
+               ▼
+       Hermes 终裁合成
 ```
 
 ## Design Principles
 
-- **All DeepSeek v4-pro · reasoning=max · flash forbidden**
+- **All DeepSeek v4-pro · Hermes/omp xhigh, rest max · flash forbidden**
+- **No degradation** — all 5 agents must participate. Timeout → retry with smaller prompt, never skip.
 - **3 rounds max** — early consensus skips remaining rounds
-- **≥2 parties** minimum — no single-agent decisions
 - **Cross-review is adversarial** — review others, never yourself
 - **Terminal + background CLI** — no delegate_task
 
@@ -55,10 +72,6 @@ open quinte.html          # Architecture visualization
 bash quinte-demo.sh       # Simulate a debate round
 ```
 
-## Results
-
-10+ debates conducted across code review, architecture decisions, naming conventions, and tool evaluation.
-
 ## Built With
 
 QUINTE orchestrates five independent AI agents. **None are developed by this project.** Each is a standalone tool used as a debate participant.
@@ -68,10 +81,10 @@ QUINTE orchestrates five independent AI agents. **None are developed by this pro
 | [**Hermes**](https://github.com/nousresearch/hermes-agent) | Orchestrator + debater. Coordinates rounds and produces final verdict. | MIT |
 | [**Claude Code**](https://github.com/anthropics/claude-code) | Anthropic's coding agent. Broadest coverage, structured reports. | MIT |
 | [**CodeWhale**](https://github.com/Hmbown/CodeWhale) | DeepSeek-native agent. Deepest research, concurrency analysis. | MIT |
+| [**omp**](https://github.com/can1357/oh-my-pi) | oh-my-pi fork. Full debate participant, LSP/DAP, 40+ providers. | MIT |
 | [**Reasonix**](https://github.com/esengine/DeepSeek-Reasonix) | DeepSeek-native reasoning. R2 pure judge, content-embedded. | MIT |
-| [**Oh-my-pi**](https://github.com/can1357/oh-my-pi) | Pi-fork agent. Hot spare, LSP/DAP, 40+ providers. | MIT |
 
-All agents run on **DeepSeek v4-pro**. Maximum reasoning per agent's native config: Hermes/oh-my-pi use `xhigh`, others use `max`. Flash is explicitly forbidden.
+All agents run on **DeepSeek v4-pro**. Hermes/omp use `xhigh`, others use `max`. Flash is explicitly forbidden.
 
 ## License
 
