@@ -21,7 +21,7 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 
 | Agent | Model | R1 | R2 | Strengths |
 |-------|-------|----|----|-----------|
-| **Hermes** | deepseek-v4-pro | ✅ | ✅ | Orchestration + final verdict |
+| **Hermes** | deepseek-v4-pro | ✅ | ✅ | Orchestration + Final Verdict |
 | **Claude Code** | deepseek-v4-pro | ✅ | ✅ | Broadest coverage, structured reports |
 | **CodeWhale** | deepseek-v4-pro | ✅ | ✅ | Deepest research, concurrency |
 | **OMP** | deepseek-v4-pro | ✅ | ✅ | Full participant, LSP/DAP |
@@ -55,7 +55,7 @@ R1: 4 agents. R2: 5 agents (+Reasonix). When Reasonix run mode supports tool cal
 - **No degradation** — all 5 agents must participate. Timeout → retry with smaller prompt, never skip.
 - **3 rounds max** — early consensus skips remaining rounds
 - **Cross-review is adversarial** — review others, never yourself
-- **Terminal + background CLI** — no delegate_task
+- **Terminal + Background CLI** — no delegate_task
 
 ## Quick Start
 
