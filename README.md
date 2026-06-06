@@ -31,29 +31,25 @@ QUINTE is a **protocol** for multi-agent structured debate. It defines:
 ## Architecture
 
 ```
-              Hermes (Orchestrator + Participant)
-               │
-    ┌──────────┼──────────┬──────────┐
-    ▼          ▼          ▼          ▼
-  Round 1   Round 1    Round 1    Round 1
-  Hermes    Claude     CodeWhale  OMP
-  (v4       (v4       (v4       (v4
-   xhigh)    max)      max)      xhigh)
-    │          │          │          │
-    └──────────┼──────────┼──────────┘
-               ▼
-    Hermes collects R1, flags divergences
-               │
-    ┌──────────┼──────────┬──────────┬──────────┐
-    ▼          ▼          ▼          ▼          ▼
-  Round 2   Round 2    Round 2    Round 2    Round 2
-  Hermes    Claude     CodeWhale  Reasonix   OMP
-  (v4       (v4       (v4       (v4       (v4
-   xhigh)    max)      max)      max)      xhigh)
-    │          │          │          │          │
-    └──────────┼──────────┼──────────┼──────────┘
-               ▼
-       Hermes final verdict (R3)
+                            Hermes (Orchestrator + Participant)
+                                             ▼
+                 ┌──────────────────────────────────────────────────────────┐
+                     ▼                ▼                ▼              ▼
+                   Round 1         Round 1          Round 1        Round 1
+                    Hermes         Claude          CodeWhale         OMP
+                   (v4 xhigh)      (v4 max)         (v4 max)       (v4 xhigh)
+                 └──────────────────────────────────────────────────────────┘
+                                              ▼
+                             Hermes collects R1, flags divergences
+                                              ▼
+          ┌──────────────────────────────────────────────────────────────────────┐
+                  ▼             ▼             ▼             ▼            ▼
+               Round 2       Round 2       Round 2       Round 2      Round 2
+                Hermes       Claude       CodeWhale      Reasonix       OMP
+              (v4 xhigh)    (v4 max)      (v4 max)       (v4 max)     (v4 xhigh)
+          └──────────────────────────────────────────────────────────────────────┘
+                                              ▼
+                                  Hermes final verdict (R3)
 ```
 
 ## Quick Start
