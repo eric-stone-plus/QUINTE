@@ -1,9 +1,9 @@
-> **⚠️ HISTORICAL — 2026-06-02. Superseded by [spec/PROTOCOL.md](../spec/PROTOCOL.md) v2.3.**
+> **⚠️ HISTORICAL — 26-06-02. Superseded by [spec/PROTOCOL.md](../spec/PROTOCOL.md) v2.3.**
 > This report describes an earlier architecture: OMP as hot spare, 3-round with early consensus, "adversarial" framing. See [CHANGELOG.md](../CHANGELOG.md) for evolution.
 
 1|# QUINTE — Multi-Agent Debate Architecture
 2|
-3|**2026-06-02** | **DeepSeek v4-pro** | **reasoning=max** | **永不降级 flash**
+3|**26-06-02** | **DeepSeek v4-pro** | **reasoning=max** | **永不降级 flash**
 4|
 5|---
 6|

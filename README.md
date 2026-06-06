@@ -54,7 +54,7 @@ QUINTE is implementation-agnostic. The protocol can be implemented by any orches
 | [spec/extensions.md](spec/extensions.md) | What protocol owns vs what implementations MAY vary |
 | [hermes-skill/](hermes-skill/) | Reference implementation on Hermes Agent |
 | [CHANGELOG.md](CHANGELOG.md) | Protocol version history |
-| [MIGRATION.md](MIGRATION.md) | 2026-06-06 architectural pivot notice |
+| [MIGRATION.md](MIGRATION.md) | 26-06-06 architectural pivot notice |
 
 ## Reference Implementation
 
