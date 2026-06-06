@@ -55,7 +55,7 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
         ▼
   ┌─────────────────────────────────┐
   │  閂門 Kan'nukimon · Anti-Drift  │  ← independent testimony
-  │  Task-first · ONLY Y · TASK:    │
+  │  Task-first · "ONLY Y" not "NOT X" │
   │  "No witness collusion"         │
   └─────────────────────────────────┘
         │
