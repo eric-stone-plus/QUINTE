@@ -1,40 +1,10 @@
----
-name: multi-agent-debate
-description: "QUINTE Protocol reference implementation for Hermes Agent — R1四方(hm+cc+cw+omp)+R2五方(+rx)，全DeepSeek v4-pro。"
-version: 2.2.1
-protocol: "QUINTE v2.3"
-spec: "../../spec/PROTOCOL.md"
----
+# QUINTE — Reference Implementation
 
-# QUINTE — Hermes Agent Reference Implementation
+> **The canonical maintained implementation lives at [hermes-core-rules-mac-x86](https://github.com/eric-stone-plus/hermes-core-rules-mac-x86) → `skills/multi-agent-debate/SKILL.md`.**
 
-> **Implements [QUINTE Protocol v2.3](../../spec/PROTOCOL.md).**
-> For the canonical protocol specification, see [spec/PROTOCOL.md](../../spec/PROTOCOL.md).
-> For extension points, see [spec/extensions.md](../../spec/extensions.md).
+This file is a redirect. The authoritative QUINTE implementation is maintained in the `hermes-core-rules-mac-x86` repository alongside the Hermes Agent profile it powers. It receives continuous updates through QUINTE debates and operational use.
 
-This skill is the **reference implementation** of the QUINTE five-agent debate protocol on Hermes Agent. It contains:
+**Why not here**: Maintaining a duplicate implementation in the protocol spec repo creates version drift — this file was 3 versions behind (v2.2.1 vs v2.4). The protocol spec defines *what*; the implementation repo defines *how*.
 
-- Platform-specific invocation commands (macOS / Windows / Linux)
-- Known pitfalls from 20+ debate sessions
-- Operational references (setup guides, case studies)
-
-**It does NOT redefine the protocol.** The protocol lives in `spec/PROTOCOL.md`.
-
----
-
-## Quick Reference
-
-| Agent | CLI (Windows) | Round |
-|-------|--------------|-------|
-| Claude Code | `claude -p --permission-mode bypassPermissions "..."` | R1+R2 |
-| CodeWhale | `codewhale exec --auto "..."` | R1+R2 |
-| OMP | `omp -p --model deepseek-v4-pro --thinking xhigh "..."` | R1+R2 |
-| Reasonix | `reasonix run --model deepseek-v4-pro --effort max "..."` | R2 only |
-
-All agents: DeepSeek v4-pro. Hermes/OMP: xhigh. Others: max. Flash forbidden.
-
-## See Also
-
-- [spec/PROTOCOL.md](../../spec/PROTOCOL.md) — canonical protocol
-- [spec/extensions.md](../../spec/extensions.md) — what protocol owns vs implementations vary
-- [references/](../../references/) — operational references, postmortems
+**Protocol spec**: [spec/PROTOCOL.md](../spec/PROTOCOL.md)
+**Implementation**: [hermes-core-rules-mac-x86/skills/multi-agent-debate/SKILL.md](https://github.com/eric-stone-plus/hermes-core-rules-mac-x86/blob/main/skills/multi-agent-debate/SKILL.md)
