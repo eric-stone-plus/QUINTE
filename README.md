@@ -40,7 +40,7 @@ Every QUINTE session passes through three gates. Each enforces a distinct discip
                      User asks a question
                             │
                             ▼
-          ╔══════════════════════════════════════╗
+          ╔══════════════════════════════════════════════╗
           ║  雨門 Amamon · Ambiguity Gate        ║
           ║  (雨 = rain, the uncertainty before  ║
           ║   entering Rashomon's gate)           ║
@@ -50,10 +50,10 @@ Every QUINTE session passes through three gates. Each enforces a distinct discip
           ║  Vague or ambiguous?                 ║
           ║    ├─ Yes → clarify() first          ║
           ║    └─ No  → pass through             ║
-          ╚══════════════════════════════════════╝
+          ╚══════════════════════════════════════════════╝
                             │ clear
                             ▼
-          ╔══════════════════════════════════════╗
+          ╔══════════════════════════════════════════════╗
           ║  證門 Shōmon · QUINTE Gate           ║
           ║  (證 = testimony, evidence)          ║
           ║                                      ║
@@ -68,10 +68,10 @@ Every QUINTE session passes through three gates. Each enforces a distinct discip
           ║                                      ║
           ║  R2 finds fatal flaw?                ║
           ║    └─ restart R1 (once)              ║
-          ╚══════════════════════════════════════╝
+          ╚══════════════════════════════════════════════╝
                             │ verified
                             ▼
-          ╔══════════════════════════════════════╗
+          ╔══════════════════════════════════════════════╗
           ║  閂門 Kan'nukimon · Anti-Drift Gate  ║
           ║  (閂 = bolt, latch — no collusion)   ║
           ║                                      ║
@@ -87,7 +87,7 @@ Every QUINTE session passes through three gates. Each enforces a distinct discip
           ║    ③ TASK: restatement required       ║
           ║                                      ║
           ║  Drift detected? → kill & retry      ║
-          ╚══════════════════════════════════════╝
+          ╚══════════════════════════════════════════════╝
                             │
                             ▼
                          Output
