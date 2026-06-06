@@ -40,7 +40,7 @@ Every QUINTE session passes through three gates. Each enforces a distinct discip
                        User asks a question
                                  ▼
           ╔═══════════════════════════════════════════════╗
-          ║  雨門 Amamon · Ambiguity Gate                   ║
+          ║  雨門 Amamon · Ambiguity Gate                  ║
           ║  (雨 = rain, the uncertainty before            ║
           ║   entering Rashomon's gate)                   ║
           ║                                               ║
@@ -56,7 +56,7 @@ Every QUINTE session passes through three gates. Each enforces a distinct discip
                            Clarification
                                  ▼
           ╔═══════════════════════════════════════════════╗
-          ║  證門 Shōmon · QUINTE Gate                      ║
+          ║  證門 Shōmon · QUINTE Gate                     ║
           ║  (證 = testimony, evidence)                    ║
           ║                                               ║
           ║  Structured multi-agent debate                ║
@@ -77,7 +77,7 @@ Every QUINTE session passes through three gates. Each enforces a distinct discip
                              Verification
                                   ▼
           ╔═══════════════════════════════════════════════╗
-          ║  閂門 Kan'nukimon · Anti-Drift Gate             ║
+          ║  閂門 Kan'nukimon · Anti-Drift Gate            ║
           ║  (閂 = bolt, latch — no collusion)             ║
           ║                                               ║
           ║  "No witness collusion"                       ║
