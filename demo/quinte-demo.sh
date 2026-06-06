@@ -5,7 +5,8 @@ set -e
 
 echo "╔══════════════════════════════════════════╗"
 echo "║         QUINTE DEBATE DEMO              ║"
-echo "║  Hermes + cc + cw + Reasonix + OMP      ║"
+echo "║  R1: hm + cc + cw + OMP (4 agents)     ║"
+echo "║  R2: + Reasonix (5 agents)             ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
@@ -15,8 +16,9 @@ mkdir -p "$OUTDIR"
 
 # ── Round 1: Independent Analysis ──
 echo "═══ Round 1: Independent Analysis ═══"
-echo "→ Launching Hermes + Claude Code + CodeWhale in parallel..."
+echo "→ Launching Hermes + Claude Code + CodeWhale + OMP in parallel..."
 echo ""
+echo "  [Reasonix joins in R2 — run mode, pure reasoning]"
 
 # Hermes
 echo "[Hermes] analyzing..."
@@ -66,7 +68,21 @@ EOF
 echo "  ✓ codewhale_r1.md"
 
 echo ""
-echo "  [cc status: OK, no timeout needed. OMP stays as spare]"
+echo "  [R1 complete: 4/4 agents delivered]"
+
+# OMP (simulated)
+echo "[OMP] analyzing..."
+cat > "$OUTDIR/omp_r1.md" << 'EOF'
+# OMP R1 Analysis
+
+## Cross-model comparison
+Grok and Gemini both fail at DOM-precise clicks. Pure CDP is the only reliable path.
+
+## Platform note
+macOS: Python websocket-client, no Playwright overhead.
+EOF
+echo "  ✓ omp_r1.md"
+
 echo ""
 
 # ── Round 2: Cross-Review ──
@@ -93,11 +109,7 @@ EOF
 echo "  ✓ reasonix_r2.md"
 
 for agent in hermes claude codewhale omp; do
-  if [ "$agent" = "OMP" ]; then
-    echo "[OMP] Cross-reviewing (spare activated for R2)..."
-  else
-    echo "[${agent}] Cross-reviewing..."
-  fi
+  echo "[${agent}] Cross-reviewing..."
   cat > "$OUTDIR/${agent}_r2.md" << EOF
 # ${agent} R2 Cross-Review
 
