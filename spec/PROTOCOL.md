@@ -1,6 +1,8 @@
-# QUINTE Protocol Specification v2.2
+# QUINTE Protocol Specification v2.3
 
 > **Canonical protocol definition.** For the reference implementation, see [hermes-skill/](../hermes-skill/SKILL.md).
+>
+> **Scope**: QUINTE improves factual completeness and oversight detection through redundant coverage and structured re-examination. Estimated improvement: ~20-30% over solo analysis. It does not validate correctness of shared-model reasoning about novel or ambiguous situations where all agents share the same model's knowledge boundaries.
 
 ---
 
@@ -56,17 +58,25 @@ Hermes synthesizes all R1+R2 outputs into a final ruling:
 3. Risk matrix
 4. Execution plan (if applicable)
 
-**Hard cap**: Exactly 3 rounds. R3 must converge.
+**Adjudication rules**:
+
+- **Voting**: Each R2 agent's assessment of a disputed finding counts as one vote. ≥3/5 confirms; 2/5 is a split; ≤1/5 rejects.
+- **Tiebreaker**: On a 2-2 split (one abstention/timeout), Hermes casts the deciding vote. The decision must evaluate the underlying reasoning chains, not just vote-count. The dissent and tiebreak rationale must be documented.
+- **Weighting**: rx's judgments carry full weight (1×) on logical/coherence disputes. On factual disputes where rx lacks source file access, rx's judgments carry 0.5× weight and are noted as "evidence-limited."
+- **Recusal**: When Hermes' own R1 finding is disputed in R2, Hermes MUST defer to the majority of other agents on that finding — or document a detailed justification for overruling them.
+- **Dissent preservation**: Any agent's R2 finding rejected in R3 MUST be preserved in the verdict with the rejection rationale. Silence is not rejection; explicit documentation is required.
+
+**Hard cap**: Exactly 3 rounds. R3 must converge. If R2 discovers a material error in R1's shared premises, the orchestrator MAY restart R1 with corrected premises (noted in verdict).
 
 ---
 
 ## 3. Invariants
 
 1. **No delegation.** All agents invoked via direct CLI. Sub-agent frameworks lose context and are interruptible.
-2. **Parallel by default.** R1 all agents launch simultaneously. R2 all agents launch simultaneously.
-3. **No model degradation.** All agents use the same top-tier model. Flash/lower tiers explicitly forbidden.
+2. **Parallel by default.** R1 all agents launch simultaneously. R2 all agents launch simultaneously. R1 wall-clock = max(agent_1...agent_n), not the sum of individual agent times.
+3. **No model-tier degradation.** All agents use the same top-tier model. Flash/lower tiers explicitly forbidden. Prompt-size reduction on retry is permitted (see §4) but MUST preserve all factual claims, constraints, and source references from the original prompt.
 4. **Token budget unlimited.** DeepSeek API economics permit exhaustive debate. Never shorten prompts or merge rounds to save tokens.
-5. **Adversarial cross-review.** Agents criticize others' work, not defend their own.
+5. **Cross-review.** Agents critically examine others' work. The value is in oversight detection — catching what others missed — and in structured re-examination from different angles, not in genuine epistemic challenge between identically-trained models.
 6. **Source verification before dispute.** Before flagging any "inconsistency," verify against source files character-by-character. Check modifiers (max/min/approx/up to/pro-rata).
 
 ---
@@ -114,6 +124,6 @@ This protocol uses calendar-inspired versioning: `v<major>.<minor>`.
 - **Minor**: Trigger rule updates, degradation tuning, documentation
 
 ### History
+- **v2.3** (2026-06-06): Meta-QUINTE debate passed (5 agents, 3 rounds). Added: scope statement, R3 adjudication rules (voting/tiebreaker/weighting/recusal/dissent), clarified parallel execution model, renamed "adversarial"→"cross-review" for honesty, "no model degradation"→"no model-tier degradation."
 - **v2.2** (2026-06-03): hm/rx shorthands added, rx R1 prohibition codified, execution discipline
 - **v2.1** (2026-06-03): OMP promoted from hot spare to full R1 participant. R1=4, R2=5
-- **v2.0** (2026-06-03): Architecture formalized, no-degradation policy

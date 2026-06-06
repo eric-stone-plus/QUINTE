@@ -17,6 +17,15 @@
 - Reasonix added as R2-only cross-review judge
 - Skill absorbed into multi-agent-debate (later reversed — see v2.2.1)
 
+## v2.3 (2026-06-06)
+- **Meta-QUINTE debate** passed: 5 agents × 3 rounds examined protocol for logical flaws
+- **Scope statement** added: honest ~20-30% oversight detection claim
+- **R3 adjudication rules** defined: voting, tiebreaker, weighting, recusal, dissent preservation
+- **"Adversarial"→"Cross-review"**: renamed for honesty — value is oversight detection, not epistemic challenge
+- **"No model degradation"→"No model-tier degradation"**: clarified prompt-size reduction ≠ degradation
+- **Parallel execution**: explicitly R1 = max(agent times), not sum
+- **Model diversity desideratum** recorded (not hard requirement in v2.3)
+
 ## v2.2.1 (2026-06-06)
 - **Architectural pivot**: Repo becomes canonical protocol home
 - `spec/PROTOCOL.md` extracted as normative protocol definition
