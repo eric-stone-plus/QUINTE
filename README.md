@@ -30,7 +30,38 @@ QUINTE is a **protocol** for multi-agent structured debate. It defines:
 
 ### Design Philosophy
 
-QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot be trusted, structured cross-examination reveals what one agent alone would miss. Five agents examine the same question from different angles—not to find absolute truth, but to reduce the risk of being wrong. The protocol's three gates—**雨門 Amamon** (Ambiguity: clarify before acting), **證門 Shōmon** (QUINTE: structured debate), and **閂門 Kan'nukimon** (Anti-Drift: independent testimony)—ensure every conclusion passes through clarity, confrontation, and verification.
+QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot be trusted, structured cross-examination reveals what one agent alone would miss. See [RASHOMON/](RASHOMON/) for the full design philosophy, three gates, and core concepts.
+
+### The Three Gates
+
+```
+   User Question
+        │
+        ▼
+  ┌─────────────────────────────────┐
+  │  雨門 Amamon · Ambiguity Gate   │  ← clarify before acting
+  │  "What am I actually being      │
+  │   asked to do?"                 │
+  └─────────────────────────────────┘
+        │ clear
+        ▼
+  ┌─────────────────────────────────┐
+  │  證門 Shōmon · QUINTE Gate      │  ← structured debate
+  │  R1: 4 agents analyze           │
+  │  R2: 5 agents cross-review      │
+  │  R3: Hermes final verdict       │
+  └─────────────────────────────────┘
+        │ verified
+        ▼
+  ┌─────────────────────────────────┐
+  │  閂門 Kan'nukimon · Anti-Drift  │  ← independent testimony
+  │  Task-first · ONLY Y · TASK:    │
+  │  "No witness collusion"         │
+  └─────────────────────────────────┘
+        │
+        ▼
+     Output
+```
 
 ## Architecture
 
