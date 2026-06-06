@@ -17,17 +17,17 @@ QUINTE is a five-agent structured debate protocol for AI conclusion confidence. 
 | Hermes (hm) | ✅ | ✅ | Orchestrator + Final Verdict |
 | Claude Code (cc) | ✅ | ✅ | Broad coverage, structured reports |
 | CodeWhale (cw) | ✅ | ✅ | Deep research, concurrency analysis |
-| OMP | ✅ | ✅ | Full participant, all rounds |
+| omp | ✅ | ✅ | Full participant, all rounds |
 | Reasonix (rx) | — | ✅ | R2 pure reasoning cross-review judge |
 
-**R1**: 4 agents (hm + cc + cw + OMP). rx excluded — run mode cannot execute tools. When rx supports tool calls, R1 expands to 5.
+**R1**: 4 agents (hm + cc + cw + omp). rx excluded — run mode cannot execute tools. When rx supports tool calls, R1 expands to 5.
 
 **R2**: 5 agents (all). rx joins as pure reasoning cross-review judge.
 
 **All agents use the same base model.** No degradation to lower tiers.
 
 ### Shorthands
-Hermes=hm, Claude Code=cc, CodeWhale=cw, Reasonix=rx. OMP has no shorthand.
+Hermes=hm, Claude Code=cc, CodeWhale=cw, Reasonix=rx. omp has no shorthand.
 
 ---
 
@@ -127,13 +127,13 @@ This protocol uses calendar-inspired versioning: `v<major>.<minor>`.
 - **v2.4** (2026-06-07): Agent dispatch anti-drift requirements (§7). Mandatory 3-layer prompt engineering for all external agent dispatches: task-first structure, semantic isolation ("ONLY Y" not "NOT X"), forced restatement. 5/5 agent consensus from dedicated QUINTE debate. Design lessons from POSTMORTEM added as `references/lessons.md`.
 - **v2.3** (2026-06-06): Meta-QUINTE debate passed (5 agents, 3 rounds). Added: scope statement, R3 adjudication rules (voting/tiebreaker/weighting/recusal/dissent), clarified parallel execution model, renamed "adversarial"→"cross-review" for honesty, "no model degradation"→"no model-tier degradation."
 - **v2.2** (2026-06-03): hm/rx shorthands added, rx R1 prohibition codified, execution discipline
-- **v2.1** (2026-06-03): OMP promoted from hot spare to full R1 participant. R1=4, R2=5
+- **v2.1** (2026-06-03): omp promoted from hot spare to full R1 participant. R1=4, R2=5
 
 ---
 
 ## 7. Agent Dispatch Requirements
 
-When dispatching prompts to external LLM agents (cc, cw, OMP, Reasonix), all implementations MUST apply a three-layer defense against concept namespace collision — the phenomenon where prompt keywords activate wrong training-data associations, causing agents to answer about unrelated domains.
+When dispatching prompts to external LLM agents (cc, cw, omp, Reasonix), all implementations MUST apply a three-layer defense against concept namespace collision — the phenomenon where prompt keywords activate wrong training-data associations, causing agents to answer about unrelated domains.
 
 ### Why Negation Fails
 

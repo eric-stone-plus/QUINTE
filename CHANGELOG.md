@@ -12,7 +12,7 @@
 - Push audit format scan checklist added
 
 ## v2.1 (2026-06-03)
-- OMP promoted from hot spare to full R1 participant
+- omp promoted from hot spare to full R1 participant
 - Architecture: R1=4 agents, R2=5 agents
 - No-degradation policy formalized
 

@@ -5,18 +5,18 @@ set -e
 
 echo "╔══════════════════════════════════════════╗"
 echo "║         QUINTE DEBATE DEMO              ║"
-echo "║  R1: hm + cc + cw + OMP (4 agents)     ║"
+echo "║  R1: hm + cc + cw + omp (4 agents)     ║"
 echo "║  R2: + Reasonix (5 agents)             ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
-PROMPT="${1:-What is the most reliable approach to Chrome browser automation for AI agents?}"
+PRompT="${1:-What is the most reliable approach to Chrome browser automation for AI agents?}"
 OUTDIR="${2:-/tmp/quinte-demo}"
 mkdir -p "$OUTDIR"
 
 # ── Round 1: Independent Analysis ──
 echo "═══ Round 1: Independent Analysis ═══"
-echo "→ Launching Hermes + Claude Code + CodeWhale + OMP in parallel..."
+echo "→ Launching Hermes + Claude Code + CodeWhale + omp in parallel..."
 echo ""
 echo "  [Reasonix joins in R2 — run mode, pure reasoning]"
 
@@ -70,10 +70,10 @@ echo "  ✓ codewhale_r1.md"
 echo ""
 echo "  [R1 complete: 4/4 agents delivered]"
 
-# OMP (simulated)
-echo "[OMP] analyzing..."
+# omp (simulated)
+echo "[omp] analyzing..."
 cat > "$OUTDIR/omp_r1.md" << 'EOF'
-# OMP R1 Analysis
+# omp R1 Analysis
 
 ## Cross-model comparison
 Grok and Gemini both fail at DOM-precise clicks. Pure CDP is the only reliable path.
@@ -150,7 +150,7 @@ echo "  ✓ final_verdict.md"
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
-echo "║         DEBATE COMPLETE                 ║"
+echo "║         DEBATE CompLETE                 ║"
 echo "║  5 agents · 3 rounds · 1 verdict        ║"
 echo "║  Output: $OUTDIR                         ║"
 echo "╚══════════════════════════════════════════╝"

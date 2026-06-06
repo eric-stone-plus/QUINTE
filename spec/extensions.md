@@ -8,7 +8,7 @@
 
 These are defined in [PROTOCOL.md](PROTOCOL.md) and MUST be identical across all implementations:
 
-1. **Agent count and roles**: 5 agents (hm, cc, cw, OMP, rx). R1=4, R2=5.
+1. **Agent count and roles**: 5 agents (hm, cc, cw, omp, rx). R1=4, R2=5.
 2. **Round structure**: R1→R2→R3, exactly 3 rounds, R3 must converge.
 3. **Cross-review rule**: Review others, never self. R2 never skipped.
 4. **Degradation thresholds**: 180s zero output → kill → retry. 3 failures → escalate.

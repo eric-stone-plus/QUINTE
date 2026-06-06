@@ -1,5 +1,5 @@
 > **⚠️ HISTORICAL — 2026-06-02. Superseded by [spec/PROTOCOL.md](../spec/PROTOCOL.md) v2.3.**
-> This report describes an earlier architecture: OMP as hot spare, 3-round with early consensus, "adversarial" framing. See [CHANGELOG.md](../CHANGELOG.md) for evolution.
+> This report describes an earlier architecture: omp as hot spare, 3-round with early consensus, "adversarial" framing. See [CHANGELOG.md](../CHANGELOG.md) for evolution.
 
 1|# QUINTE — Multi-Agent Debate Architecture
 2|
@@ -19,7 +19,7 @@
 16|| **Claude Code** | DeepSeek v4-pro max | Broad Coverage, Structured Reports | ✅ | ✅ | — |
 17|| **CodeWhale** | DeepSeek v4-pro max | Deep Research, Concurrency Analysis | ✅ | ✅ | — |
 18|| **Reasonix** | DeepSeek v4-pro max | Pure Reasoning Judge | — | ✅ | — |
-19|| **OMP** | DeepSeek v4-pro xhigh | Hot Spare + Cross-Reviewer | ⚡ | ✅ | — |
+19|| **omp** | DeepSeek v4-pro xhigh | Hot Spare + Cross-Reviewer | ⚡ | ✅ | — |
 20|
 21|⚡ = Activates if Claude Code times out (180s no output)
 22|
@@ -42,7 +42,7 @@
 39|            ▼
 40|Round 2 — Cross-Review (review others, never self)
 41|┌─────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
-42|│ Hermes  │ │Claude Code│ │CodeWhale │ │ Reasonix │ │   OMP    │
+42|│ Hermes  │ │Claude Code│ │CodeWhale │ │ Reasonix │ │   omp    │
 43|└────┬────┘ └─────┬─────┘ └─────┬────┘ └─────┬────┘ └─────┬────┘
 44|     │            │             │            │            │
 45|     └────────────┴──────┬──────┴────────────┴────────────┘
@@ -84,7 +84,7 @@
 81|| Claude Code | `script -q /dev/null claude -p` | max (settings.json) |
 82|| CodeWhale | `codewhale exec --auto` | max (config.toml) |
 83|| Reasonix | `reasonix run --model deepseek-v4-pro --effort max` | max (CLI flag) |
-84|| OMP | `python3 /tmp/omp_run.py` | xhigh (CLI flag) |
+84|| omp | `python3 /tmp/omp_run.py` | xhigh (CLI flag) |
 85|
 86|---
 87|

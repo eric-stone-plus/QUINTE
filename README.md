@@ -22,7 +22,7 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 
 QUINTE is a **protocol** for multi-agent structured debate. It defines:
 
-- **5 agents** (Hermes, Claude Code, CodeWhale, OMP, Reasonix)
+- **5 agents** (Hermes, Claude Code, CodeWhale, omp, Reasonix)
 - **3 rounds** (Independent Analysis → Cross-Review → Final Verdict)
 - **Invariants** (no degradation, adversarial review, mandatory cross-examination)
 
@@ -91,7 +91,7 @@ QUINTE orchestrates five independent AI agents. **None are developed by this pro
 | [**Hermes**](https://github.com/nousresearch/hermes-agent) | Orchestrator + Final Verdict | MIT |
 | [**Claude Code**](https://github.com/anthropics/claude-code) | Broad coverage, structured reports | MIT |
 | [**CodeWhale**](https://github.com/Hmbown/CodeWhale) | Deep research, concurrency | MIT |
-| [**OMP**](https://github.com/can1357/oh-my-pi) | Full participant, LSP/DAP | MIT |
+| [**omp**](https://github.com/can1357/oh-my-pi) | Full participant, LSP/DAP | MIT |
 | [**Reasonix**](https://github.com/esengine/DeepSeek-Reasonix) | R2 pure reasoning judge | MIT |
 
 ## License
