@@ -2,13 +2,13 @@
 name: multi-agent-debate
 description: "QUINTE Protocol reference implementation for Hermes Agent — R1四方(hm+cc+cw+omp)+R2五方(+rx)，全DeepSeek v4-pro。"
 version: 2.2.1
-protocol: "QUINTE v2.2"
+protocol: "QUINTE v2.3"
 spec: "../../spec/PROTOCOL.md"
 ---
 
 # QUINTE — Hermes Agent Reference Implementation
 
-> **Implements [QUINTE Protocol v2.2](../../spec/PROTOCOL.md).**
+> **Implements [QUINTE Protocol v2.3](../../spec/PROTOCOL.md).**
 > For the canonical protocol specification, see [spec/PROTOCOL.md](../../spec/PROTOCOL.md).
 > For extension points, see [spec/extensions.md](../../spec/extensions.md).
 
