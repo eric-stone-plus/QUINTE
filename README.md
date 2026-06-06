@@ -28,6 +28,10 @@ QUINTE is a **protocol** for multi-agent structured debate. It defines:
 
 > 📖 **Read the spec**: [spec/PROTOCOL.md](spec/PROTOCOL.md)
 
+### Design Philosophy
+
+QUINTE operates within the Rashomon condition: a single perspective is never fully trustworthy. Five agents examine the same question from different angles—not to find absolute truth, but to reduce the risk of being wrong. Cross-examination narrows the gap between competing accounts but never closes it entirely. Like Kurosawa's witnesses, each agent sees part of the picture. The protocol's job is to make the overlaps and contradictions visible, then converge on the best available answer.
+
 ## Architecture
 
 ```
