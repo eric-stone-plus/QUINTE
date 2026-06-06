@@ -37,12 +37,11 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
 Every QUINTE session passes through three gates. Each enforces a distinct discipline.
 
 ```
-                     User asks a question
-                            │
-                            ▼
-          ╔══════════════════════════════════════════════╗
-          ║  雨門 Amamon · Ambiguity Gate                   ║
-          ║  (雨 = rain, the uncertainty before            ║
+                       User asks a question
+                                 ▼
+          ╔═══════════════════════════════════════════════╗
+          ║  雨門 Amamon · Ambiguity Gate                  ║
+          ║  (雨 = rain, the uncertainty before           ║
           ║   entering Rashomon's gate)                   ║
           ║                                               ║
           ║  "What am I actually being asked?"            ║
@@ -52,12 +51,13 @@ Every QUINTE session passes through three gates. Each enforces a distinct discip
           ║    └─ No  → pass through                      ║
           ║                                               ║
           ║  Operated by: Hermes (pre-debate check)       ║
-          ╚══════════════════════════════════════════════╝
-                            │ clear
-                            ▼
-          ╔══════════════════════════════════════════════╗
-          ║  證門 Shōmon · QUINTE Gate                      ║
-          ║  (證 = testimony, evidence)                    ║
+          ╚═══════════════════════════════════════════════╝
+                                 ▼
+                           Clarification
+                                 ▼
+          ╔═══════════════════════════════════════════════╗
+          ║  證門 Shōmon · QUINTE Gate                     ║
+          ║  (證 = testimony, evidence)                   ║
           ║                                               ║
           ║  Structured multi-agent debate                ║
           ║                                               ║
@@ -72,12 +72,13 @@ Every QUINTE session passes through three gates. Each enforces a distinct discip
           ║    └─ restart R1 (once)                       ║
           ║                                               ║
           ║  Operated by: Hermes + 5 agents (R1–R3)       ║
-          ╚══════════════════════════════════════════════╝
-                            │ verified
-                            ▼
-          ╔══════════════════════════════════════════════╗
-          ║  閂門 Kan'nukimon · Anti-Drift Gate             ║
-          ║  (閂 = bolt, latch — no collusion)             ║
+          ╚═══════════════════════════════════════════════╝
+                                  ▼
+                             Verification
+                                  ▼
+          ╔═══════════════════════════════════════════════╗
+          ║  閂門 Kan'nukimon · Anti-Drift Gate            ║
+          ║  (閂 = bolt, latch — no collusion)            ║
           ║                                               ║
           ║  "No witness collusion"                       ║
           ║                                               ║
@@ -93,10 +94,9 @@ Every QUINTE session passes through three gates. Each enforces a distinct discip
           ║  Drift detected? → kill & retry               ║
           ║                                               ║
           ║  Operated by: Hermes (prompt construction)    ║
-          ╚══════════════════════════════════════════════╝
-                            │
-                            ▼
-                         Output
+          ╚═══════════════════════════════════════════════╝
+                                 ▼
+                               Output
 ```
 
 ## Architecture
