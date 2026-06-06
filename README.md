@@ -38,29 +38,26 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
    User Question
         │
         ▼
-  ┌─────────────────────────────────┐
-  │  雨門 Amamon · Ambiguity Gate    │
-  │  clarify before acting          │
-  │  "What am I actually being      │
-  │   asked to do?"                 │
-  └─────────────────────────────────┘
+  ┌──────────────────────────────────┐
+  │  雨門 Amamon · Ambiguity Gate    │  ← clarify before acting
+  │  "What am I actually being       │
+  │   asked to do?"                  │
+  └──────────────────────────────────┘
         │ clear
         ▼
-  ┌─────────────────────────────────┐
-  │  證門 Shōmon · QUINTE Gate       │
-  │  structured debate              │
-  │  R1: 4 agents analyze           │
-  │  R2: 5 agents cross-review      │
-  │  R3: Hermes final verdict       │
-  └─────────────────────────────────┘
+  ┌──────────────────────────────────┐
+  │  證門 Shōmon · QUINTE Gate       │  ← structured debate
+  │  R1: 4 agents analyze            │
+  │  R2: 5 agents cross-review       │
+  │  R3: Hermes final verdict        │
+  └──────────────────────────────────┘
         │ verified
         ▼
-  ┌────────────────────────────────────┐
-  │  閂門 Kan'nukimon · Anti-Drift      │
-  │  independent testimony             │
-  │  Task-first · "ONLY Y" not "NOT X" │
-  │  "No witness collusion"            │
-  └────────────────────────────────────┘
+  ┌──────────────────────────────────┐
+  │  閂門 Kan'nukimon · Anti-Drift   │  ← independent testimony
+  │  Task-first · "ONLY Y" not "NOT X"│
+  │  "No witness collusion"          │
+  └──────────────────────────────────┘
         │
         ▼
      Output
