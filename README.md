@@ -35,7 +35,7 @@ QUINTE is a **protocol** for multi-agent structured debate. It defines:
                                           ▼
           ┌──────────────────────────────────────────────────────────────┐
            Round 1         Round 1         Round 1         Round 1       
-           Hermes          Claude          CodeWhale       OMP           
+           Hermes          Claude          CodeWhale       Oh-My-Pi       
            (v4 xhigh)      (v4 max)        (v4 max)        (v4 xhigh)    
           └──────────────────────────────────────────────────────────────┘
                                           ▼
@@ -43,7 +43,7 @@ QUINTE is a **protocol** for multi-agent structured debate. It defines:
                                           ▼
      ┌─────────────────────────────────────────────────────────────────────────┐
       Round 2        Round 2        Round 2        Round 2        Round 2      
-      Hermes         Claude         CodeWhale      Reasonix       OMP          
+      Hermes         Claude         CodeWhale      Reasonix       Oh-My-Pi      
       (v4 xhigh)     (v4 max)       (v4 max)       (v4 max)       (v4 xhigh)   
      └─────────────────────────────────────────────────────────────────────────┘
                                           ▼
