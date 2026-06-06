@@ -35,32 +35,30 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
 ### The Three Gates
 
 ```
-   User Question
-        │
-        ▼
+              User Question
+                    ▼
   ┌──────────────────────────────────┐
-  │  雨門 Amamon · Ambiguity Gate    │  ← clarify before acting
-  │  "What am I actually being       │
+  │  雨門 Amamon · Ambiguity Gate     │  
+  │  "What am I actually being       │   ← Clarify before acting.
   │   asked to do?"                  │
   └──────────────────────────────────┘
-        │ clear
-        ▼
+                  Clear
+                    ▼
   ┌──────────────────────────────────┐
-  │  證門 Shōmon · QUINTE Gate       │  ← structured debate
+  │  證門 Shōmon · QUINTE Gate        │  
   │  R1: 4 agents analyze            │
-  │  R2: 5 agents cross-review       │
+  │  R2: 5 agents cross-review       │   ← Structured debate.
   │  R3: Hermes final verdict        │
   └──────────────────────────────────┘
-        │ verified
-        ▼
-  ┌──────────────────────────────────┐
-  │  閂門 Kan'nukimon · Anti-Drift   │  ← independent testimony
-  │  Task-first · "ONLY Y" not "NOT X"│
-  │  "No witness collusion"          │
-  └──────────────────────────────────┘
-        │
-        ▼
-     Output
+                  Verified
+                     ▼
+  ┌───────────────────────────────────┐
+  │  閂門 Kan'nukimon · Anti-Drift     │  
+  │  Task-first · "ONLY Y" not "NOT X"│  ← Independent testimony.
+  │  "No witness collusion"           │
+  └───────────────────────────────────┘ 
+                     ▼
+                   Output
 ```
 
 ## Architecture
@@ -74,7 +72,7 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
              (v4 xhigh)       (v4 max)        (v4 max)       (v4 xhigh)  
           └──────────────────────────────────────────────────────────────┘
                                           ▼
-                        Hermes collects R1, flags divergences
+                        Hermes collects R1, flags divergences.
                                           ▼
      ┌─────────────────────────────────────────────────────────────────────────┐
          Round 2        Round 2        Round 2        Round 2        Round 2   
@@ -82,7 +80,7 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
        (v4 xhigh)      (v4 max)       (v4 max)       (v4 max)      (v4 xhigh)  
      └─────────────────────────────────────────────────────────────────────────┘
                                           ▼
-                              Hermes final verdict (R3)
+                              Hermes Final Verdict (R3)
 ```
 
 ## Quick Start
