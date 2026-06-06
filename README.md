@@ -39,7 +39,7 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
         │
         ▼
   ┌─────────────────────────────────┐
-  │  雨門 Amamon · Ambiguity Gate   │
+  │  雨門 Amamon · Ambiguity Gate    │
   │  clarify before acting          │
   │  "What am I actually being      │
   │   asked to do?"                 │
@@ -47,7 +47,7 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
         │ clear
         ▼
   ┌─────────────────────────────────┐
-  │  證門 Shōmon · QUINTE Gate      │
+  │  證門 Shōmon · QUINTE Gate       │
   │  structured debate              │
   │  R1: 4 agents analyze           │
   │  R2: 5 agents cross-review      │
@@ -55,12 +55,12 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
   └─────────────────────────────────┘
         │ verified
         ▼
-  ┌─────────────────────────────────┐
-  │  閂門 Kan'nukimon · Anti-Drift  │
-  │  independent testimony          │
+  ┌────────────────────────────────────┐
+  │  閂門 Kan'nukimon · Anti-Drift      │
+  │  independent testimony             │
   │  Task-first · "ONLY Y" not "NOT X" │
-  │  "No witness collusion"         │
-  └─────────────────────────────────┘
+  │  "No witness collusion"            │
+  └────────────────────────────────────┘
         │
         ▼
      Output
