@@ -28,6 +28,34 @@ QUINTE is a **protocol** for multi-agent structured debate. It defines:
 
 > 📖 **Read the spec**: [spec/PROTOCOL.md](spec/PROTOCOL.md)
 
+## Architecture
+
+```
+              Hermes (Orchestrator + Participant)
+               │
+    ┌──────────┼──────────┬──────────┐
+    ▼          ▼          ▼          ▼
+  Round 1   Round 1    Round 1    Round 1
+  Hermes    Claude     CodeWhale  OMP
+  (v4       (v4       (v4       (v4
+   xhigh)    max)      max)      xhigh)
+    │          │          │          │
+    └──────────┼──────────┼──────────┘
+               ▼
+    Hermes collects R1, flags divergences
+               │
+    ┌──────────┼──────────┬──────────┬──────────┐
+    ▼          ▼          ▼          ▼          ▼
+  Round 2   Round 2    Round 2    Round 2    Round 2
+  Hermes    Claude     CodeWhale  Reasonix   OMP
+  (v4       (v4       (v4       (v4       (v4
+   xhigh)    max)      max)      max)      xhigh)
+    │          │          │          │          │
+    └──────────┼──────────┼──────────┼──────────┘
+               ▼
+       Hermes final verdict (R3)
+```
+
 ## Quick Start
 
 ```bash
