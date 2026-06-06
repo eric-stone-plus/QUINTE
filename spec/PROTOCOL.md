@@ -124,6 +124,6 @@ This protocol uses calendar-inspired versioning: `v<major>.<minor>`.
 - **Minor**: Trigger rule updates, degradation tuning, documentation
 
 ### History
-- **v2.3** (26-06-06): Meta-QUINTE debate passed (5 agents, 3 rounds). Added: scope statement, R3 adjudication rules (voting/tiebreaker/weighting/recusal/dissent), clarified parallel execution model, renamed "adversarial"→"cross-review" for honesty, "no model degradation"→"no model-tier degradation."
-- **v2.2** (26-06-03): hm/rx shorthands added, rx R1 prohibition codified, execution discipline
-- **v2.1** (26-06-03): OMP promoted from hot spare to full R1 participant. R1=4, R2=5
+- **v2.3** (2026-06-06): Meta-QUINTE debate passed (5 agents, 3 rounds). Added: scope statement, R3 adjudication rules (voting/tiebreaker/weighting/recusal/dissent), clarified parallel execution model, renamed "adversarial"→"cross-review" for honesty, "no model degradation"→"no model-tier degradation."
+- **v2.2** (2026-06-03): hm/rx shorthands added, rx R1 prohibition codified, execution discipline
+- **v2.1** (2026-06-03): OMP promoted from hot spare to full R1 participant. R1=4, R2=5

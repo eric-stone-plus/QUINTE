@@ -80,7 +80,7 @@
   <text x="500" y="662" text-anchor="middle" fill="#c09030" font-family="monospace" font-size="10">Consensus · Disagreements · Risk Matrix · Final Ruling</text>
 
   <!-- Footer -->
-  <text x="500" y="760" text-anchor="middle" fill="#404050" font-family="monospace" font-size="10">All agents: DeepSeek v4-pro · reasoning=max · flash forbidden · terminal+background CLI · 26-06-02</text>
+  <text x="500" y="760" text-anchor="middle" fill="#404050" font-family="monospace" font-size="10">All agents: DeepSeek v4-pro · reasoning=max · flash forbidden · terminal+background CLI · 2026-06-02</text>
 
   <!-- Stats bar -->
   <rect x="100" y="710" width="160" height="35" rx="5" fill="#12121a" stroke="#1e1e30"/>

@@ -1,4 +1,4 @@
-# Migration Notice — 26-06-06
+# Migration Notice — 2026-06-06
 
 ## What Changed
 
@@ -26,8 +26,8 @@ The protocol is now defined in `spec/PROTOCOL.md` — a standalone, implementati
 Update any hard references from the old repo SKILL.md to `spec/PROTOCOL.md`.
 
 ## Timeline
-- **26-06-06**: Restructure committed. Old SKILL.md archived to `references/archive/`.
-- **26-07-06**: Grace period ends. Consumers should have updated references.
+- **2026-06-06**: Restructure committed. Old SKILL.md archived to `references/archive/`.
+- **2026-07-06**: Grace period ends. Consumers should have updated references.
 
 ## Questions
 Open an issue at [github.com/eric-stone-plus/QUINTE](https://github.com/eric-stone-plus/QUINTE).
