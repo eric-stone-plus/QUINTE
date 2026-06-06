@@ -59,3 +59,38 @@ Implementations SHOULD validate that their SKILL.md references the correct proto
 | How long to wait before retry? | ✅ (180s default) | ✅ (platform tuning) |
 | What to do on persistent failure? | ✅ (escalate) | — |
 | How to archive sessions? | — | ✅ |
+| Prompt engineering for agent dispatch? | — | ✅ (see below) |
+
+---
+
+## Prompt Engineering: Anti-Drift Guidelines
+
+**Problem**: LLM agents (cc, cw, OMP) can drift off-task when prompts contain words that collide with names of other systems in their training data. This is a general "concept namespace collision" — not specific to any product.
+
+**Why negation fails**: "NOT X" instructions require the model to first activate X's concept to understand what to negate. By then, the association is already primed.
+
+### Three-Layer Defense (Zero Infrastructure)
+
+| # | Technique | Mechanism |
+|---|-----------|-----------|
+| 1 | **Task-first structure** | Place concrete task before context. Model anchors to task frame before ambiguous keywords. |
+| 2 | **Semantic isolation** | Replace "NOT X" with "ONLY Y". Positive framing avoids activating forbidden concepts. |
+| 3 | **Forced restatement** | Require first output line: `TASK: [restate in own words]`. Drift caught in first sentence. |
+
+### Agent Dispatch Templates
+
+```
+[Concrete task — file path, specific question]
+Constraint: [semantic isolation — what terms mean, not what they don't]
+First line MUST be: "TASK: [restatement]"
+```
+
+### Progressive Deployment
+
+| Phase | Timeline | Content |
+|-------|----------|---------|
+| Immediate | Today | Three-layer template changes (zero infra) |
+| Short-term | This week | Keyword alias map + automated first-line validation |
+| Medium-term | This month | Embedding-based collision screening + feedback loop |
+
+> This is a mitigation, not a fix. Root cause is training-data associations overriding explicit instructions.

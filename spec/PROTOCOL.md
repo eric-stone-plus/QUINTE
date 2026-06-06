@@ -1,4 +1,4 @@
-# QUINTE Protocol Specification v2.3
+# QUINTE Protocol Specification v2.4
 
 > **Canonical protocol definition.** For the reference implementation, see [hermes-skill/](../hermes-skill/SKILL.md).
 >
