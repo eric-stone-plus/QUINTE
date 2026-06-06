@@ -30,7 +30,9 @@ QUINTE is a **protocol** for multi-agent structured debate. It defines:
 
 ### Design Philosophy
 
-QUINTE operates within the Rashomon condition: a single perspective is never fully trustworthy. Five agents examine the same question from different angles—not to find absolute truth, but to reduce the risk of being wrong. Cross-examination narrows the gap between competing accounts but never closes it entirely. Like Kurosawa's witnesses, each agent sees part of the picture. The protocol's job is to make the overlaps and contradictions visible, then converge on the best available answer.
+QUINTE operates within the Rashomon condition: a single perspective is never fully trustworthy. Five agents examine the same question from different angles—not to find absolute truth, but to reduce the risk of being wrong. Cross-examination narrows the gap between competing accounts but never closes it entirely.
+
+The protocol's three gates—**雨門 Amamon** (Ambiguity: clarify before acting), **證門 Shōmon** (QUINTE: structured debate), and **閂門 Kan'nukimon** (Anti-Drift: independent testimony)—ensure every conclusion passes through clarity, confrontation, and verification.
 
 ## Architecture
 
