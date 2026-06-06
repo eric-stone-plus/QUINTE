@@ -59,9 +59,6 @@ Every QUINTE session passes through three gates. Each enforces a distinct discip
           ║  證門 Shōmon · QUINTE Gate                     ║
           ║  (證 = testimony, evidence)                   ║
           ║                                               ║
-          ║  Implements [RASHOMON](https://github.com/     ║
-          ║  eric-stone-plus/RASHOMON) philosophy          ║
-          ║                                               ║
           ║  Structured multi-agent debate                ║
           ║                                               ║
           ║  R1 · 4 agents analyze independently          ║
