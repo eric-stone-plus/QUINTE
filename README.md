@@ -30,7 +30,7 @@ QUINTE is a **protocol** for multi-agent structured debate. It defines:
 
 ### Design Philosophy
 
-QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot be trusted, structured cross-examination reveals what one agent alone would miss. See [RASHOMON](https://github.com/eric-stone-plus/RASHOMON) for the full design philosophy, three gates, and core concepts.
+QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot be trusted, structured cross-examination reveals what one agent alone would miss. See [RASHOMON](https://github.com/eric-stone-plus/RASHOMON) for the full design philosophy and [KANSA](https://github.com/eric-stone-plus/KANSA) for the R3 audit consul. Operations are gated by [KENGEN](https://github.com/eric-stone-plus/KENGEN) with BANNIN (番人) session-level authorization.
 
 
 ## Architecture
