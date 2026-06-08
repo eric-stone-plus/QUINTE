@@ -47,7 +47,7 @@ cat > "$OUTDIR/claude_r1.md" << 'EOF'
 
 ## Rejected alternatives
 - omp prompts: can't constrain an unbounded tool
-- AppleScript: synchronous, can't parallelize
+- Shell automation: synchronous, can't parallelize
 EOF
 echo "  ✓ claude_r1.md"
 
@@ -79,7 +79,7 @@ cat > "$OUTDIR/omp_r1.md" << 'EOF'
 Grok and Gemini both fail at DOM-precise clicks. Pure CDP is the only reliable path.
 
 ## Platform note
-macOS: Python websocket-client, no Playwright overhead.
+All platforms: Python websocket-client, no Playwright overhead.
 EOF
 echo "  ✓ omp_r1.md"
 
