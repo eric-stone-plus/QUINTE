@@ -87,8 +87,8 @@ cat spec/PROTOCOL.md
 # Try the demo
 bash demo/quinte-demo.sh
 
-# View architecture diagram
-open assets/quinte.html
+# View architecture diagram (macOS: open, Linux: xdg-open, Windows: start)
+open assets/quinte.html 2>/dev/null || xdg-open assets/quinte.html 2>/dev/null || start assets/quinte.html
 ```
 
 ## For Implementors

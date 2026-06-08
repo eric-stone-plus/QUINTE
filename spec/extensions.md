@@ -67,10 +67,10 @@ Implementations SHOULD validate that their SKILL.md references the correct proto
 
 > **Now in [PROTOCOL.md §7](PROTOCOL.md#7-agent-dispatch-requirements)**. This section retained for the implementation-delegated keyword blocklist only.
 
-Each implementation maintains its own keyword blocklist for output validation (§7 Output Validation). Known drift patterns:
+Each implementation maintains its own keyword blocklist for output validation (§7 Output Validation). Known drift patterns (asymmetric — macOS has the most operational data):
 
-| Implementation | Known drift keywords |
-|---------------|---------------------|
-| macOS | hermes-desktop, AppIcon, dark mode, git hook, README formatting, commit range, update mechanism, build script, theme, icon |
-| Windows | (TBD) |
-| Linux | (TBD) |
+| Implementation | Sessions | Known drift keywords |
+|---------------|----------|---------------------|
+| macOS | 20+ | hermes-desktop, AppIcon, dark mode, git hook, README formatting, commit range, update mechanism, build script, theme, icon |
+| Windows | verified (all 5 agents operational; drift keywords TBD — insufficient sessions for pattern extraction) | |
+| Linux | incoming (Arch; drift keywords TBD) | |
