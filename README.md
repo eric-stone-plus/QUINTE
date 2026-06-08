@@ -23,7 +23,7 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 QUINTE is a **protocol** for multi-agent structured debate. It defines:
 
 - **5 agents** (Hermes, Claude Code, CodeWhale, omp, Reasonix)
-- **3 rounds** (Independent Analysis → Cross-Review → Final Verdict)
+- **3 rounds** (Independent Analysis → Cross-Review → Dual Verdict with 監査 B)
 - **Invariants** (no degradation, adversarial review, mandatory cross-examination)
 
 > 📖 **Read the spec**: [spec/PROTOCOL.md](spec/PROTOCOL.md)
@@ -52,8 +52,28 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
        (v4 xhigh)      (v4 max)       (v4 max)       (v4 max)      (v4 xhigh)  
      └─────────────────────────────────────────────────────────────────────────┘
                                           ▼
-                              Hermes Final Verdict (R3)
+                              Hermes + Auditor B Verdict (R3)
 ```
+
+### R3: Dual Verdict
+
+At R3, every verdict is drafted by two arbiters in parallel:
+
+- **Consul A (hm)** — primary arbiter with full session context
+- **Auditor B** — topic-matched second arbiter, independently reviews all R1+R2 evidence
+
+| Domain | Auditor B |
+|--------|-----------|
+| Ledger / economics | omp |
+| Contracts / legal | cc |
+| Code / architecture | cw |
+| Protocol / strategy | rx |
+
+The two drafts are merged: consensus is adopted, disagreement is surfaced as an annotated dissent. A dissent does not block the verdict — it enriches the record. The lead arbiter may not suppress the auditor's dissent.
+
+### Authorization
+
+Operations are gated by [KENGEN](https://github.com/eric-stone-plus/KENGEN) with BANNIN as the session-level guard. No irreversible external write proceeds without explicit user authorization. The agent has no right to ask — it waits silently.
 
 ## Quick Start
 
@@ -93,7 +113,7 @@ QUINTE orchestrates five independent AI agents. **None are developed by this pro
 
 | Agent | Role | Repository |
 |-------|------|------------|
-| [**Hermes**](https://github.com/nousresearch/hermes-agent) | Orchestrator + Final Verdict | MIT |
+| [**Hermes**](https://github.com/nousresearch/hermes-agent) | Orchestrator + R3 Verdict | MIT |
 | [**Claude Code**](https://github.com/anthropics/claude-code) | Broad coverage, structured reports | MIT |
 | [**CodeWhale**](https://github.com/Hmbown/CodeWhale) | Deep research, concurrency | MIT |
 | [**omp**](https://github.com/can1357/oh-my-pi) | Full participant, LSP/DAP | MIT |
