@@ -209,10 +209,10 @@ omp "prompt" 2>&1
 |------|-------------|---------|--------|
 | **雨門** Amamon | Wrong question asked | Ambiguous user intent | `clarify` back |
 | **鏡門** Kyōmon | hm directional error | Any comparative claim | Bidirectional grep + `file:line` evidence |
-| **證門** Shōmon | Single-perspective bias | Conclusion the user may rely on | Full R1+R2+R3 |
+| **證門** Shōmon | Single-perspective bias | Conclusion the user may rely on | Gate layer: hm quick judgment (~1s). If passed → cc Workflow full pipeline (Phases 0-6) |
 | **閂門** Kan'nukimon | Prompt contamination | Every agent dispatch | Three-layer anti-drift wrapping |
 
-**Execution**: Parallel in Phase -1 by hm (~5s). Four gates check the same input from different angles simultaneously.
+**Execution**: Parallel in Phase -1 by hm (~5s). Four gates check the same input from different angles simultaneously. Note: 證門 in Phase -1 is the **gate layer only** (~1s decision). The full pipeline (Phases 0-6) is the execution layer, run by cc Workflow, not part of the parallel gate block.
 
 ---
 
