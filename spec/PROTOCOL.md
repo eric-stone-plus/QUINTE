@@ -1,170 +1,230 @@
-# QUINTE Protocol Specification v2.4
+# QUINTE Protocol Specification v3.0
 
 > **Canonical protocol definition.** For the reference implementation, see [hermes-skill/](../hermes-skill/SKILL.md).
 >
-> **Scope**: QUINTE improves factual completeness and oversight detection through redundant coverage and structured re-examination. Estimated improvement: ~20-30% over solo analysis. It does not validate correctness of shared-model reasoning about novel or ambiguous situations where all agents share the same model's knowledge boundaries.
+> **v3.0 (2026-06-09)**: Orchestrator migrated from Hermes to Claude Code. cc's three native mechanisms (Agent/Workflow/Bash) drive orchestration. hm elevated to synchronous veto oversight layer. Cross-model adversarial verification. loop-until-dry convergence. Governance layer added.
+>
+> **Scope**: QUINTE improves factual completeness and oversight detection through redundant coverage, structured re-examination, and adversarial verification. Estimated improvement: ~30-50% over solo analysis (v2.4 baseline: ~20-30%). It does not validate correctness of shared-model reasoning about novel situations where all agents share the same model's knowledge boundaries — cross-model diversity in R2 partially mitigates this.
 
 ---
 
 ## 1. Architecture
 
-QUINTE is a five-agent structured debate protocol for AI conclusion confidence. Single-model AI hits a confidence ceiling. QUINTE breaks through — five independent agents debate questions through structured rounds of analysis, cross-examination, and final verdict.
+QUINTE is a five-agent structured debate protocol for AI conclusion confidence. v3.0 introduces a separation of concerns: **Claude Code executes orchestration** through native Workflow primitives; **Hermes provides synchronous oversight** through per-phase veto authority.
 
-### Participants
+### 1.1 Participants
 
-| Agent | Round 1 | Round 2 | Role |
-|-------|:-------:|:-------:|------|
-| Hermes (hm) | ✅ | ✅ | Orchestrator + Final Verdict |
-| Claude Code (cc) | ✅ | ✅ | Broad coverage, structured reports |
-| CodeWhale (cw) | ✅ | ✅ | Deep research, concurrency analysis |
-| omp | ✅ | ✅ | Full participant, all rounds |
-| Reasonix (rx) | — | ✅ | R2 pure reasoning cross-review judge |
+| Agent | Round 1 | Round 2 | Role | Reasoning |
+|-------|:-------:|:-------:|------|-----------|
+| Claude Code (cc) | ✅ | ✅ | **Primary Orchestrator** + Participant | max (32000 tokens) |
+| Hermes (hm) | ✅ | ✅ | **Oversight Layer** + Participant | xhigh |
+| CodeWhale (cw) | ✅ | ✅ | Deep analysis + implementation verification | max |
+| omp | ✅ | ✅ | Rapid reasoning + security perspective | xhigh |
+| Reasonix (rx) | — | ✅ | R2 pure reasoning cross-review judge | max |
 
-**R1**: 4 agents (hm + cc + cw + omp). rx excluded — run mode cannot execute tools. When rx supports tool calls, R1 expands to 5.
+**R1**: 4 agents (cc + hm + cw + omp). rx excluded — run mode cannot execute tools.
+**R2**: 5 agents (all). rx joins as pure reasoning cross-review judge with structured claims JSON input.
 
-**R2**: 5 agents (all). rx joins as pure reasoning cross-review judge.
+### 1.2 Orchestration Mechanisms
 
-**All agents use the same base model.** No degradation to lower tiers.
+cc provides three native mechanisms:
 
-### Shorthands
-Hermes=hm, Claude Code=cc, CodeWhale=cw, Reasonix=rx. omp has no shorthand.
+| Mechanism | QUINTE Role | Examples |
+|-----------|------------|----------|
+| **Agent** (internal sub-agents) | Specialized reviewers | Explore: full file enumeration. Plan: architecture validation. general-purpose: completeness critic, cross-round consistency, poison detection |
+| **Workflow** (orchestration engine) | Pipeline execution + structural guarantees | `pipeline()`: phase sequencing. `parallel()`: concurrent agent dispatch. `agent({schema})`: structured output with JSON Schema validation. Adversarial verification: per-disagreement refutation. loop-until-dry: convergence detection |
+| **Bash** (external agents) | Multi-perspective analysis | `hermes chat -q`, `codewhale exec --auto`, `reasonix run`, `omp` |
 
----
-
-## 2. Round Structure
-
-### Round 1 — Independent Analysis
-
-All R1 agents receive the same question simultaneously. Each produces an independent analysis with no cross-talk. Outputs go to separate files.
-
-**Discipline**: R1 all launch in parallel. Hermes must collect ALL outputs before proceeding. Any agent timeout/failure → shrink prompt and retry. **Never skip an agent.** Three consecutive retry failures → escalate to user for authorization.
-
-### Round 2 — Cross-Review
-
-Each agent reviews ALL OTHER agents' R1 outputs (never self-review). Purpose:
-
-1. **Confirm consensus** — re-examine agreed points from a different angle
-2. **Flag divergences** — where agents disagree
-3. **Catch blind spots** — what everyone missed
-
-**R2 is mandatory. Never skip.** Unanimous R1 does not guarantee correctness — same-model agents can share blind spots (POSTMORTEM #19/#21). When R1 is unanimous, R2 serves as confirmatory audit. When R1 diverges, R2 identifies disputes.
-
-### Round 3 — Final Verdict (Hermes only)
-
-Hermes synthesizes all R1+R2 outputs into a final ruling:
-
-1. Recommended approach with reasoning
-2. Explicit adoption/rejection of each agent's contributions
-3. Risk matrix
-4. Execution plan (if applicable)
-
-**Adjudication rules**:
-
-- **Voting**: Each R2 agent's assessment of a disputed finding counts as one vote. ≥3/5 confirms; 2/5 is a split; ≤1/5 rejects.
-- **Tiebreaker**: On a 2-2 split (one abstention/timeout), Hermes casts the deciding vote. The decision must evaluate the underlying reasoning chains, not just vote-count. The dissent and tiebreak rationale must be documented.
-- **Weighting**: rx's judgments carry full weight (1×) on logical/coherence disputes. On factual disputes where rx lacks source file access, rx's judgments carry 0.5× weight and are noted as "evidence-limited."
-- **Recusal**: When Hermes' own R1 finding is disputed in R2, Hermes MUST defer to the majority of other agents on that finding — or document a detailed justification for overruling them.
-- **Dissent preservation**: Any agent's R2 finding rejected in R3 MUST be preserved in the verdict with the rejection rationale. Silence is not rejection; explicit documentation is required.
-
-**Hard cap**: Exactly 3 rounds. R3 must converge. If R2 discovers a material error in R1's shared premises, the orchestrator MAY restart R1 with corrected premises (noted in verdict).
-
----
-
-## 3. Invariants
-
-1. **No delegation.** All agents invoked via direct CLI. Sub-agent frameworks lose context and are interruptible.
-2. **Parallel by default.** R1 all agents launch simultaneously. R2 all agents launch simultaneously. R1 wall-clock = max(agent_1...agent_n), not the sum of individual agent times.
-3. **No model-tier degradation.** All agents use the same top-tier model. Flash/lower tiers explicitly forbidden. Prompt-size reduction on retry is permitted (see §4) but MUST preserve all factual claims, constraints, and source references from the original prompt.
-4. **Token budget unlimited.** DeepSeek API economics permit exhaustive debate. Never shorten prompts or merge rounds to save tokens.
-5. **Cross-review.** Agents critically examine others' work. The value is in oversight detection — catching what others missed — and in structured re-examination from different angles, not in genuine epistemic challenge between identically-trained models.
-6. **Source verification before dispute.** Before flagging any "inconsistency," verify against source files character-by-character. Check modifiers (max/min/approx/up to/pro-rata).
-
----
-
-## 4. Degradation Protocol
-
-| Failure | Action |
-|---------|--------|
-| Any agent 180s zero output | Kill → shrink prompt → retry |
-| 3 consecutive retry failures | Escalate to user for authorization |
-| Agent unreachable (not installed) | Skip with notation in verdict; continue with ≥3 agents |
-| All external agents fail | Hermes solo with explicit caveat |
-
-**Minimum viable debate**: Hermes + 2 other parties.
-
----
-
-## 5. Trigger Rules
-
-### Mandatory (always trigger QUINTE)
-- Code changes, configuration changes, architectural decisions
-- Any git push (including punctuation/formatting changes)
-- Ledger reconciliation, reporting, cross-validation
-- Economic modeling, pricing, contract interpretation
-- Any output the user might rely on
-
-### Optional (trigger when uncertain)
-- Multi-file coordination, version compatibility, encoding issues
-- Debugging complex systems
-
-### Skip (do NOT trigger)
-- Simple file lookups (ls, grep, stat)
-- Single-tool deterministic queries
-- ≤2 tool calls with no reasoning required
-
-**Override**: User says "quinte" → always execute, regardless of automatic rules.
-
----
-
-## 6. Versioning
-
-This protocol uses calendar-inspired versioning: `v<major>.<minor>`.
-
-- **Major**: Agent count changes, round structure changes, new invariants
-- **Minor**: Trigger rule updates, degradation tuning, documentation
-
-### History
-- **v2.4** (2026-06-07): Agent dispatch anti-drift requirements (§7). Mandatory 3-layer prompt engineering for all external agent dispatches: task-first structure, semantic isolation ("ONLY Y" not "NOT X"), forced restatement. 5/5 agent consensus from dedicated QUINTE debate. Design lessons from POSTMORTEM added as `references/lessons.md`.
-- **v2.3** (2026-06-06): Meta-QUINTE debate passed (5 agents, 3 rounds). Added: scope statement, R3 adjudication rules (voting/tiebreaker/weighting/recusal/dissent), clarified parallel execution model, renamed "adversarial"→"cross-review" for honesty, "no model degradation"→"no model-tier degradation."
-- **v2.2** (2026-06-03): hm/rx shorthands added, rx R1 prohibition codified, execution discipline
-- **v2.1** (2026-06-03): omp promoted from hot spare to full R1 participant. R1=4, R2=5
-
----
-
-## 7. Agent Dispatch Requirements
-
-When dispatching prompts to external LLM agents (cc, cw, omp, Reasonix), all implementations MUST apply a three-layer defense against concept namespace collision — the phenomenon where prompt keywords activate wrong training-data associations, causing agents to answer about unrelated domains.
-
-### Why Negation Fails
-
-"NOT X" instructions require the model to first activate X's concept to understand what to negate. By then, the association is already primed and competes with task instructions. Do not use negation-based anti-drift directives.
-
-### Three-Layer Defense
-
-| # | Technique | Mechanism |
-|---|-----------|-----------|
-| 1 | **Task-first structure** | Place the concrete task before any context, constraints, or system descriptions. The model processes left-to-right; task-first anchors interpretation before ambiguous keywords appear. |
-| 2 | **Semantic isolation** | Replace all "NOT X" constructions with "ONLY Y" or contrastive "X means A, not B." Positive framing establishes an identity construct without activating forbidden concepts. |
-| 3 | **Forced restatement** | Require the agent's first output line to be: `TASK: [one-sentence restatement of the understood task]`. If the restatement is wrong, the entire output is suspect — discard and retry. |
-
-### Template
+### 1.3 Orchestration vs Oversight Separation
 
 ```
-[Concrete task — file path, specific question]
-Constraint: [semantic isolation — what terms mean here, not what they don't mean]
-First line of your output MUST be: "TASK: [restatement]"
+Claude Code (Execution)          Hermes (Oversight)
+─────────────────────────        ─────────────────────────
+pipeline() phases                Per-phase APPROVE/REJECT
+parallel() agent dispatch        Drift detection
+JSON Schema auto-diff            Agent omission check
+Adversarial verification         Quality audit
+loop-until-dry convergence       ABORT authority
+Structured logging               Context injection
 ```
 
-### Output Validation
+**hm's synchronous veto**: After each Phase, hm receives `{phase_id, output, claims_diff, agent_status}` and responds with `APPROVE | REJECT(reason) | ABORT(reason) | MODIFY(spec)`. 15s timeout → cc PAUSE. This is the v3.0 replacement for hm's v2.4 orchestrator role — hm's xhigh reasoning is applied to auditing orchestration plans, not executing them.
 
-After agent completion, the orchestrator MUST check the first 5 lines of output for off-topic keywords. If detected, the agent's output for that round is discarded and its vote excluded. Implementations maintain their own keyword blocklists based on observed drift patterns.
+---
 
-### Progressive Deployment
+## 2. Phase Structure
 
-| Phase | Timeline | Content |
-|-------|----------|---------|
-| Immediate | Today | Three-layer template changes. Zero infrastructure — prompt text only. |
-| Short-term | Within 1 week | Keyword alias map (TOML/JSON) + automated first-line validation |
-| Medium-term | Within 1 month | Embedding-based collision screening + collision logging feedback loop |
+### Phase -1: Four Gates (hm, parallel)
+Four gates executed by hm in parallel (~5s). See §6 for gate definitions.
 
-> **Note**: This is a mitigation, not a fix. The root cause — training-data associations overriding explicit instructions — requires better instruction-following in base model post-training. Until then, external guardrails are necessary.
+### Phase 0: Agent Manifest Generation
+Independent Agent reads agent registry → outputs mandatory participant list. cc can only add, not remove. hm approves → locked.
+
+### Phase 1: Round 1 — Independent Analysis
+
+All four R1 agents (cc/hm/cw/omp) receive the same question simultaneously via `parallel()`. Outputs use loose JSON Schema (`additionalProperties: true`, `freeFormInsights` field). Each output MUST begin with `TASK: [restatement]` — non-matching first line → output discarded.
+
+**Schema (loose mode)**:
+```json
+{
+  "task_restatement": "string (required)",
+  "claims": [{
+    "id": "string",
+    "statement": "string",
+    "evidence": "string (file:line or command output)",
+    "confidence": "number 0.0-1.0",
+    "category": "string"
+  }],
+  "freeFormInsights": "string (optional)",
+  "uncertainties": ["string"],
+  "coverage": {
+    "files_checked": "number",
+    "total_files": "number",
+    "coverage_pct": "number"
+  }
+}
+```
+
+**Discipline**: R1 all launch in parallel. Timeout 120s → kill + shrink prompt + retry. Three consecutive failures → escalate. **Never skip an agent** (pipeline structurally enforces this).
+
+### Phase 2: Auto-Diff + Schema Convergence
+
+Claims from all R1 outputs are diffed:
+- Identical claims (by statement hash) → consensus pool
+- Different claims → dispute pool (enters Phase 3)
+- Novel finding categories not in schema → schema extension proposal
+
+hm reviews diff quality → approves.
+
+### Phase 3: Round 2 — Adversarial Verification
+
+For each disputed claim, `parallel` 3 refutation agents:
+- **Cross-model requirement**: at least 1 refuter uses a different provider/model
+- ≥2/3 refute → claim discarded
+- 1/3 refute → claim retained, marked "contested"
+- 0/3 refute → claim confirmed
+- Vague refutations ("might be wrong") do not count toward refute tally
+
+hm reviews for false-positive refutations → approves.
+
+### Phase 4: Reasonix Cross-Review + Cross-Round Consistency
+
+rx receives all structured claims (consensus + contested) as JSON input — no file reading required. Produces pure reasoning verdict.
+
+**Cross-round consistency agent** (internal Agent): compares all outputs from R1/R2/R3, detecting: stance drift, term redefinition, premise creep, collective hallucination.
+
+hm reviews → approves.
+
+### Phase 5: Loop-Until-Dry Convergence
+
+Two completeness_critic agents (different configurations: temperature/prompt template) search for remaining blind spots.
+
+**Dual-condition termination**:
+1. Two consecutive rounds with zero new claims
+2. Dispute count not increasing + evidence repetition > 90%
+
+Both conditions must hold simultaneously → trigger **escalate** (mandatory human review, NOT auto-termination).
+
+**Truth verification**: claims about executable code → `Bash` runtime execution validates against actual behavior.
+
+### Phase 6: Round 3 — KANSA Audit
+
+KANSA persona (launched via `hermes chat -q`) performs:
+1. **Topic-rotation audit**: re-examines from alternative angles
+2. **Authorization boundary check**: flags overreach claims
+3. **Poison detection**: checks for malicious/low-quality claim injection (single agent >50 claims → anomaly; assertion without evidence → downgrade)
+4. **Gate compliance**: verifies all four gates were traversed
+
+hm final approval → structured log written to `~/.hermes/quinte/`.
+
+---
+
+## 3. Governance Layer (v3.0)
+
+| Mechanism | Threshold | Action |
+|-----------|----------|--------|
+| **Cost circuit breaker** | claims > 100, refutation calls > 50, loops > 5 | hm approval required to continue |
+| **Human intervention** | After each Phase | hm can inject user feedback |
+| **Poison resistance** | Single agent >50 claims OR evidence-free claims | Anomaly flag → KANSA investigation → downgrade |
+| **State persistence** | Every debate | Structured log → `~/.hermes/quinte/`. Next debate auto-injects prior conclusions |
+| **Cross-round consistency** | Phase 4 | Independent Agent detects drift across R1/R2/R3 |
+
+---
+
+## 4. Agent Dispatch Requirements
+
+### 4.1 Claude Code (Orchestrator)
+```bash
+# settings.json must include:
+# "model": "deepseek-v4-pro"
+# "maxThinkingTokens": 32000
+
+claude -p --permission-mode bypassPermissions "prompt"
+```
+
+### 4.2 Hermes (Oversight + Participant)
+```bash
+hermes chat -q "prompt" --pass-session-id 2>&1
+```
+
+### 4.3 CodeWhale
+```bash
+codewhale exec --auto "prompt" 2>&1
+# First line MUST be: "TASK: [restatement]"
+```
+
+### 4.4 Reasonix (R2 only)
+```bash
+reasonix run --effort max "prompt" 2>&1
+```
+
+### 4.5 OMP
+```bash
+omp "prompt" 2>&1
+# or: python3 /tmp/omp_run.py "prompt" 2>&1
+```
+
+### 4.6 Anti-Drift (閂門)
+- Task-first: specific task at prompt start
+- Semantic isolation: "ONLY Y" not "NOT X"
+- Mandatory first-line restatement: `TASK: [restatement]`
+
+---
+
+## 5. Invariants
+
+1. **Never skip an agent.** Pipeline structurally enforces; Phase 0 manifest generated independently.
+2. **Never skip R2.** Unanimous R1 can be shared blind spot — R2 is confirmatory audit.
+3. **hm veto is synchronous.** Not post-hoc audit. Per-phase block with ABORT authority.
+4. **Cross-model diversity in R2.** At least 1/3 refuters from different provider.
+5. **Dry ≠ done.** Dry triggers escalate (mandatory human review), not auto-termination.
+6. **Push gate.** Any push (code, config, docs) requires prior QUINTE (R1+R2+R3). No exceptions.
+7. **Evidence requirement.** Claims without evidence (file:line, grep output, runtime result) → downgraded weight in verdict.
+
+---
+
+## 6. The Four Gates
+
+| Gate | Failure Mode | Trigger | Action |
+|------|-------------|---------|--------|
+| **雨門** Amamon | Wrong question asked | Ambiguous user intent | `clarify` back |
+| **鏡門** Kyōmon | hm directional error | Any comparative claim | Bidirectional grep + `file:line` evidence |
+| **證門** Shōmon | Single-perspective bias | Conclusion the user may rely on | Full R1+R2+R3 |
+| **閂門** Kan'nukimon | Prompt contamination | Every agent dispatch | Three-layer anti-drift wrapping |
+
+**Execution**: Parallel in Phase -1 by hm (~5s). Four gates check the same input from different angles simultaneously.
+
+---
+
+## 7. Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0 | 2026-05 | Initial QUINTE protocol |
+| 2.0 | 2026-06-04 | rx added as R2 participant; four-gate model formalized |
+| 2.4 | 2026-06-08 | 鏡門 elevated to independent fourth gate; cross-repo audit; agent counting discipline |
+| 3.0 | 2026-06-09 | Orchestrator hm→cc; three-mechanism architecture; hm synchronous veto; cross-model adversarial verification; loop-until-dry; governance layer; parallel gates |
+
+---
+
+*QUINTE v3.0 — ratified by five-agent consensus 2026-06-09 (cc+hm+cw+omp+rx).*
