@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.1 (2026-06-10)
+- **Spec trim per 6/6 QUINTE verdict** (R1 hm+cc+cw+omp → R2 → R3 hm+rx). Pruned ~40% concept density from v3.0:
+  - REMOVED from PROTOCOL.md: three-mechanism epistemology framework, cross-round consistency Agent, auto-diff JSON Schema
+  - SIMPLIFIED: loop-until-dry → single-critic + 3-round hard cap
+  - DOWNGRADED: Invariant#4 (cross-model) → Desideratum
+  - ADDED: omp Verification Phase 5a (LSP/DAP/exec ground-truth)
+  - KEPT: orchestration-oversight separation, hm synchronous veto, governance layer, 證門 two-layer, Phase 0 Manifest Agent
+- **Version alignment**: PROTOCOL.md title → v3.1, README badge synced, CHANGELOG appended
+
 ## v3.0.1 (2026-06-10)
 - **Meta-QUINTE: v3.0 Upgrade Value Assessment** — R1(hm+cc+cw+omp) + R2 cross-review + R3(hm+rx) dual verdict on whether v3.0 concepts justify their complexity cost. 6/6 consensus: orchestration-oversight separation KEEP, Invariant#4 downgrade→Desideratum, loop-until-dry simplify, three-mechanism epistemology remove from PROTOCOL.md, omp Verification Phase 5a ADD, omp as cc fallback needs feasibility audit. See `debates/2026-06-10-v3-evaluation/`.
 - **Meta-QUINTE: 力大砖飛 Classification** — *При достаточной тяге и кирпич полетит* ("with enough thrust, even a brick flies"). Soviet aviation joke, F-4 Phantom principle, 力任せ. R1+R2+R3 on whether QUINTE is brute-force aesthetics. Verdict: "Governed Brute-Force Ensembling." OMP's "Refined Brute Force" adopted as canonical label. See `debates/2026-06-09-brute-force/`.

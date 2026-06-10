@@ -11,7 +11,7 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 ---
 
 [![DeepSeek](https://img.shields.io/badge/DeepSeek-v4--pro-4B6BFB?style=flat)](https://deepseek.com)
-[![Protocol](https://img.shields.io/badge/protocol-v3.0-blue?style=flat)](spec/PROTOCOL.md)
+[![Protocol](https://img.shields.io/badge/protocol-v3.1-blue?style=flat)](spec/PROTOCOL.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
 
 </div>
