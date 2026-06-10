@@ -36,7 +36,7 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
 ## Architecture
 
 ```
-                         Hermes (Orchestrator + Participant)
+                         Hermes (Oversight + Participant)
                                           ▼
           ┌──────────────────────────────────────────────────────────────┐
               Round 1         Round 1         Round 1         Round 1    
