@@ -1,5 +1,23 @@
 # Changelog
 
+## v3.0.1 (2026-06-10)
+- **Meta-QUINTE: v3.0 Upgrade Value Assessment** — R1(hm+cc+cw+omp) + R2 cross-review + R3(hm+rx) dual verdict on whether v3.0 concepts justify their complexity cost. 6/6 consensus: orchestration-oversight separation KEEP, Invariant#4 downgrade→Desideratum, loop-until-dry simplify, three-mechanism epistemology remove from PROTOCOL.md, omp Verification Phase 5a ADD, omp as cc fallback needs feasibility audit. See `debates/2026-06-10-v3-evaluation/`.
+- **Meta-QUINTE: 力大砖飛 Classification** — *При достаточной тяге и кирпич полетит* ("with enough thrust, even a brick flies"). Soviet aviation joke, F-4 Phantom principle, 力任せ. R1+R2+R3 on whether QUINTE is brute-force aesthetics. Verdict: "Governed Brute-Force Ensembling." OMP's "Refined Brute Force" adopted as canonical label. See `debates/2026-06-09-brute-force/`.
+- **Meta-Audit: hm R1 Fact-Check** — cc+cw+omp cross-verify hm's previous R1 claims against four repos. 3 HIGH errors found (CHANGELOG v3.0 entry fabricated, file coverage inflated, cc 71% stat external/unverifiable). 6/6 verdicts survive audit. See `debates/2026-06-10-meta-audit/`.
+- **Bugfix**: README badge `protocol-v2.4` → `protocol-v3.0` (stale since 2026-06-09 spec upgrade)
+- **Bugfix**: CHANGELOG v3.0 entry added (was missing — spec declared v3.0 but CHANGELOG stopped at v2.4)
+
+## v3.0 (2026-06-09)
+- **Orchestration-Oversight Separation**: cc executes orchestration, hm synchronous veto oversight
+- **Three-Mechanism Epistemology**: Agent (isolated context) + Workflow (pipeline/parallel) + Bash (external agents)
+- **Cross-Model Adversarial Verification**: Phase 3, 3 refuters per dispute, ≥1 from different provider
+- **Loop-Until-Dry**: Dual critic + dual condition termination + escalate→human
+- **Governance Layer**: Cost circuit breaker, poison detection, state persistence, cross-round consistency
+- **Parallel Four Gates** (四道門): Amamon, Kyōmon, Shōmon split into gate layer + execution layer, Kan'nukimon
+- **JSON Schema Structured Output**: Phase 2 auto-diff claims comparison
+- Ratified 5/5 agent consensus. See `debates/2026-06-09-v3-ratification/`.
+- Self-audit: 4 HIGH+ issues, 4 fixed. See `debates/2026-06-09-v3-self-audit/`.
+
 ## v2.4 (2026-06-07)
 - **Anti-drift protocol**: 3-layer prompt engineering defense (task-first + semantic isolation + forced restatement) in `spec/extensions.md`
 - 5/5 agent consensus from dedicated QUINTE debate

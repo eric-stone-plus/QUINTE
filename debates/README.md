@@ -2,32 +2,36 @@
 
 Each subdirectory is one complete QUINTE debate session. Naming: `YYYY-MM-DD-<topic-slug>/`.
 
+## Debate Index
+
+| Date | Topic | Verdict | Files |
+|------|-------|---------|-------|
+| 2026-06-10 | [v3.0 Upgrade Value Assessment](2026-06-10-v3-evaluation/) | 6/6: trim ~40%, keep orchestration-oversight | R1×4 + R2 + R3-A + R3-B + final |
+| 2026-06-10 | [Meta-Audit: hm R1 Fact-Check](2026-06-10-meta-audit/) | 3 HIGH errors found; 6/6 verdicts survive | R1×3 + final |
+| 2026-06-09 | [力大砖飛 — *При достаточной тяге и кирпич полетит*](2026-06-09-brute-force/) | Governed Brute-Force Ensembling | R1×4 + R2×5 + R3-A + R3-B + final |
+| 2026-06-09 | [v3.0 Ratification](2026-06-09-v3-ratification/) | 5/5 pass with amendments | R1×5 + R2×5 + final |
+| 2026-06-09 | [v3.0 Self-Audit](2026-06-09-v3-self-audit/) | 4 HIGH+ issues, 4 fixed | R1×3 + R2 + final |
+
 ## Structure
 
 ```
 debates/
-├── 2026-06-09-v3-ratification/     # cc 主导的 v3.0 协议五方通过辩论
-│   ├── claude_r1.md                # cc R1 独立分析
-│   ├── claude_r2.md                # cc R2 交叉评审
-│   ├── codewhale_r1.md             # cw R1 深度分析
-│   ├── codewhale_r2.md             # cw R2 交叉评审
-│   ├── omp_r1.md                   # omp R1 快速推理
-│   ├── omp_r2.md                   # omp R2 交叉评审
-│   ├── r1_summary.md               # R1 汇总
-│   └── final_verdict.md            # 终裁
-│
-└── 2026-06-09-v3-self-audit/       # hm 主导的 v3.0 自审 (新架构首次 QUINTE)
-    ├── cc_q1.md                    # cc 审计 PROTOCOL vs GATES 證門矛盾
-    ├── cc_q234.md                  # cc 审计 loop/跨模型/KANSA
-    ├── cw_r1.md                    # cw R1 深度审计 (6维 mismatch 表)
-    ├── omp_r1.md                   # omp R1 (Linux 平替版, 无文件读取)
-    ├── rx_r2.md                    # rx R2 纯推理交叉裁判
-    ├── v3_requinte_final.md        # hm 终裁报告
-    └── MAC_REQUINTE_MEMO.md        # Mac 全量 QUINTE 重跑备忘
+├── 2026-06-10-v3-evaluation/       # v3.0 upgrade value QUINTE (hm+rx R3)
+├── 2026-06-10-meta-audit/          # hm R1 fact-check by cc+cw+omp
+├── 2026-06-09-brute-force/         # 力大砖飛 — brute force classification
+├── 2026-06-09-v3-ratification/     # v3.0 protocol ratification (5 agents)
+└── 2026-06-09-v3-self-audit/       # v3.0 self-audit under new architecture
 ```
+
+## Naming Convention
+
+- `{agent}_round{N}.md` — agent round output (e.g., `claude_round1.md`)
+- `{agent}_q{N}.md` — per-question audit (e.g., `cc_q1.md`)
+- `final_verdict.md` — R3 merged ruling
+- `README.md` — per-debate summary and context
 
 ## Notes
 
-- `omp_r1.md` 文件可能包含 `=== REASONING ===` 段 — omp 的推理过程
-- cc/cw 的 thinking/reasoning 为内部过程, 不在此日志中
-- 命名规则: `{agent}_{round}.md` 或 `{agent}_q{N}.md` (分题审计)
+- omp outputs may contain `=== REASONING ===` blocks — internal reasoning trace
+- cc/cw thinking/reasoning blocks are internal and not preserved in logs
+- rx is R2-only (pure reasoning cross-review); never participates in R1
