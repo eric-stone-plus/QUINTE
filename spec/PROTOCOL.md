@@ -16,7 +16,7 @@ QUINTE is a five-agent structured debate protocol for AI conclusion confidence. 
 
 | Agent | Round 1 | Round 2 | Role | Reasoning |
 |-------|:-------:|:-------:|------|-----------|
-| Claude Code (cc) | ✅ | ✅ | **Primary Orchestrator** + Participant | max (32000 tokens) |
+| Claude Code (cc) | ✅ | ✅ | **Primary Orchestrator** + Participant | xhigh (ultracode) |
 | Hermes (hm) | ✅ | ✅ | **Oversight Layer** + Participant | xhigh |
 | CodeWhale (cw) | ✅ | ✅ | Deep analysis + implementation verification | max |
 | omp | ✅ | ✅ | Rapid reasoning + security perspective | xhigh |

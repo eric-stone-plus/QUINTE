@@ -41,7 +41,7 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
           ┌──────────────────────────────────────────────────────────────┐
               Round 1         Round 1         Round 1         Round 1    
                Hermes          Claude        CodeWhale        Oh-My-Pi   
-             (v4 xhigh)       (v4 max)        (v4 max)       (v4 xhigh)  
+             (v4 xhigh)       (v4 xhigh)       (v4 max)       (v4 xhigh)  
           └──────────────────────────────────────────────────────────────┘
                                           ▼
                         Hermes collects R1, flags divergences.
@@ -49,7 +49,7 @@ QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot
      ┌─────────────────────────────────────────────────────────────────────────┐
          Round 2        Round 2        Round 2        Round 2        Round 2   
          Hermes         Claude        CodeWhale      Reasonix       Oh-My-Pi   
-       (v4 xhigh)      (v4 max)       (v4 max)       (v4 max)      (v4 xhigh)  
+       (v4 xhigh)      (v4 xhigh)      (v4 max)       (v4 max)      (v4 xhigh)  
      └─────────────────────────────────────────────────────────────────────────┘
                                           ▼
                               Hermes + Auditor B Verdict (R3)
