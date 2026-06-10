@@ -17,7 +17,7 @@ Mac 上真 omp (Bun 版) + 完整 cc + 全量 rx + cw → 完整五方 QUINTE。
 | RASHOMON | README.md | clone from github | 新增 "The Four Gates · 四道門" 独立章节 |
 | RASHOMON | GATES.md | clone from github | footer 版本号 v3.1→v3.0 |
 | KANSA | README.md | clone from github | "lead arbiter (hm)" → cc orchestrate + hm veto |
-| hermes-core-rules-linux | skills/multi-agent-debate/SKILL.md | 本地 repo | 已是 v3.0 (cc 2026-06-09 推送) |
+| [implementation repo] | skills/multi-agent-debate/SKILL.md | 本地 repo | 已是 v3.0 (cc 2026-06-09 推送) |
 
 ## 审计问题 (四题并行)
 

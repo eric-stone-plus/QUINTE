@@ -30,7 +30,7 @@
 ## v2.4 (2026-06-07)
 - **Anti-drift protocol**: 3-layer prompt engineering defense (task-first + semantic isolation + forced restatement) in `spec/extensions.md`
 - 5/5 agent consensus from dedicated QUINTE debate
-- Reference implementation: `hermes-core-rules-mac-x86` (macOS) + `hermes-core-rules-linux` (incoming) → `references/anti-drift-layered-defense.md`
+- Reference implementation active on macOS + Linux (planned) + Windows (verified)
 
 ## v2.2 (2026-06-03)
 - hm/rx shorthands formally adopted

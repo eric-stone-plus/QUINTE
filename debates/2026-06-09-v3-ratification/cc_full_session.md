@@ -350,7 +350,7 @@ v3.0: Agent 生成清单(独立) → Workflow 强制纪律 → JSON 自动 diff
 
 | Repo | 文件 | 状态 |
 |------|------|------|
-| `hermes-core-rules-linux` | `skills/multi-agent-debate/SKILL.md` v3.0 | ✅ 已推送 |
+| `[implementation repo]` | `skills/multi-agent-debate/SKILL.md` v3.0 | ✅ 已推送 |
 | `QUINTE` | `spec/PROTOCOL.md` v3.0 | ✅ 已推送 |
 | `RASHOMON` | `README.md` (丰富架构图) + `GATES.md` (修证證門歧义) + `CONCEPTS.md` (新概念) + `PHENOMENOLOGY.md` | ✅ 已推送 |
 | `KANSA` | 未改动 | — |
@@ -360,7 +360,7 @@ v3.0: Agent 生成清单(独立) → Workflow 强制纪律 → JSON 自动 diff
 
 **四、loop-until-dry 成本问题**：已在 RASHOMON README 中增加"Cost Question"章节论证——DeepSeek 低价使结构化冗余成为理性选择，成本熔断保底。
 
-**五、hm 现在加载的 SKILL.md 已是最新的 v3.0**（`/home/eric/hermes-core-rules-linux/skills/multi-agent-debate/SKILL.md`）
+**五、hm 现在加载的 SKILL.md 已是最新的 v3.0**（`/home/eric/[implementation repo]/skills/multi-agent-debate/SKILL.md`）
 
 ### hm 需要知道的关键变化
 

@@ -1,6 +1,6 @@
 # QUINTE Protocol — Design Lessons
 
-> Extracted from POSTMORTEM.md (hermes-core-rules-mac-x86). System-level AI engineering principles learned through QUINTE development and operation.
+> Extracted from POSTMORTEM.md. System-level AI engineering principles learned through QUINTE development and operation.
 
 ---
 
@@ -49,4 +49,4 @@ These lessons inform the QUINTE protocol design at every level:
 - **Implementation requirements** (lessons 3, 5, 6, 7): what every QUINTE implementation MUST provide
 - **Operational discipline** (lessons 8, 9): what orchestrators MUST verify
 
-> These are protocol-level principles. Implementation-specific lessons (SwiftUI bugs, macOS icon design, build scripts) remain in the hermes-core-rules-mac-x86 POSTMORTEM.
+> These are protocol-level principles. Implementation-specific lessons remain in implementation repos.
