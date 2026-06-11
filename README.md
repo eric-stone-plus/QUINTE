@@ -2,7 +2,7 @@
 
 <img src="assets/quinte-cover.svg?v=5" alt="QUINTE" width="100%">
 
-# QUINTE Protocol
+# QUINTE Protocol (クインテ)
 
 **Five-agent structured debate architecture for AI conclusion confidence.**
 
