@@ -30,7 +30,7 @@ QUINTE is a **protocol** for multi-agent structured debate. It defines:
 
 ### Design Philosophy
 
-QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot be trusted, structured cross-examination reveals what one agent alone would miss. See [RASHOMON](https://github.com/eric-stone-plus/RASHOMON) for the full design philosophy and [KANSA](https://github.com/eric-stone-plus/KANSA) for the R3 audit consul. Operations are gated by [KENGEN](https://github.com/eric-stone-plus/KENGEN) with BANNIN (番人) session-level authorization.
+QUINTE exists to solve the Rashomon phenomenon: when a single perspective cannot be trusted, structured cross-examination reveals what one agent alone would miss. See [RASHOMON](https://github.com/eric-stone-plus/RASHOMON) for the full design philosophy and [HIGHBALL](https://github.com/eric-stone-plus/HIGHBALL) for the constraint layer (KANSA verdict audit + KENGEN authorization perimeter).
 
 
 ## Architecture
@@ -73,7 +73,7 @@ The two drafts are merged: consensus is adopted, disagreement is surfaced as an 
 
 ### Authorization
 
-Operations are gated by [KENGEN](https://github.com/eric-stone-plus/KENGEN) with BANNIN as the session-level guard. No irreversible external write proceeds without explicit user authorization. The agent has no right to ask — it waits silently.
+Operations are gated by [HIGHBALL](https://github.com/eric-stone-plus/HIGHBALL)'s KENGEN authorization perimeter with BANNIN as the session-level guard. No irreversible external write proceeds without explicit user authorization.
 
 ## Quick Start
 
