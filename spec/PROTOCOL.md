@@ -10,7 +10,7 @@
 
 ## 1. Architecture
 
-QUINTE is a five-agent structured debate protocol for AI conclusion confidence. v3.0 introduces a separation of concerns: **Claude Code executes orchestration** through native Workflow primitives; **Hermes provides synchronous oversight** through per-phase veto authority.
+QUINTE is a five-agent structured debate protocol for AI conclusion confidence. v3.1 maintains a separation of concerns: **Claude Code executes orchestration** through native Workflow primitives; **Hermes provides synchronous oversight** through per-phase veto authority.
 
 ### 1.1 Participants
 
@@ -146,7 +146,7 @@ Consensus adopted; disagreement surfaced as annotated dissent. Dissent does not 
 |-----------|----------|--------|
 | **Cost circuit breaker** | claims > 100, refutation calls > 50, loops > 3 | hm approval required to continue |
 | **Human intervention** | After each Phase | hm can inject user feedback |
-| **Poison resistance** | Single agent >50 claims OR evidence-free claims | Anomaly flag → KANSA investigation → downgrade |
+| **Poison resistance** | Single agent >50 claims OR evidence-free claims | Anomaly flag → hm review → downgrade |
 | **State persistence** | Every debate | Structured log → `~/.hermes/quinte/`. Next debate auto-injects prior conclusions |
 
 ---

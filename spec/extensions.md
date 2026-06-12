@@ -59,13 +59,13 @@ Implementations SHOULD validate that their SKILL.md references the correct proto
 | How to archive sessions? | — | ✅ |
 | How long to wait before retry? | ✅ (180s default) | ✅ (platform tuning) |
 | What to do on persistent failure? | ✅ (escalate) | — |
-| Prompt engineering for agent dispatch? | ✅ (§7) | ✅ (keyword blocklist) |
+| Prompt engineering for agent dispatch? | ✅ (§4) | ✅ (keyword blocklist) |
 
 ---
 
 ## Prompt Engineering (Anti-Drift)
 
-> **Now in [PROTOCOL.md §7](PROTOCOL.md#7-agent-dispatch-requirements)**. This section retained for the implementation-delegated keyword blocklist only.
+> **Now in [PROTOCOL.md §4](PROTOCOL.md#4-agent-dispatch-requirements)**. This section retained for the implementation-delegated keyword blocklist only.
 
 Each implementation maintains its own keyword blocklist for output validation (§7 Output Validation). Known drift patterns (asymmetric — macOS has the most operational data):
 
