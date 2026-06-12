@@ -23,7 +23,7 @@ Single-model AI hits a confidence ceiling. QUINTE breaks through — five indepe
 QUINTE is a **protocol** for multi-agent structured debate. It defines:
 
 - **5 agents** (Hermes, Claude Code, CodeWhale, omp, Reasonix)
-- **3 rounds** (Independent Analysis → Cross-Review → Dual Verdict with 監査 B)
+- **3 rounds** (Independent Analysis → Cross-Review → Dual Verdict with Auditor B)
 - **Invariants** (no degradation, adversarial review, mandatory cross-examination)
 
 > 📖 **Read the spec**: [spec/PROTOCOL.md](spec/PROTOCOL.md)
