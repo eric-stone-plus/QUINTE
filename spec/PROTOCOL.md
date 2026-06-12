@@ -2,7 +2,7 @@
 
 > **Canonical protocol definition.** For the reference implementation, see [hermes-skill/](../hermes-skill/SKILL.md).
 >
-> **v3.1 (2026-06-10)**: Pruned ~40% concept density per 6/6 QUINTE verdict. Removed: three-mechanism epistemology from spec, cross-round consistency Agent, auto-diff JSON Schema. Simplified: loop-until-dry → single-critic + 3-round cap. Downgraded: Invariant#4 → Desideratum. Added: omp Verification Phase 5a.
+> **v3.1 (2026-06-10)**: Pruned ~40% concept density per 5/5 QUINTE verdict. Removed: three-mechanism epistemology from spec, cross-round consistency Agent, auto-diff JSON Schema. Simplified: loop-until-dry → single-critic + 3-round cap. Downgraded: Invariant#4 → Desideratum. Added: omp Verification Phase 5a.
 >
 > **Scope**: QUINTE improves factual completeness and oversight detection through redundant coverage, structured re-examination, and adversarial verification. Estimated improvement: ~30-50% over solo analysis (v2.4 baseline: ~20-30%). It does not validate correctness of shared-model reasoning about novel situations where all agents share the same model's knowledge boundaries — cross-model diversity in R2 partially mitigates this.
 
@@ -117,25 +117,28 @@ hm reviews → approves.
 
 ### Phase 5: Loop-Until-Dry Convergence
 
-Two completeness_critic agents (different configurations: temperature/prompt template) search for remaining blind spots.
-
-**Dual-condition termination**:
+Single completeness_critic agent searches for remaining blind spots. Hard cap: 3 rounds. Either condition triggers **escalate** (mandatory human review, NOT auto-termination):
 1. Two consecutive rounds with zero new claims
-2. Dispute count not increasing + evidence repetition > 90%
-
-Both conditions must hold simultaneously → trigger **escalate** (mandatory human review, NOT auto-termination).
+2. Round count = 3
 
 **Truth verification**: claims about executable code → `Bash` runtime execution validates against actual behavior.
 
-### Phase 6: Round 3 — KANSA Audit
+### Phase 5a: omp Verification
 
-KANSA persona (launched via `hermes chat -q`) performs:
-1. **Topic-rotation audit**: re-examines from alternative angles
-2. **Authorization boundary check**: flags overreach claims
-3. **Poison detection**: checks for malicious/low-quality claim injection (single agent >50 claims → anomaly; assertion without evidence → downgrade)
-4. **Gate compliance**: verifies all four gates were traversed
+omp receives contested claims subset from Phase 3. Verifies up to 5 high-impact claims via LSP/DAP/code execution. Returns: `verified` / `falsified` / `inconclusive`. Output feeds into Phase 5 convergence check.
 
-hm final approval → structured log written to `~/.hermes/quinte/`.
+### Phase 6: Round 3 — KANSA Dual Verdict (監査)
+
+Consul A (hm, primary arbiter) + Auditor B (topic-matched second arbiter) independently review all R1+R2 evidence and draft parallel verdicts.
+
+| Domain | Auditor B |
+|--------|-----------|
+| Ledger / economics | omp |
+| Contracts / legal | cc |
+| Code / architecture | cw |
+| Protocol / strategy | rx |
+
+Consensus adopted; disagreement surfaced as annotated dissent. Dissent does not block verdict — it enriches the record. hm may not suppress auditor's dissent.
 
 ---
 
@@ -196,7 +199,7 @@ omp "prompt" 2>&1
 1. **Never skip an agent.** Pipeline structurally enforces; Phase 0 manifest generated independently.
 2. **Never skip R2.** Unanimous R1 can be shared blind spot — R2 is confirmatory audit.
 3. **hm veto is synchronous.** Not post-hoc audit. Per-phase block with ABORT authority.
-4. **Cross-model diversity in R2.** At least 1/3 refuters from different provider.
+4. **Cross-model diversity in R2 (Desideratum).** At least 1/3 refuters from different provider when available. Not required in single-provider environments.
 5. **Dry ≠ done.** Dry triggers escalate (mandatory human review), not auto-termination.
 6. **Push gate.** Any push (code, config, docs) requires prior QUINTE (R1+R2+R3). No exceptions.
 7. **Evidence requirement.** Claims without evidence (file:line, grep output, runtime result) → downgraded weight in verdict.
@@ -224,8 +227,8 @@ omp "prompt" 2>&1
 | 2.0 | 2026-06-04 | rx added as R2 participant; four-gate model formalized |
 | 2.4 | 2026-06-08 | 鏡門 elevated to independent fourth gate; cross-repo audit; agent counting discipline |
 | 3.0 | 2026-06-09 | Orchestrator hm→cc; three-mechanism architecture; hm synchronous veto; cross-model adversarial verification; loop-until-dry; governance layer; parallel gates |
-| 3.1 | 2026-06-10 | **Trimmed per 6/6 QUINTE**: removed three-mechanism epistemology from spec, cross-round consistency Agent, auto-diff JSON Schema. Simplified loop-until-dry → single-critic + 3-round cap. Downgraded Invariant#4 → Desideratum. Added omp Verification Phase 5a. |
+| 3.1 | 2026-06-10 | **Trimmed per 5/5 QUINTE**: removed three-mechanism epistemology from spec, cross-round consistency Agent, auto-diff JSON Schema. Simplified loop-until-dry → single-critic + 3-round cap. Downgraded Invariant#4 → Desideratum. Added omp Verification Phase 5a. |
 
 ---
 
-*QUINTE v3.1 — trimmed per 6/6 consensus 2026-06-10 (hm+cc+cw+omp+rx).*
+*QUINTE v3.1 — trimmed per 5/5 consensus 2026-06-10 (hm+cc+cw+omp+rx).*
