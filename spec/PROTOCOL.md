@@ -2,7 +2,7 @@
 
 > **Canonical protocol definition.** For the reference implementation, see [hermes-skill/](../hermes-skill/SKILL.md).
 >
-> **v3.1 (2026-06-10)**: Pruned ~40% concept density per 5/5 QUINTE verdict. Removed: three-mechanism epistemology from spec, cross-round consistency Agent, auto-diff JSON Schema. Simplified: loop-until-dry → single-critic + 3-round cap. Downgraded: Invariant#4 → Desideratum. Added: omp Verification Phase 5a.
+> **v3.1 (2026-06-10)**: Pruned ~40% concept density per 5/5 QUINTE verdict. Three-mechanism descriptions retained for implementation reference (philosophical rationale moved to RASHOMON). Removed: cross-round consistency Agent, auto-diff JSON Schema. Simplified: loop-until-dry → single-critic + 3-round cap. Downgraded: Invariant#4 → Desideratum. Added: omp Verification Phase 5a.
 >
 > **Scope**: QUINTE improves factual completeness and oversight detection through redundant coverage, structured re-examination, and adversarial verification. Estimated improvement: ~30-50% over solo analysis (v2.4 baseline: ~20-30%). It does not validate correctness of shared-model reasoning about novel situations where all agents share the same model's knowledge boundaries — cross-model diversity in R2 partially mitigates this.
 
@@ -31,7 +31,7 @@ cc provides three native mechanisms:
 
 | Mechanism | QUINTE Role | Examples |
 |-----------|------------|----------|
-| **Agent** (internal sub-agents) | Specialized reviewers | Explore: full file enumeration. Plan: architecture validation. general-purpose: completeness critic, cross-round consistency, poison detection |
+| **Agent** (internal sub-agents) | Specialized reviewers | Explore: full file enumeration. Plan: architecture validation. general-purpose: completeness critic, poison detection |
 | **Workflow** (orchestration engine) | Pipeline execution + structural guarantees | `pipeline()`: phase sequencing. `parallel()`: concurrent agent dispatch. `agent({schema})`: structured output with JSON Schema validation. Adversarial verification: per-disagreement refutation. loop-until-dry: convergence detection |
 | **Bash** (external agents) | Multi-perspective analysis | `hermes chat -q`, `codewhale exec --auto`, `reasonix run`, `omp` |
 
@@ -42,7 +42,7 @@ Claude Code (Execution)          Hermes (Oversight)
 ─────────────────────────        ─────────────────────────
 pipeline() phases                Per-phase APPROVE/REJECT
 parallel() agent dispatch        Drift detection
-JSON Schema auto-diff            Agent omission check
+Claims auto-diff                Agent omission check
 Adversarial verification         Quality audit
 loop-until-dry convergence       ABORT authority
 Structured logging               Context injection
@@ -107,11 +107,9 @@ For each disputed claim, `parallel` 3 refutation agents:
 
 hm reviews for false-positive refutations → approves.
 
-### Phase 4: Reasonix Cross-Review + Cross-Round Consistency
+### Phase 4: Reasonix Cross-Review
 
 rx receives all structured claims (consensus + contested) as JSON input — no file reading required. Produces pure reasoning verdict.
-
-**Cross-round consistency agent** (internal Agent): compares all outputs from R1/R2/R3, detecting: stance drift, term redefinition, premise creep, collective hallucination.
 
 hm reviews → approves.
 
@@ -146,11 +144,10 @@ Consensus adopted; disagreement surfaced as annotated dissent. Dissent does not 
 
 | Mechanism | Threshold | Action |
 |-----------|----------|--------|
-| **Cost circuit breaker** | claims > 100, refutation calls > 50, loops > 5 | hm approval required to continue |
+| **Cost circuit breaker** | claims > 100, refutation calls > 50, loops > 3 | hm approval required to continue |
 | **Human intervention** | After each Phase | hm can inject user feedback |
 | **Poison resistance** | Single agent >50 claims OR evidence-free claims | Anomaly flag → KANSA investigation → downgrade |
 | **State persistence** | Every debate | Structured log → `~/.hermes/quinte/`. Next debate auto-injects prior conclusions |
-| **Cross-round consistency** | Phase 4 | Independent Agent detects drift across R1/R2/R3 |
 
 ---
 
@@ -227,7 +224,7 @@ omp "prompt" 2>&1
 | 2.0 | 2026-06-04 | rx added as R2 participant; four-gate model formalized |
 | 2.4 | 2026-06-08 | 鏡門 elevated to independent fourth gate; cross-repo audit; agent counting discipline |
 | 3.0 | 2026-06-09 | Orchestrator hm→cc; three-mechanism architecture; hm synchronous veto; cross-model adversarial verification; loop-until-dry; governance layer; parallel gates |
-| 3.1 | 2026-06-10 | **Trimmed per 5/5 QUINTE**: removed three-mechanism epistemology from spec, cross-round consistency Agent, auto-diff JSON Schema. Simplified loop-until-dry → single-critic + 3-round cap. Downgraded Invariant#4 → Desideratum. Added omp Verification Phase 5a. |
+| 3.1 | 2026-06-10 | **Trimmed per 5/5 QUINTE**: removed three-mechanism epistemology from spec Agent, auto-diff JSON Schema. Simplified loop-until-dry → single-critic + 3-round cap. Downgraded Invariant#4 → Desideratum. Added omp Verification Phase 5a. |
 
 ---
 
