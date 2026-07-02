@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/dispatch-ledger.schema.json",
+  "title": "QUINTE Dispatch Ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "dispatch_ledger_version",
+    "run_id",
+    "phase",
+    "status",
+    "phase_progression_allowed",
+    "inputs",
+    "archive_dir",
+    "summary",
+    "parties",
+    "blocking_failures",
+    "non_authorization"
+  ],
+  "properties": {
+    "dispatch_ledger_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "phase": {
+      "type": "string",
+      "enum": ["R1", "R2", "R3"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["complete", "blocked", "degraded"]
+    },
+    "phase_progression_allowed": {
+      "type": "boolean"
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_ref", "prompt_ref"],
+      "properties": {
+        "manifest_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "archive_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_count",
+        "succeeded_count",
+        "failed_count",
+        "blocked_count",
+        "degraded_count",
+        "max_attempts"
+      ],
+      "properties": {
+        "required_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "succeeded_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blocked_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "degraded_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "parties": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/party"
+      }
+    },
+    "blocking_failures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/blocking_failure"
+      }
+    },
+    "non_authorization": {
+      "type": "string",
+      "const": "QUINTE dispatch ledgers do not authorize action, substitute parties, or advance blocked phases."
+    }
+  },
+  "$defs": {
+    "party": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "route_id",
+        "required",
+        "command_hash",
+        "status",
+        "attempt_count",
+        "last_error_class",
+        "output_ref",
+        "attempts"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "route_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "required": {
+          "type": "boolean",
+          "const": true
+        },
+        "command_hash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": ["succeeded", "blocked", "degraded"]
+        },
+        "attempt_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "last_error_class": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auth",
+                "rate_limit",
+                "timeout",
+                "interrupted_recoverable",
+                "deprecated",
+                "empty_output",
+                "invalid_output",
+                "dispatcher_exception",
+                "unknown"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output_ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attempts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/attempt"
+          }
+        }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempt",
+        "route_id",
+        "prompt_ref",
+        "prompt_sha256",
+        "stdout_ref",
+        "stderr_ref",
+        "exit_code",
+        "timed_out",
+        "output_bytes",
+        "error_class",
+        "retryable",
+        "started_at",
+        "ended_at",
+        "duration_ms"
+      ],
+      "properties": {
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "route_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt_sha256": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stdout_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stderr_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timed_out": {
+          "type": "boolean"
+        },
+        "output_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "error_class": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auth",
+                "rate_limit",
+                "timeout",
+                "interrupted_recoverable",
+                "deprecated",
+                "empty_output",
+                "invalid_output",
+                "dispatcher_exception",
+                "unknown"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "started_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ended_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "blocking_failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["party_id", "route_id", "error_class", "reason"],
+      "properties": {
+        "party_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "route_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "error_class": {
+          "type": "string",
+          "enum": [
+            "auth",
+            "rate_limit",
+            "timeout",
+            "interrupted_recoverable",
+            "deprecated",
+            "empty_output",
+            "invalid_output",
+            "dispatcher_exception",
+            "unknown"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
