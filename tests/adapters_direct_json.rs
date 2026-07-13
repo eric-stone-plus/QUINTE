@@ -123,10 +123,12 @@ fn fake_agent_runs_through_windows_npm_style_shim() {
     fs::write(shim.with_extension("cmd"), "@exit /b 99\r\n").unwrap();
     fs::write(
         shim.with_extension("ps1"),
-        r#"if ($args.Count -ne 3) { exit 90 }
+        r#"if ($args.Count -ne 4) { exit 90 }
 if ($args[0] -cne 'R1') { exit 91 }
 if ($args[1] -cne 'Party A') { exit 92 }
 if (-not $args[2].EndsWith('input\packet.json')) { exit 93 }
+Add-Type -Namespace Native -Name Console -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();'
+if ([Native.Console]::GetConsoleWindow() -eq [IntPtr]::Zero) { 'hidden' | Set-Content -NoNewline $args[3] } else { 'window' | Set-Content -NoNewline $args[3] }
 [Console]::Out.Write('{"lane_output_version":"1.0","task_restatement":"Review the supplied evidence packet.","verdict":"The bounded review completed.","confidence":0.75,"claims":[],"residuals":[],"uncertainties":[]}')
 exit 0
 "#,
@@ -138,6 +140,9 @@ exit 0
     let route = fake_route(&shim);
 
     let invocation = build(&route, "R1", TEXT_MODEL, &packet, &lane_root, 30).unwrap();
+    let probe = temporary.path().join("powershell-console-probe.txt");
+    let mut invocation = invocation;
+    invocation.args.push(probe.display().to_string());
 
     assert!(invocation.program.ends_with("powershell.exe"));
     assert!(invocation.args.iter().any(|arg| arg.ends_with(".ps1")));
@@ -151,11 +156,43 @@ exit 0
     );
     assert!(
         !output.stdout.is_empty(),
-        "fake npm-style shim produced no output: stderr={}",
-        String::from_utf8_lossy(&output.stderr)
+        "fake npm-style shim produced no output: status={} stderr={} args={:?} env_keys={:?} probe={:?}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+        invocation.args,
+        invocation.env.keys().collect::<Vec<_>>(),
+        fs::read_to_string(&probe)
     );
     let parsed = parse_output(invocation.output_kind, &output.stdout).unwrap();
     assert_eq!(parsed.confidence, 0.75);
+    assert_eq!(fs::read_to_string(probe).unwrap(), "hidden");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_native_adapter_runs_without_a_console_window() {
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let run_dir = temporary.path().join("run-hidden");
+    let packet = create_run_packet(&run_dir);
+    let lane_root = run_dir.join("lane");
+    let route = fake_route(&executable);
+    let probe = temporary.path().join("console-probe.txt");
+
+    let mut invocation = build(&route, "R1", TEXT_MODEL, &packet, &lane_root, 30).unwrap();
+    invocation.env.insert(
+        "FAKE_AGENT_CONSOLE_PROBE".into(),
+        probe.display().to_string(),
+    );
+    let output = spawn_command(&invocation).output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "hidden fake agent failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(probe).unwrap(), "hidden");
+    assert!(!output.stdout.is_empty());
 }
 
 #[test]

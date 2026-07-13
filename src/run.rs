@@ -32,8 +32,8 @@ use crate::schema::{
 };
 use crate::store::{ActiveProcess, Store};
 use crate::util::{
-    atomic_write, canonical_existing, read_json, relative_slash, sha256_bytes, sha256_file,
-    utc_now, write_json,
+    atomic_write, canonical_existing, configure_hidden_process, read_json, relative_slash,
+    sha256_bytes, sha256_file, utc_now, write_json,
 };
 
 static INTERRUPTED: OnceLock<Arc<AtomicBool>> = OnceLock::new();
@@ -2741,12 +2741,13 @@ fn process_identity(pid: u32) -> Option<String> {
 fn process_identity(pid: u32) -> Option<String> {
     let script =
         format!("(Get-Process -Id {pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks");
-    let output = std::process::Command::new("powershell.exe")
+    let mut command = std::process::Command::new("powershell.exe");
+    command
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+        .stderr(Stdio::null());
+    configure_hidden_process(&mut command);
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -2778,7 +2779,13 @@ fn kill_process_tree(pid: u32, force: bool) {
     if force {
         args.push("/F".to_string());
     }
-    let _ = std::process::Command::new("taskkill").args(args).status();
+    let mut command = std::process::Command::new("taskkill");
+    command
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    configure_hidden_process(&mut command);
+    let _ = command.status();
 }
 
 fn install_interrupt_handler() {
@@ -2866,8 +2873,12 @@ fn process_alive(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn process_alive(pid: u32) -> bool {
-    std::process::Command::new("tasklist")
+    let mut command = std::process::Command::new("tasklist");
+    command
         .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .stderr(Stdio::null());
+    configure_hidden_process(&mut command);
+    command
         .output()
         .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
 }

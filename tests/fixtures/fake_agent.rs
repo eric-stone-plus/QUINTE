@@ -20,6 +20,19 @@ fn main() {
         std::process::exit(64);
     }
 
+    #[cfg(windows)]
+    if let Ok(path) = std::env::var("FAKE_AGENT_CONSOLE_PROBE") {
+        use std::ptr::null_mut;
+
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetConsoleWindow() -> *mut core::ffi::c_void;
+        }
+
+        let has_console_window = unsafe { GetConsoleWindow() } != null_mut();
+        fs::write(path, if has_console_window { "window" } else { "hidden" }).unwrap();
+    }
+
     if args[0] == "R1" && args[1] == "Party A" {
         let delay_path = std::env::current_exe()
             .unwrap()

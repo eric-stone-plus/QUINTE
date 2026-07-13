@@ -57,6 +57,16 @@ fragile and an avoidable injection boundary.
   as completed, not as an unidentified live process. A still-running child
   without a verifiable identity continues to fail closed.
 
+### Silent adapter processes
+
+- Every Windows lane process is created with `CREATE_NO_WINDOW`, including
+  native executables and PowerShell npm shims that subsequently start Node.js.
+- QUINTE still captures stdout and stderr through pipes; hiding the console
+  window does not discard model output or diagnostics.
+- Silent launch is a QUINTE runtime guarantee, not a per-device PowerShell or
+  Windows Terminal preference. Windows hosts receive it by installing the same
+  QUINTE release.
+
 ### Lane environment
 
 The minimal environment still preserves the explicit process `PATH`. Windows
@@ -79,6 +89,7 @@ Windows tests cover:
 - fail-closed behavior when only the unsafe `.cmd` sibling remains;
 - lossless arguments containing newlines, quotes, `&`, and `<`;
 - build, spawn, output capture, and schema parsing through an npm-style shim;
+- no-window creation flags on Windows adapter commands;
 - Windows profile and temp-directory isolation;
 - immediate queued return from a PowerShell-hosted background worker;
 - fast-exiting lane processes and durable worker completion.
