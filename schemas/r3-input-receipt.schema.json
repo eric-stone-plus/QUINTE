@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/r3-input-receipt.schema.json",
+  "title": "QUINTE R3 Input Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["input_receipt_version", "run_id", "issued_at", "r1", "r2", "evidence_packet", "cc_response"],
+  "properties": {
+    "input_receipt_version": { "const": "1.0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "r1": { "$ref": "#/$defs/phase" },
+    "r2": { "$ref": "#/$defs/phase" },
+    "evidence_packet": { "$ref": "#/$defs/artifact" },
+    "cc_response": { "$ref": "#/$defs/artifact" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_ref", "sha256"],
+      "properties": {
+        "artifact_ref": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "phase": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["party_id", "route_id", "artifact_ref", "sha256"],
+        "properties": {
+          "party_id": { "enum": ["Party A", "Party B", "Party C", "Party D", "Party E"] },
+          "route_id": { "type": "string", "minLength": 1 },
+          "artifact_ref": { "type": "string", "minLength": 1 },
+          "sha256": { "$ref": "#/$defs/digest" }
+        }
+      }
+    }
+  }
+}

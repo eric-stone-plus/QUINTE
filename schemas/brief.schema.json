@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/brief.schema.json",
+  "title": "QUINTE Brief",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["brief_version", "question"],
+  "properties": {
+    "brief_version": { "const": "1.0" },
+    "question": { "type": "string", "minLength": 1, "maxLength": 20000 },
+    "context": { "type": ["string", "null"], "maxLength": 100000 },
+    "evidence_roots": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "attachments": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "action_scope": { "type": ["string", "null"], "maxLength": 2000 }
+  }
+}

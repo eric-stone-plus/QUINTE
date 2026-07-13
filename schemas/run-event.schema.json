@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/run-event.schema.json",
+  "title": "QUINTE Run Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_version", "sequence", "timestamp", "run_id", "event_type", "phase", "party_id", "attempt", "data"],
+  "properties": {
+    "event_version": { "const": "1.0" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "event_type": { "type": "string", "minLength": 1 },
+    "phase": { "type": ["string", "null"] },
+    "party_id": { "type": ["string", "null"] },
+    "attempt": { "type": ["integer", "null"], "minimum": 1 },
+    "data": {}
+  }
+}

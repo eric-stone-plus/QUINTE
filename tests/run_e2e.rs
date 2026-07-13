@@ -1,0 +1,620 @@
+use std::fs;
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use quinte::model::{
+    ArbiterVerdict, Brief, HmResponse, HmSubmissionReceipt, HmSubmissionState, Policy, RunStatus,
+    SandboxMode, TEXT_MODEL,
+};
+use quinte::run::{self, RunOptions};
+use quinte::store::Store;
+use quinte::util::{read_json, sha256_file, write_json};
+
+mod common;
+
+struct FakeAdapterEnv {
+    previous: Option<std::ffi::OsString>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl FakeAdapterEnv {
+    fn enable() -> Self {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let lock = LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os("QUINTE_ALLOW_FAKE_ADAPTERS");
+        unsafe { std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", "1") };
+        Self {
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for FakeAdapterEnv {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(value) = self.previous.take() {
+                std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", value);
+            } else {
+                std::env::remove_var("QUINTE_ALLOW_FAKE_ADAPTERS");
+            }
+        }
+    }
+}
+
+fn fake_policy(executable: &std::path::Path) -> Policy {
+    let parties = ["Party A", "Party B", "Party C", "Party D", "Party E"];
+    Policy {
+        policy_version: "1.0".into(),
+        roster: parties
+            .iter()
+            .enumerate()
+            .map(|(index, party)| quinte::model::RoutePolicy {
+                party_id: (*party).into(),
+                route_id: format!("fake-{index}"),
+                adapter: "fake".into(),
+                executable: executable.display().to_string(),
+                required: true,
+            })
+            .collect(),
+        auditor: quinte::model::RoutePolicy {
+            party_id: "Auditor B".into(),
+            route_id: "fake-cc".into(),
+            adapter: "fake".into(),
+            executable: executable.display().to_string(),
+            required: true,
+        },
+        text_model: TEXT_MODEL.into(),
+        multimodal_model: "mimo-v2.5".into(),
+        max_parallel_r1: 5,
+        max_parallel_r2: 1,
+        max_attempts: 1,
+        timeout_seconds: 30,
+        retry_backoff_seconds: 0,
+        retry_backoff_max_seconds: 0,
+        r2_min_interval_seconds: 0,
+        max_output_bytes: 1_048_576,
+        max_snapshot_files: 100,
+        max_snapshot_bytes: 1_048_576,
+        max_attachment_bytes: 1_048_576,
+        sandbox_mode: SandboxMode::Process,
+    }
+}
+
+fn create_waiting_run(
+    temporary: &std::path::Path,
+    executable: &std::path::Path,
+    suffix: &str,
+) -> (Store, String, HmResponse) {
+    let home = temporary.join(format!("home-{suffix}"));
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let policy = fake_policy(executable);
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.join(format!("evidence-{suffix}.txt"));
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.join(format!("brief-{suffix}.json"));
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "What remains unresolved?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::WaitingHm
+    );
+    let challenge = store
+        .load_manifest(&created.run_id)
+        .unwrap()
+        .hm_challenge
+        .unwrap();
+    let cc: ArbiterVerdict =
+        read_json(&store.run_dir(&created.run_id).join("r3/cc-response.json")).unwrap();
+    let response = HmResponse {
+        hm_response_version: "1.0".into(),
+        run_id: challenge.run_id,
+        nonce: challenge.nonce,
+        policy_sha256: challenge.policy_sha256,
+        evidence_packet_sha256: challenge.evidence_packet_sha256,
+        input_receipt_sha256: challenge.input_receipt_sha256,
+        action_scope: challenge.action_scope,
+        verdict: cc,
+    };
+    (store, created.run_id, response)
+}
+
+#[test]
+fn full_fake_run_reaches_hm_then_completes() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let policy = fake_policy(&executable);
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief = Brief {
+        brief_version: "1.0".into(),
+        question: "What remains unresolved?".into(),
+        context: None,
+        evidence_roots: vec![evidence],
+        attachments: Vec::new(),
+        action_scope: Some("test only".into()),
+    };
+    let brief_path = temporary.path().join("brief.json");
+    write_json(&brief_path, &brief).unwrap();
+
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+    let advanced = run::advance(&store, &created.run_id).unwrap();
+    let after_advance = store.load_manifest(&created.run_id).unwrap();
+    assert_eq!(
+        advanced,
+        RunStatus::WaitingHm,
+        "run failed before Hermes handoff: {:?}",
+        after_advance.error
+    );
+
+    let challenge = store
+        .load_manifest(&created.run_id)
+        .unwrap()
+        .hm_challenge
+        .unwrap();
+    let cc: ArbiterVerdict =
+        read_json(&store.run_dir(&created.run_id).join("r3/cc-response.json")).unwrap();
+    let response = HmResponse {
+        hm_response_version: "1.0".into(),
+        run_id: challenge.run_id,
+        nonce: challenge.nonce,
+        policy_sha256: challenge.policy_sha256,
+        evidence_packet_sha256: challenge.evidence_packet_sha256,
+        input_receipt_sha256: challenge.input_receipt_sha256,
+        action_scope: challenge.action_scope,
+        verdict: cc,
+    };
+    let response_path = temporary.path().join("hm-response.json");
+    write_json(&response_path, &response).unwrap();
+    assert_eq!(
+        run::submit_hm(&store, &created.run_id, &response_path).unwrap(),
+        RunStatus::Completed
+    );
+    assert!(store.run_dir(&created.run_id).join("result.json").is_file());
+    assert!(store.run_dir(&created.run_id).join("report.md").is_file());
+    assert!(
+        store
+            .load_manifest(&created.run_id)
+            .unwrap()
+            .result_sha256
+            .is_some()
+    );
+    run::verify_result_integrity(&store, &created.run_id).unwrap();
+    for phase in ["R1", "R2"] {
+        for index in 0..5 {
+            assert!(
+                store
+                    .run_dir(&created.run_id)
+                    .join(format!("lanes/{phase}/fake-{index}/accepted.json"))
+                    .is_file()
+            );
+        }
+    }
+}
+
+#[test]
+fn completed_result_tampering_is_rejected() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, response) =
+        create_waiting_run(temporary.path(), &executable, "result-integrity");
+    let response_path = temporary.path().join("result-integrity-response.json");
+    write_json(&response_path, &response).unwrap();
+    assert_eq!(
+        run::submit_hm(&store, &run_id, &response_path).unwrap(),
+        RunStatus::Completed
+    );
+    fs::write(store.run_dir(&run_id).join("result.json"), b"{}\n").unwrap();
+    assert!(run::verify_result_integrity(&store, &run_id).is_err());
+}
+
+#[test]
+fn verdict_submission_constructs_scheduler_owned_binding_envelope() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, response) =
+        create_waiting_run(temporary.path(), &executable, "verdict-submit");
+    let verdict_path = temporary.path().join("hm-verdict.json");
+    write_json(&verdict_path, &response.verdict).unwrap();
+
+    assert_eq!(
+        run::submit_hm_verdict(&store, &run_id, &verdict_path).unwrap(),
+        RunStatus::Completed
+    );
+    let owned: HmResponse = read_json(&store.run_dir(&run_id).join("r3/hm-response.json")).unwrap();
+    let challenge = store.load_manifest(&run_id).unwrap().hm_challenge.unwrap();
+    assert_eq!(owned.input_receipt_sha256, challenge.input_receipt_sha256);
+    assert_eq!(owned.nonce, challenge.nonce);
+}
+
+#[test]
+fn preplaced_hm_response_cannot_bypass_scheduler_acceptance() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, response) = create_waiting_run(temporary.path(), &executable, "preplaced");
+    write_json(
+        &store.run_dir(&run_id).join("r3/hm-response.json"),
+        &response,
+    )
+    .unwrap();
+
+    assert_eq!(run::advance(&store, &run_id).unwrap(), RunStatus::WaitingHm);
+    let manifest = store.load_manifest(&run_id).unwrap();
+    assert!(manifest.hm_submission.is_none());
+    assert!(!store.run_dir(&run_id).join("result.json").exists());
+}
+
+#[test]
+fn r3_receipt_blocks_tampering_of_every_accepted_input() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let targets = [
+        "lanes/R1/fake-0/accepted.json",
+        "lanes/R2/fake-1/accepted.json",
+        "r3/evidence-packet.json",
+        "r3/cc-response.json",
+    ];
+
+    for (index, target) in targets.iter().enumerate() {
+        let (store, run_id, _) =
+            create_waiting_run(temporary.path(), &executable, &format!("tamper-{index}"));
+        fs::write(store.run_dir(&run_id).join(target), b"{}\n").unwrap();
+
+        assert_eq!(
+            run::advance(&store, &run_id).unwrap(),
+            RunStatus::FailedPolicy
+        );
+        let manifest = store.load_manifest(&run_id).unwrap();
+        assert_eq!(manifest.error.unwrap().code, "integrity_drift");
+        assert!(!store.run_dir(&run_id).join("result.json").exists());
+    }
+}
+
+#[test]
+fn hm_staging_receipt_is_retryable_when_response_write_never_happened() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, response) =
+        create_waiting_run(temporary.path(), &executable, "staged-no-file");
+    let response_path = temporary.path().join("staged-no-file-response.json");
+    write_json(&response_path, &response).unwrap();
+    let mut manifest = store.load_manifest(&run_id).unwrap();
+    manifest.hm_submission = Some(HmSubmissionReceipt {
+        submission_receipt_version: "1.0".into(),
+        state: HmSubmissionState::Staging,
+        response_ref: "r3/hm-response.json".into(),
+        response_sha256: sha256_file(&response_path).unwrap(),
+        input_receipt_sha256: manifest.r3_input_receipt.as_ref().unwrap().sha256.clone(),
+        staged_at: manifest.updated_at.clone(),
+        accepted_at: None,
+    });
+    store.save_manifest(&manifest).unwrap();
+
+    assert_eq!(
+        run::submit_hm(&store, &run_id, &response_path).unwrap(),
+        RunStatus::Completed
+    );
+}
+
+#[test]
+fn hm_staged_file_is_recovered_without_resubmission() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, response) =
+        create_waiting_run(temporary.path(), &executable, "staged-file");
+    let response_path = store.run_dir(&run_id).join("r3/hm-response.json");
+    write_json(&response_path, &response).unwrap();
+    let mut manifest = store.load_manifest(&run_id).unwrap();
+    manifest.hm_submission = Some(HmSubmissionReceipt {
+        submission_receipt_version: "1.0".into(),
+        state: HmSubmissionState::Staging,
+        response_ref: "r3/hm-response.json".into(),
+        response_sha256: sha256_file(&response_path).unwrap(),
+        input_receipt_sha256: manifest.r3_input_receipt.as_ref().unwrap().sha256.clone(),
+        staged_at: manifest.updated_at.clone(),
+        accepted_at: None,
+    });
+    store.save_manifest(&manifest).unwrap();
+
+    assert_eq!(run::advance(&store, &run_id).unwrap(), RunStatus::Completed);
+    assert_eq!(
+        store
+            .load_manifest(&run_id)
+            .unwrap()
+            .hm_submission
+            .unwrap()
+            .state,
+        HmSubmissionState::Accepted
+    );
+}
+
+#[test]
+fn accepted_hm_submission_resumes_after_expiry_and_is_idempotent() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, response) =
+        create_waiting_run(temporary.path(), &executable, "accepted-crash");
+    let internal_response = store.run_dir(&run_id).join("r3/hm-response.json");
+    let external_response = temporary.path().join("accepted-crash-response.json");
+    write_json(&internal_response, &response).unwrap();
+    write_json(&external_response, &response).unwrap();
+    let mut manifest = store.load_manifest(&run_id).unwrap();
+    manifest.hm_challenge.as_mut().unwrap().consumed = true;
+    manifest.hm_challenge.as_mut().unwrap().expires_at = "2000-01-01T00:00:00Z".into();
+    manifest.hm_submission = Some(HmSubmissionReceipt {
+        submission_receipt_version: "1.0".into(),
+        state: HmSubmissionState::Accepted,
+        response_ref: "r3/hm-response.json".into(),
+        response_sha256: sha256_file(&internal_response).unwrap(),
+        input_receipt_sha256: manifest.r3_input_receipt.as_ref().unwrap().sha256.clone(),
+        staged_at: manifest.updated_at.clone(),
+        accepted_at: Some(manifest.updated_at.clone()),
+    });
+    store.save_manifest(&manifest).unwrap();
+
+    assert_eq!(run::advance(&store, &run_id).unwrap(), RunStatus::Completed);
+    assert_eq!(
+        run::submit_hm(&store, &run_id, &external_response).unwrap(),
+        RunStatus::Completed
+    );
+}
+
+#[test]
+fn cancelling_active_workers_is_terminal_and_cannot_be_overwritten_by_failure() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(temporary.path().join("fake-agent-delay-ms"), "30000\n").unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let policy = fake_policy(&executable);
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Can an active run be cancelled safely?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+    let run_id = created.run_id.clone();
+    let worker_home = home.clone();
+    let worker_run_id = run_id.clone();
+    let worker = thread::spawn(move || run::advance(&Store::new(worker_home), &worker_run_id));
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while store.active_pids(&run_id).unwrap().is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "worker never registered an active PID"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(run::cancel(&store, &run_id).unwrap(), RunStatus::Cancelling);
+    assert_eq!(worker.join().unwrap().unwrap(), RunStatus::Cancelled);
+
+    let final_manifest = store.load_manifest(&run_id).unwrap();
+    assert_eq!(final_manifest.status, RunStatus::Cancelled);
+    assert_eq!(final_manifest.error.as_ref().unwrap().code, "cancelled");
+    assert!(store.active_pids(&run_id).unwrap().is_empty());
+    assert_eq!(run::advance(&store, &run_id).unwrap(), RunStatus::Cancelled);
+}
+
+#[test]
+fn invalid_early_r1_lane_still_drains_all_workers() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(
+        temporary.path().join("fake-agent-invalid-party"),
+        "Party A\n",
+    )
+    .unwrap();
+    fs::write(temporary.path().join("fake-agent-delay-other-ms"), "500\n").unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let policy = fake_policy(&executable);
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Do failed parallel lanes retain scheduler ownership?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+
+    let started = Instant::now();
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::Failed
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "scheduler returned before slower R1 workers were drained"
+    );
+    assert!(store.active_pids(&created.run_id).unwrap().is_empty());
+    for index in 1..5 {
+        assert!(
+            store
+                .run_dir(&created.run_id)
+                .join(format!("lanes/R1/fake-{index}/attempt-1/stdout.bin"))
+                .is_file()
+        );
+    }
+}
+
+#[test]
+fn output_limit_caps_captured_memory_and_fails_the_lane() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(temporary.path().join("fake-agent-flood-party"), "Party A\n").unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.max_output_bytes = 4 * 1024;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Does QUINTE cap child output while reading it?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::Failed
+    );
+    let stdout = store
+        .run_dir(&created.run_id)
+        .join("lanes/R1/fake-0/attempt-1/stdout.bin");
+    assert!(fs::metadata(stdout).unwrap().len() <= policy.max_output_bytes as u64);
+    let events = fs::read_to_string(store.run_dir(&created.run_id).join("events.jsonl")).unwrap();
+    assert!(events.contains("adapter output exceeds policy limit"));
+    assert!(store.active_pids(&created.run_id).unwrap().is_empty());
+}
+
+#[test]
+fn r2_rate_limit_retries_same_route_with_persisted_scheduler_events() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(
+        temporary.path().join("fake-agent-rate-limit-party"),
+        "Party A\n",
+    )
+    .unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.max_attempts = 2;
+    policy.retry_backoff_seconds = 1;
+    policy.retry_backoff_max_seconds = 1;
+    policy.r2_min_interval_seconds = 1;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Does the scheduler recover a typed R2 rate limit?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::WaitingHm
+    );
+    assert!(
+        store
+            .run_dir(&created.run_id)
+            .join("lanes/R2/fake-0/attempt-2/stdout.bin")
+            .is_file()
+    );
+    assert_eq!(
+        fs::read_to_string(temporary.path().join("fake-agent-rate-limit-count"))
+            .unwrap()
+            .trim(),
+        "2"
+    );
+    let events = fs::read_to_string(store.run_dir(&created.run_id).join("events.jsonl")).unwrap();
+    assert!(events.contains("lane.retry_scheduled"));
+    assert!(events.contains("\"failure_class\":\"rate_limit\""));
+    assert!(events.contains("lane.retry_started"));
+    assert!(events.contains("r2.pacing_wait"));
+}
+
+#[test]
+fn valid_model_prose_containing_429_never_triggers_retry() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(
+        temporary.path().join("fake-agent-prose-429-party"),
+        "Party A\n",
+    )
+    .unwrap();
+    let (store, run_id, _) = create_waiting_run(temporary.path(), &executable, "prose-429");
+
+    assert!(
+        store
+            .run_dir(&run_id)
+            .join("lanes/R1/fake-0/accepted.json")
+            .is_file()
+    );
+    assert!(
+        !store
+            .run_dir(&run_id)
+            .join("lanes/R1/fake-0/attempt-2")
+            .exists()
+    );
+    let events = fs::read_to_string(store.run_dir(&run_id).join("events.jsonl")).unwrap();
+    assert!(!events.contains("lane.retry_scheduled"));
+}

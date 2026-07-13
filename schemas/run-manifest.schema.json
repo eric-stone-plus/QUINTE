@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/run-manifest.schema.json",
+  "title": "QUINTE Run Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest_version", "run_id", "created_at", "updated_at", "status", "brief_sha256", "policy_sha256", "snapshot_sha256", "runtime_sha256", "protocol_version", "effective_model", "sandbox_mode", "current_phase", "error", "r3_input_receipt", "hm_challenge", "hm_submission", "result_sha256"],
+  "properties": {
+    "manifest_version": { "const": "1.0" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "status": { "enum": ["queued", "preflight", "r1_running", "r1_gate", "r2_packet", "r2_running", "r2_gate", "r3_cc", "waiting_hm", "merging", "completed", "degraded", "failed", "failed_policy", "cancelling", "cancelled"] },
+    "brief_sha256": { "$ref": "#/$defs/digest" },
+    "policy_sha256": { "$ref": "#/$defs/digest" },
+    "snapshot_sha256": { "$ref": "#/$defs/digest" },
+    "runtime_sha256": { "$ref": "#/$defs/digest" },
+    "protocol_version": { "const": "1.0" },
+    "effective_model": { "enum": ["mimo-v2.5-pro", "mimo-v2.5"] },
+    "sandbox_mode": { "enum": ["strict", "process"] },
+    "current_phase": { "type": ["string", "null"] },
+    "error": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1 },
+            "message": { "type": "string", "minLength": 1 },
+            "retryable": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "r3_input_receipt": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/artifact_binding" }
+      ]
+    },
+    "hm_challenge": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["challenge_version", "run_id", "nonce", "policy_sha256", "evidence_packet_sha256", "input_receipt_sha256", "action_scope", "issued_at", "expires_at", "consumed"],
+          "properties": {
+            "challenge_version": { "const": "1.0" },
+            "run_id": { "type": "string", "minLength": 1 },
+            "nonce": { "type": "string", "minLength": 32 },
+            "policy_sha256": { "$ref": "#/$defs/digest" },
+            "evidence_packet_sha256": { "$ref": "#/$defs/digest" },
+            "input_receipt_sha256": { "$ref": "#/$defs/digest" },
+            "action_scope": { "type": ["string", "null"] },
+            "issued_at": { "type": "string", "format": "date-time" },
+            "expires_at": { "type": "string", "format": "date-time" },
+            "consumed": { "type": "boolean" }
+          }
+        }
+      ]
+    },
+    "hm_submission": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["submission_receipt_version", "state", "response_ref", "response_sha256", "input_receipt_sha256", "staged_at", "accepted_at"],
+          "properties": {
+            "submission_receipt_version": { "const": "1.0" },
+            "state": { "enum": ["staging", "accepted"] },
+            "response_ref": { "const": "r3/hm-response.json" },
+            "response_sha256": { "$ref": "#/$defs/digest" },
+            "input_receipt_sha256": { "$ref": "#/$defs/digest" },
+            "staged_at": { "type": "string", "format": "date-time" },
+            "accepted_at": { "type": ["string", "null"], "format": "date-time" }
+          }
+        }
+      ]
+    },
+    "result_sha256": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/digest" }
+      ]
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "artifact_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_ref", "sha256"],
+      "properties": {
+        "artifact_ref": { "const": "r3/input-receipt.json" },
+        "sha256": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

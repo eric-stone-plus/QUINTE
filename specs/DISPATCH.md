@@ -1,7 +1,12 @@
-# QUINTE Dispatch Reliability
+# QUINTE Phase Dispatcher Compatibility
 
-This specification defines the executable reliability layer for host-bound
-QUINTE phase dispatch. It exists because a failed party route is itself
+> Compatibility status: retained for older host integrations. The Rust
+> `quinte` CLI is the canonical full-run scheduler. Hermes must not combine
+> this phase-only tool with a CLI run or treat its ledger as a CLI state
+> transition.
+
+This specification defines the earlier executable reliability layer for
+host-bound, phase-only QUINTE dispatch. It exists because a failed party route is itself
 material evidence: a five-party debate cannot silently become a four-party
 debate, and a recovered route must be recovered as the same route.
 

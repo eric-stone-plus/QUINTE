@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/result.schema.json",
+  "title": "QUINTE Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["result_version", "run_id", "status", "summary", "recommendation", "dissent", "residuals", "trial_manifest"],
+  "properties": {
+    "result_version": { "const": "1.0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["completed", "degraded"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "recommendation": { "type": "string", "minLength": 1 },
+    "dissent": { "type": "array", "items": { "type": "string" } },
+    "residuals": { "type": "array", "items": { "$ref": "lane-output.schema.json#/$defs/residual" } },
+    "trial_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_version", "base_model_relation", "perspective_count", "perspectives", "perturbation_axes", "independence_controls", "contamination_risks", "wall_time_seconds"],
+      "properties": {
+        "manifest_version": { "const": "1.0" },
+        "base_model_relation": { "const": "same_model" },
+        "perspective_count": { "const": 5 },
+        "perspectives": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["party_id", "route_id", "r1_artifact", "r2_artifact", "independent_first_pass"],
+            "properties": {
+              "party_id": { "enum": ["Party A", "Party B", "Party C", "Party D", "Party E"] },
+              "route_id": { "type": "string", "minLength": 1 },
+              "r1_artifact": { "type": "string", "minLength": 1 },
+              "r2_artifact": { "type": "string", "minLength": 1 },
+              "independent_first_pass": { "const": true }
+            }
+          }
+        },
+        "perturbation_axes": { "type": "array", "items": { "type": "string" } },
+        "independence_controls": { "type": "array", "items": { "type": "string" } },
+        "contamination_risks": { "type": "array", "items": { "type": "string" } },
+        "wall_time_seconds": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    }
+  }
+}
