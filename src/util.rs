@@ -147,26 +147,136 @@ pub fn user_home() -> anyhow::Result<PathBuf> {
 }
 
 pub fn command_exists(command: &str) -> bool {
-    if command.contains(std::path::MAIN_SEPARATOR) {
-        return Path::new(command).is_file();
+    resolve_command(command).is_some()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedCommand {
+    pub program: PathBuf,
+    pub prefix_args: Vec<String>,
+    pub source: PathBuf,
+}
+
+/// Resolves a command exactly as QUINTE will launch it. On Windows, npm's
+/// PowerShell shim avoids the unsafe argument boundary of `.cmd` wrappers.
+pub fn resolve_command(command: &str) -> Option<ResolvedCommand> {
+    resolve_command_with_path(command, std::env::var_os("PATH").as_deref())
+}
+
+fn resolve_command_with_path(
+    command: &str,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Option<ResolvedCommand> {
+    let command_path = Path::new(command);
+    let has_directory = command_path.is_absolute()
+        || command_path
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty());
+    if has_directory {
+        return resolve_command_candidate(command_path);
     }
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
-        let direct = dir.join(command);
-        if direct.is_file() {
-            return true;
+    let search_path = search_path?;
+    std::env::split_paths(search_path)
+        .find_map(|directory| resolve_command_candidate(&directory.join(command_path)))
+}
+
+#[cfg(not(windows))]
+fn resolve_command_candidate(candidate: &Path) -> Option<ResolvedCommand> {
+    candidate.is_file().then(|| {
+        let source = absolute_path(candidate);
+        ResolvedCommand {
+            program: source.clone(),
+            prefix_args: Vec::new(),
+            source,
         }
-        #[cfg(windows)]
-        {
-            return ["exe", "cmd", "bat"]
-                .iter()
-                .any(|suffix| dir.join(format!("{command}.{suffix}")).is_file());
-        }
-        #[cfg(not(windows))]
-        false
     })
+}
+
+#[cfg(windows)]
+fn resolve_command_candidate(candidate: &Path) -> Option<ResolvedCommand> {
+    if let Some(extension) = candidate.extension().and_then(|value| value.to_str()) {
+        if ["exe", "com"]
+            .iter()
+            .any(|supported| extension.eq_ignore_ascii_case(supported))
+        {
+            return candidate.is_file().then(|| direct_command(candidate));
+        }
+        if extension.eq_ignore_ascii_case("ps1") {
+            return resolve_powershell_shim(candidate);
+        }
+        if ["cmd", "bat"]
+            .iter()
+            .any(|supported| extension.eq_ignore_ascii_case(supported))
+        {
+            return resolve_powershell_shim(&candidate.with_extension("ps1"));
+        }
+        return None;
+    }
+    ["exe", "com"]
+        .iter()
+        .map(|extension| candidate.with_extension(extension))
+        .find(|path| path.is_file())
+        .map(|path| direct_command(&path))
+        .or_else(|| resolve_powershell_shim(&candidate.with_extension("ps1")))
+}
+
+#[cfg(windows)]
+fn direct_command(path: &Path) -> ResolvedCommand {
+    let source = absolute_path(path);
+    ResolvedCommand {
+        program: source.clone(),
+        prefix_args: Vec::new(),
+        source,
+    }
+}
+
+#[cfg(windows)]
+fn resolve_powershell_shim(path: &Path) -> Option<ResolvedCommand> {
+    if !path.is_file() {
+        return None;
+    }
+    let source = absolute_path(path);
+    Some(ResolvedCommand {
+        program: system_powershell()?,
+        prefix_args: vec![
+            "-NoLogo".into(),
+            "-NoProfile".into(),
+            "-NonInteractive".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+            "-File".into(),
+            source.display().to_string(),
+        ],
+        source,
+    })
+}
+
+#[cfg(windows)]
+fn system_powershell() -> Option<PathBuf> {
+    for root_name in ["SYSTEMROOT", "WINDIR"] {
+        if let Some(root) = std::env::var_os(root_name) {
+            let candidate =
+                PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+            if candidate.is_file() {
+                return Some(absolute_path(&candidate));
+            }
+        }
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join("powershell.exe"))
+        .find(|candidate| candidate.is_file())
+        .map(|candidate| absolute_path(&candidate))
+}
+
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|directory| directory.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
 }
 
 pub fn relative_slash(path: &Path) -> String {
@@ -174,4 +284,60 @@ pub fn relative_slash(path: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn resolves_windows_npm_shim_without_batch_argument_parsing() {
+        const SCRIPT: &str = r#"if ($args.Count -ne 2) { exit 90 }
+if ($args[0] -cne "line one`nline two & <review>") { exit 91 }
+if ($args[1] -cne 'quote"value') { exit 92 }
+exit 0
+"#;
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(temporary.path().join("agent"), "#!/bin/sh\n").unwrap();
+        std::fs::write(temporary.path().join("agent.cmd"), "@exit /b 0\r\n").unwrap();
+        std::fs::write(temporary.path().join("agent.ps1"), SCRIPT).unwrap();
+        let search_path = std::env::join_paths([temporary.path()]).unwrap();
+
+        let resolved = super::resolve_command_with_path("agent", Some(&search_path)).unwrap();
+
+        assert_eq!(resolved.source, temporary.path().join("agent.ps1"));
+        assert_eq!(
+            resolved.program.file_name().unwrap().to_string_lossy(),
+            "powershell.exe"
+        );
+        std::fs::remove_file(temporary.path().join("agent.ps1")).unwrap();
+        assert!(super::resolve_command_with_path("agent", Some(&search_path)).is_none());
+        std::fs::write(temporary.path().join("agent.ps1"), SCRIPT).unwrap();
+        assert!(
+            std::process::Command::new(resolved.program)
+                .args(resolved.prefix_args)
+                .arg("line one\nline two & <review>")
+                .arg("quote\"value")
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_unix_extensionless_command_directly() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let command = temporary.path().join("agent");
+        std::fs::write(&command, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let search_path = std::env::join_paths([temporary.path()]).unwrap();
+
+        let resolved = super::resolve_command_with_path("agent", Some(&search_path)).unwrap();
+
+        assert_eq!(resolved.source, command);
+        assert_eq!(resolved.program, command);
+        assert!(resolved.prefix_args.is_empty());
+    }
 }

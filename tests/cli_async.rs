@@ -7,7 +7,9 @@ use std::time::Duration;
 use assert_cmd::Command;
 use quinte::model::{Policy, RunStatus, SandboxMode, TEXT_MODEL};
 use quinte::store::Store;
-use quinte::util::{read_json, write_json};
+#[cfg(unix)]
+use quinte::util::read_json;
+use quinte::util::write_json;
 use serde_json::Value;
 
 fn fake_policy(executable: &std::path::Path) -> Policy {
@@ -149,9 +151,16 @@ fn run_returns_queued_immediately_and_worker_reaches_waiting_hm() {
         .timeout(Duration::from_secs(20))
         .output()
         .unwrap();
+    let store = Store::new(fixture.home.clone());
+    let manifest = store.load_manifest(&run_id).unwrap();
+    let run_dir = store.run_dir(&run_id);
+    let events = fs::read_to_string(run_dir.join("events.jsonl")).unwrap_or_default();
+    let worker_log = fs::read_to_string(run_dir.join("diagnostics/worker.log")).unwrap_or_default();
     assert!(
         waited.status.success(),
-        "{}",
+        "wait failed: status={} stdout={} stderr={} manifest={manifest:?} events={events} worker_log={worker_log}",
+        waited.status,
+        String::from_utf8_lossy(&waited.stdout),
         String::from_utf8_lossy(&waited.stderr)
     );
     let envelope: Value = serde_json::from_slice(&waited.stdout).unwrap();

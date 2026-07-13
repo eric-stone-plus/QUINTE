@@ -89,8 +89,8 @@ fn fake_agent_runs_through_build_spawn_and_direct_json_parse() {
     assert_eq!(invocation.args[0], "R1");
     assert_eq!(invocation.args[1], "Party A");
     assert_eq!(
-        invocation.args[2],
-        lane_root.join("input/packet.json").display().to_string()
+        fs::canonicalize(std::path::PathBuf::from(&invocation.args[2])).unwrap(),
+        fs::canonicalize(lane_root.join("input").join("packet.json")).unwrap()
     );
     assert_eq!(
         fs::read(lane_root.join("input/snapshot/root-0/evidence.txt")).unwrap(),
@@ -112,6 +112,50 @@ fn fake_agent_runs_through_build_spawn_and_direct_json_parse() {
     let parsed = parse_output(invocation.output_kind, &output.stdout).unwrap();
     assert_eq!(parsed.confidence, 0.75);
     cleanup_sensitive(&invocation).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn fake_agent_runs_through_windows_npm_style_shim() {
+    let temporary = tempfile::tempdir().unwrap();
+    let shim = temporary.path().join("quinte-fake-shim");
+    fs::write(&shim, "#!/bin/sh\n").unwrap();
+    fs::write(shim.with_extension("cmd"), "@exit /b 99\r\n").unwrap();
+    fs::write(
+        shim.with_extension("ps1"),
+        r#"if ($args.Count -ne 3) { exit 90 }
+if ($args[0] -cne 'R1') { exit 91 }
+if ($args[1] -cne 'Party A') { exit 92 }
+if (-not $args[2].EndsWith('input\packet.json')) { exit 93 }
+[Console]::Out.Write('{"lane_output_version":"1.0","task_restatement":"Review the supplied evidence packet.","verdict":"The bounded review completed.","confidence":0.75,"claims":[],"residuals":[],"uncertainties":[]}')
+exit 0
+"#,
+    )
+    .unwrap();
+    let run_dir = temporary.path().join("run-shim");
+    let packet = create_run_packet(&run_dir);
+    let lane_root = run_dir.join("lane");
+    let route = fake_route(&shim);
+
+    let invocation = build(&route, "R1", TEXT_MODEL, &packet, &lane_root, 30).unwrap();
+
+    assert!(invocation.program.ends_with("powershell.exe"));
+    assert!(invocation.args.iter().any(|arg| arg.ends_with(".ps1")));
+    let output = spawn_command(&invocation).output().unwrap();
+    assert!(
+        output.status.success(),
+        "fake npm-style shim failed: status={} stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !output.stdout.is_empty(),
+        "fake npm-style shim produced no output: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed = parse_output(invocation.output_kind, &output.stdout).unwrap();
+    assert_eq!(parsed.confidence, 0.75);
 }
 
 #[test]

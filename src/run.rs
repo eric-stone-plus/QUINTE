@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Stdio};
@@ -386,7 +386,7 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
 }
 
 /// Starts the scheduler in a separate process so the creating CLI can return immediately.
-pub fn spawn_worker(store: &Store, run_id: &str) -> anyhow::Result<u32> {
+pub(crate) fn spawn_worker(store: &Store, run_id: &str) -> anyhow::Result<u32> {
     let run_dir = store.run_dir(run_id);
     let diagnostics_dir = run_dir.join("diagnostics");
     fs::create_dir_all(&diagnostics_dir)?;
@@ -401,26 +401,14 @@ pub fn spawn_worker(store: &Store, run_id: &str) -> anyhow::Result<u32> {
     let stderr = OpenOptions::new().append(true).open(&log_path)?;
     drop(log);
 
-    let mut command = std::process::Command::new(std::env::current_exe()?);
-    command
-        .arg("--home")
-        .arg(store.home())
-        .arg("__worker")
-        .arg(run_id)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
-    configure_worker_process(&mut command);
-
-    let child = command
-        .spawn()
+    let mut worker = spawn_background_worker(store.home(), run_id, stdout, stderr)
         .with_context(|| format!("cannot start background worker for run {run_id}"))?;
-    let pid = child.id();
+    let pid = worker.pid();
     if let Err(error) = write_json(
         &diagnostics_dir.join("worker.json"),
         &json!({"pid": pid, "started_at": utc_now()}),
     ) {
-        kill_process_tree(pid, false);
+        worker.terminate();
         return Err(error).context("worker started but metadata could not be persisted");
     }
     Ok(pid)
@@ -446,6 +434,8 @@ pub struct WorkerHeartbeat {
     handle: Option<thread::JoinHandle<()>>,
     run_dir: PathBuf,
 }
+
+pub struct WorkerStdioGuard;
 
 impl WorkerHeartbeat {
     pub fn start(store: &Store, run_id: &str) -> Self {
@@ -475,18 +465,329 @@ impl Drop for WorkerHeartbeat {
     }
 }
 
-#[cfg(unix)]
-fn configure_worker_process(command: &mut std::process::Command) {
+#[cfg(not(windows))]
+fn spawn_background_worker(
+    home: &Path,
+    run_id: &str,
+    stdout: File,
+    stderr: File,
+) -> std::io::Result<BackgroundWorker> {
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .arg("--home")
+        .arg(home)
+        .arg("__worker")
+        .arg(run_id)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+
+    #[cfg(unix)]
     use std::os::unix::process::CommandExt;
+    #[cfg(unix)]
     command.process_group(0);
+
+    command.spawn().map(BackgroundWorker)
+}
+
+#[cfg(not(windows))]
+struct BackgroundWorker(Child);
+
+#[cfg(not(windows))]
+impl BackgroundWorker {
+    fn pid(&self) -> u32 {
+        self.0.id()
+    }
+
+    fn terminate(&mut self) {
+        kill_process_tree(self.pid(), true);
+    }
 }
 
 #[cfg(windows)]
-fn configure_worker_process(command: &mut std::process::Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+struct BackgroundWorker {
+    pid: u32,
+    process: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl BackgroundWorker {
+    fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    fn terminate(&mut self) {
+        use windows_sys::Win32::System::Threading::TerminateProcess;
+
+        kill_process_tree(self.pid(), true);
+        unsafe {
+            TerminateProcess(self.process, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for BackgroundWorker {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.process);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn spawn_background_worker(
+    home: &Path,
+    run_id: &str,
+    stdout: File,
+    stderr: File,
+) -> std::io::Result<BackgroundWorker> {
+    use std::ffi::OsStr;
+    use std::mem::size_of;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::{CloseHandle, DUPLICATE_SAME_ACCESS, HANDLE};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW, STARTUPINFOW, UpdateProcThreadAttribute,
+    };
+
+    struct OwnedHandle(HANDLE);
+
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    fn duplicate_inheritable(raw: HANDLE) -> std::io::Result<OwnedHandle> {
+        use windows_sys::Win32::Foundation::{DuplicateHandle, HANDLE};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        let process = unsafe { GetCurrentProcess() };
+        let mut duplicated: HANDLE = null_mut();
+        if unsafe {
+            DuplicateHandle(
+                process,
+                raw,
+                process,
+                &mut duplicated,
+                0,
+                1,
+                DUPLICATE_SAME_ACCESS,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(OwnedHandle(duplicated))
+    }
+
+    struct AttributeList {
+        storage: Vec<usize>,
+    }
+
+    impl AttributeList {
+        fn for_handles(handles: &[HANDLE]) -> std::io::Result<Self> {
+            let mut required_size = 0;
+            unsafe {
+                InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut required_size);
+            }
+            if required_size == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            let words = required_size.div_ceil(size_of::<usize>());
+            let mut storage = vec![0usize; words];
+            let list = storage.as_mut_ptr().cast();
+            if unsafe { InitializeProcThreadAttributeList(list, 1, 0, &mut required_size) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if unsafe {
+                UpdateProcThreadAttribute(
+                    list,
+                    0,
+                    PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                    handles.as_ptr().cast(),
+                    std::mem::size_of_val(handles),
+                    null_mut(),
+                    null(),
+                )
+            } == 0
+            {
+                let error = std::io::Error::last_os_error();
+                unsafe {
+                    DeleteProcThreadAttributeList(list);
+                }
+                return Err(error);
+            }
+            Ok(Self { storage })
+        }
+
+        fn as_ptr(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
+            self.storage.as_mut_ptr().cast()
+        }
+    }
+
+    impl Drop for AttributeList {
+        fn drop(&mut self) {
+            unsafe {
+                DeleteProcThreadAttributeList(self.as_ptr());
+            }
+        }
+    }
+
+    fn push_quoted(target: &mut Vec<u16>, value: &OsStr) -> std::io::Result<()> {
+        let units = value.encode_wide().collect::<Vec<_>>();
+        if units.contains(&0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "worker argument contains a null character",
+            ));
+        }
+
+        target.push(b'"' as u16);
+        let mut backslashes = 0;
+        for unit in units {
+            if unit == b'\\' as u16 {
+                backslashes += 1;
+                continue;
+            }
+            for _ in 0..backslashes {
+                target.push(b'\\' as u16);
+            }
+            if unit == b'"' as u16 {
+                for _ in 0..=backslashes {
+                    target.push(b'\\' as u16);
+                }
+            }
+            target.push(unit);
+            backslashes = 0;
+        }
+        for _ in 0..backslashes {
+            target.extend([b'\\' as u16, b'\\' as u16]);
+        }
+        target.push(b'"' as u16);
+        Ok(())
+    }
+
+    let executable = std::env::current_exe()?;
+    let args = [
+        executable.as_os_str(),
+        OsStr::new("--home"),
+        home.as_os_str(),
+        OsStr::new("__worker"),
+        OsStr::new(run_id),
+    ];
+    let mut command_line = Vec::new();
+    for (index, arg) in args.into_iter().enumerate() {
+        if index != 0 {
+            command_line.push(b' ' as u16);
+        }
+        push_quoted(&mut command_line, arg)?;
+    }
+    command_line.push(0);
+
+    let mut application = executable.as_os_str().encode_wide().collect::<Vec<_>>();
+    if application.contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "worker executable path contains a null character",
+        ));
+    }
+    application.push(0);
+
+    let stdin = OpenOptions::new().read(true).write(true).open("NUL")?;
+    let stdin_handle = duplicate_inheritable(stdin.as_raw_handle() as HANDLE)?;
+    let stdout_handle = duplicate_inheritable(stdout.as_raw_handle() as HANDLE)?;
+    let stderr_handle = duplicate_inheritable(stderr.as_raw_handle() as HANDLE)?;
+    let handles = [stdin_handle.0, stdout_handle.0, stderr_handle.0];
+    let mut attribute_list = AttributeList::for_handles(&handles)?;
+
+    let mut startup = STARTUPINFOEXW::default();
+    startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = stdin_handle.0;
+    startup.StartupInfo.hStdOutput = stdout_handle.0;
+    startup.StartupInfo.hStdError = stderr_handle.0;
+    startup.lpAttributeList = attribute_list.as_ptr();
+    let mut process = PROCESS_INFORMATION::default();
+    let flags = CREATE_NEW_PROCESS_GROUP
+        | CREATE_NO_WINDOW
+        | CREATE_UNICODE_ENVIRONMENT
+        | EXTENDED_STARTUPINFO_PRESENT;
+    if unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            command_line.as_mut_ptr(),
+            null(),
+            null(),
+            1,
+            flags,
+            null(),
+            null(),
+            (&startup as *const STARTUPINFOEXW).cast::<STARTUPINFOW>(),
+            &mut process,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    unsafe {
+        CloseHandle(process.hThread);
+    }
+    Ok(BackgroundWorker {
+        pid: process.dwProcessId,
+        process: process.hProcess,
+    })
+}
+
+#[cfg(windows)]
+fn clear_worker_stdio_inheritance(
+    handles: &[windows_sys::Win32::Foundation::HANDLE],
+) -> anyhow::Result<()> {
+    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+
+    let mut cleared = Vec::new();
+    for &handle in handles {
+        if handle.is_null() || cleared.contains(&handle) {
+            continue;
+        }
+        if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+            bail!(
+                "cannot disable worker standard-handle inheritance: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        cleared.push(handle);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn prepare_worker_stdio() -> anyhow::Result<WorkerStdioGuard> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+
+    let handles = [
+        std::io::stdin().as_raw_handle() as HANDLE,
+        std::io::stdout().as_raw_handle() as HANDLE,
+        std::io::stderr().as_raw_handle() as HANDLE,
+    ];
+    clear_worker_stdio_inheritance(&handles)?;
+    Ok(WorkerStdioGuard)
+}
+
+#[cfg(not(windows))]
+pub fn prepare_worker_stdio() -> anyhow::Result<WorkerStdioGuard> {
+    Ok(WorkerStdioGuard)
 }
 
 /// Converts an unexpected scheduler error into a durable terminal state.
@@ -1613,14 +1914,18 @@ fn run_attempt(
         .spawn()
         .with_context(|| format!("cannot start {}", invocation.program))?;
     let mut child = ChildCleanup::new(child, store, &manifest.run_id);
-    let active_process = ActiveProcess {
-        pid: child.child.id(),
-        identity: process_identity(child.child.id())
-            .ok_or_else(|| anyhow!("cannot identify spawned adapter process"))?,
-        program: invocation.program.clone(),
-    };
-    registration.add_process(active_process.clone())?;
-    child.mark_registered(active_process);
+    let pid = child.child.id();
+    if let Some(identity) = process_identity(pid) {
+        let active_process = ActiveProcess {
+            pid,
+            identity,
+            program: invocation.program.clone(),
+        };
+        registration.add_process(active_process.clone())?;
+        child.mark_registered(active_process);
+    } else if child.child.try_wait()?.is_none() {
+        bail!("cannot identify spawned adapter process");
+    }
     drop(registration);
     let mut stdout_reader = child
         .child
@@ -2619,5 +2924,53 @@ mod retry_tests {
         assert_eq!(first, same);
         assert!(first.delay >= std::time::Duration::from_secs(30));
         assert!(first.delay <= std::time::Duration::from_secs(policy.retry_backoff_max_seconds));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn worker_stdio_handles_stop_inheriting_before_adapter_spawn() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{
+            DUPLICATE_SAME_ACCESS, DuplicateHandle, GetHandleInformation, HANDLE,
+            HANDLE_FLAG_INHERIT,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        let null = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("NUL")
+            .unwrap();
+        let process = unsafe { GetCurrentProcess() };
+        let mut duplicated: HANDLE = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                DuplicateHandle(
+                    process,
+                    null.as_raw_handle() as HANDLE,
+                    process,
+                    &mut duplicated,
+                    0,
+                    1,
+                    DUPLICATE_SAME_ACCESS,
+                )
+            },
+            0
+        );
+        let duplicated = unsafe { OwnedHandle::from_raw_handle(duplicated) };
+        let mut flags = 0;
+        assert_ne!(
+            unsafe { GetHandleInformation(duplicated.as_raw_handle() as HANDLE, &mut flags) },
+            0
+        );
+        assert_ne!(flags & HANDLE_FLAG_INHERIT, 0);
+
+        super::clear_worker_stdio_inheritance(&[duplicated.as_raw_handle() as HANDLE]).unwrap();
+
+        assert_ne!(
+            unsafe { GetHandleInformation(duplicated.as_raw_handle() as HANDLE, &mut flags) },
+            0
+        );
+        assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
     }
 }

@@ -36,6 +36,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - name: Test native target
+        run: cargo test --locked --all-features --target ${{ matrix.target }}
       - name: Build release binary
         run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Package Unix binary

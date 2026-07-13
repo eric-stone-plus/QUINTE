@@ -374,6 +374,7 @@ fn execute(cli: Cli) -> anyhow::Result<i32> {
             Ok(0)
         }
         Command::Worker(args) => {
+            let _worker_stdio = run::prepare_worker_stdio()?;
             ensure_initialized(&store)?;
             let _heartbeat = run::WorkerHeartbeat::start(&store, &args.run_id);
             match run::advance(&store, &args.run_id) {

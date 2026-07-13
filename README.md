@@ -188,6 +188,8 @@ that authority.
 - [CLI specification](specs/CLI.md) defines the v0.1 executable boundary.
 - [Dispatch specification](specs/DISPATCH.md) documents the earlier phase-only
   manifest and ledger compatibility layer.
+- [Windows PowerShell development log](docs/windows-powershell-development-log.md)
+  records the native process-launch design and regression boundary.
 - [JSON schemas](schemas/) define accepted brief, lane, hm response, result,
   and compatibility artifacts.
 - [QUINTE skill](skills/SKILL.md) is a thin Hermes entry point to the CLI.
