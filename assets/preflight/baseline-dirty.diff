@@ -1,0 +1,254 @@
+diff --git a/src/doctor.rs b/src/doctor.rs
+index 248def4..9133ee6 100644
+--- a/src/doctor.rs
++++ b/src/doctor.rs
+@@ -1,7 +1,7 @@
+ use serde::Serialize;
+ 
+ use crate::adapters;
+-use crate::model::{Policy, SandboxMode};
++use crate::model::{PACKAGE_VERSION, Policy, SandboxMode};
+ use crate::util::command_exists;
+ 
+ #[derive(Debug, Serialize)]
+@@ -49,7 +49,7 @@ pub fn run(policy: &Policy) -> DoctorReport {
+         }));
+     }
+     DoctorReport {
+-        doctor_version: "1.0",
++        doctor_version: PACKAGE_VERSION,
+         ok: required_ok && sandbox_ok,
+         platform: std::env::consts::OS.to_string(),
+         checks,
+diff --git a/src/model.rs b/src/model.rs
+index aa11d86..c3d6c86 100644
+--- a/src/model.rs
++++ b/src/model.rs
+@@ -4,10 +4,11 @@ use std::path::PathBuf;
+ use serde::{Deserialize, Serialize};
+ use serde_json::Value;
+ 
+-pub const PROTOCOL_VERSION: &str = "1.0";
+-pub const BRIEF_VERSION: &str = "1.0";
+-pub const RESULT_VERSION: &str = "1.0";
+-pub const POLICY_VERSION: &str = "1.0";
++pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
++pub const PROTOCOL_VERSION: &str = PACKAGE_VERSION;
++pub const BRIEF_VERSION: &str = PACKAGE_VERSION;
++pub const RESULT_VERSION: &str = PACKAGE_VERSION;
++pub const POLICY_VERSION: &str = PACKAGE_VERSION;
+ pub const TEXT_MODEL: &str = "mimo-v2.5-pro";
+ pub const MULTIMODAL_MODEL: &str = "mimo-v2.5";
+ 
+@@ -379,7 +380,7 @@ pub struct CliEnvelope<T: Serialize> {
+ impl<T: Serialize> CliEnvelope<T> {
+     pub fn ok(data: T) -> Self {
+         Self {
+-            cli_envelope_version: "1.0",
++            cli_envelope_version: PACKAGE_VERSION,
+             ok: true,
+             data,
+         }
+diff --git a/src/run.rs b/src/run.rs
+index 5db74d1..6b8f691 100644
+--- a/src/run.rs
++++ b/src/run.rs
+@@ -21,9 +21,9 @@ use crate::adapters::{self, Invocation};
+ use crate::model::{
+     ArbiterVerdict, ArtifactBinding, AttachmentEntry, Brief, ClosureState, Disposition,
+     HmChallenge, HmResponse, HmSubmissionReceipt, HmSubmissionState, LaneArtifactBinding,
+-    LaneOutput, MULTIMODAL_MODEL, Policy, R2Packet, R3InputReceipt, RESULT_VERSION, Residual,
+-    ResultEnvelope, RunError, RunManifest, RunStatus, SnapshotEntry, SnapshotManifest, TEXT_MODEL,
+-    TrialManifest, TrialPerspective,
++    LaneOutput, MULTIMODAL_MODEL, PACKAGE_VERSION, PROTOCOL_VERSION, Policy, R2Packet,
++    R3InputReceipt, RESULT_VERSION, Residual, ResultEnvelope, RunError, RunManifest, RunStatus,
++    SnapshotEntry, SnapshotManifest, TEXT_MODEL, TrialManifest, TrialPerspective,
+ };
+ use crate::policy;
+ use crate::schema::{
+@@ -260,7 +260,7 @@ fn persist_retry_deadline(
+     write_json(
+         &retry_deadline_path(run_dir, phase, &route.route_id),
+         &RetryDeadlineState {
+-            retry_state_version: "1.0".into(),
++            retry_state_version: PACKAGE_VERSION.into(),
+             phase: phase.into(),
+             route_id: route.route_id.clone(),
+             previous_attempt,
+@@ -285,7 +285,7 @@ fn wait_for_retry_deadline(
+         return Ok(());
+     }
+     let state: RetryDeadlineState = read_json(&path)?;
+-    if state.retry_state_version != "1.0"
++    if state.retry_state_version != PACKAGE_VERSION
+         || state.phase != phase
+         || state.route_id != route.route_id
+         || state.next_attempt != attempt
+@@ -363,7 +363,7 @@ fn persist_r2_pacing_until(
+     write_json(
+         &path,
+         &R2RateState {
+-            rate_state_version: "1.0".into(),
++            rate_state_version: PACKAGE_VERSION.into(),
+             next_allowed_at: due_at.to_rfc3339(),
+             reason: reason.into(),
+             route_id: route.route_id.clone(),
+@@ -385,7 +385,7 @@ fn wait_for_r2_pacing(
+         return Ok(());
+     }
+     let state: R2RateState = read_json(&path)?;
+-    if state.rate_state_version != "1.0" {
++    if state.rate_state_version != PACKAGE_VERSION {
+         bail!("unsupported R2 rate state version");
+     }
+     let due_at = chrono::DateTime::parse_from_rfc3339(&state.next_allowed_at)?.with_timezone(&Utc);
+@@ -433,8 +433,8 @@ fn wait_cancellable(run_dir: &Path, duration: Duration) -> bool {
+ 
+ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::Result<RunCreated> {
+     let brief: Brief = validate_file(&options.brief_path, BRIEF_SCHEMA)?;
+-    if brief.brief_version != "1.0" || brief.question.trim().is_empty() {
+-        bail!("brief_version must be 1.0 and question must not be empty");
++    if brief.brief_version != PACKAGE_VERSION || brief.question.trim().is_empty() {
++        bail!("brief_version must be {PACKAGE_VERSION} and question must not be empty");
+     }
+     policy::validate_for_runtime(policy)?;
+ 
+@@ -460,7 +460,7 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
+     let runtime_sha256 = runtime_sha256()?;
+     let now = utc_now();
+     let manifest = RunManifest {
+-        manifest_version: "1.0".to_string(),
++        manifest_version: PACKAGE_VERSION.to_string(),
+         run_id: run_id.clone(),
+         created_at: now.clone(),
+         updated_at: now,
+@@ -469,7 +469,7 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
+         policy_sha256,
+         snapshot_sha256,
+         runtime_sha256,
+-        protocol_version: "1.0".to_string(),
++        protocol_version: PROTOCOL_VERSION.to_string(),
+         effective_model: effective_model.to_string(),
+         sandbox_mode: policy.sandbox_mode,
+         current_phase: None,
+@@ -1072,7 +1072,7 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
+     let evidence_packet_path = run_dir.join("r3/evidence-packet.json");
+     if !evidence_packet_path.exists() {
+         let evidence = json!({
+-            "evidence_packet_version": "1.0",
++            "evidence_packet_version": PACKAGE_VERSION,
+             "run_id": run_id,
+             "question": brief.question,
+             "r1": r1.iter().map(|lane| (&lane.party_id, &lane.output)).collect::<BTreeMap<_, _>>(),
+@@ -1282,7 +1282,7 @@ pub fn submit_hm_verdict(
+         .hm_challenge
+         .ok_or_else(|| anyhow!("hm challenge is not ready"))?;
+     let response = HmResponse {
+-        hm_response_version: "1.0".into(),
++        hm_response_version: PACKAGE_VERSION.into(),
+         run_id: challenge.run_id,
+         nonce: challenge.nonce,
+         policy_sha256: challenge.policy_sha256,
+@@ -1350,7 +1350,7 @@ fn submit_hm_response(
+             .sha256
+             .clone();
+         manifest.hm_submission = Some(HmSubmissionReceipt {
+-            submission_receipt_version: "1.0".into(),
++            submission_receipt_version: PACKAGE_VERSION.into(),
+             state: HmSubmissionState::Staging,
+             response_ref: "r3/hm-response.json".into(),
+             response_sha256: response_sha256.clone(),
+@@ -1513,7 +1513,7 @@ fn build_snapshot(
+ 
+     entries.sort_by(|left, right| left.snapshot_ref.cmp(&right.snapshot_ref));
+     Ok(SnapshotManifest {
+-        snapshot_version: "1.0".into(),
++        snapshot_version: PACKAGE_VERSION.into(),
+         created_at: utc_now(),
+         entries,
+         attachments,
+@@ -1757,7 +1757,7 @@ fn run_phase(
+         .unwrap_or_else(|| run_dir.join("input/task-packet.json"));
+     if packet_override.is_none() && !packet_path.exists() {
+         let packet = json!({
+-            "task_packet_version": "1.0",
++            "task_packet_version": PACKAGE_VERSION,
+             "run_id": manifest.run_id,
+             "phase": phase,
+             "question": brief.question,
+@@ -2679,7 +2679,7 @@ fn build_r2_packet(
+         .map(|(label, lane)| (label.to_string(), lane.output.clone()))
+         .collect();
+     Ok(R2Packet {
+-        packet_version: "1.0".into(),
++        packet_version: PACKAGE_VERSION.into(),
+         run_id: manifest.run_id.clone(),
+         question: brief.question.clone(),
+         participants,
+@@ -2701,7 +2701,7 @@ fn create_hm_challenge(
+     let mut nonce = [0_u8; 32];
+     rand::rng().fill_bytes(&mut nonce);
+     Ok(HmChallenge {
+-        challenge_version: "1.0".into(),
++        challenge_version: PACKAGE_VERSION.into(),
+         run_id: manifest.run_id.clone(),
+         nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce),
+         policy_sha256: manifest.policy_sha256.clone(),
+@@ -2787,7 +2787,7 @@ fn ensure_r3_input_receipt(
+     }
+ 
+     let receipt = R3InputReceipt {
+-        input_receipt_version: "1.0".into(),
++        input_receipt_version: PACKAGE_VERSION.into(),
+         run_id: manifest.run_id.clone(),
+         issued_at: utc_now(),
+         r1: phase_artifact_bindings(r1, run_dir)?,
+@@ -2959,7 +2959,7 @@ fn response_bytes_with_newline(mut bytes: Vec<u8>) -> Vec<u8> {
+ 
+ fn arbiter_from_lane(output: LaneOutput) -> ArbiterVerdict {
+     ArbiterVerdict {
+-        arbiter_verdict_version: "1.0".into(),
++        arbiter_verdict_version: PACKAGE_VERSION.into(),
+         summary: output.verdict.clone(),
+         recommendation: output.verdict,
+         residuals: output.residuals,
+@@ -3033,7 +3033,7 @@ fn merge_verdicts(
+         dissent,
+         residuals: residuals.into_values().collect(),
+         trial_manifest: TrialManifest {
+-            manifest_version: "1.0".into(),
++            manifest_version: PACKAGE_VERSION.into(),
+             base_model_relation: "same_model".into(),
+             perspective_count: 5,
+             perspectives,
+diff --git a/src/store.rs b/src/store.rs
+index c39b90b..66dd777 100644
+--- a/src/store.rs
++++ b/src/store.rs
+@@ -6,7 +6,7 @@ use fs2::FileExt;
+ use serde::{Deserialize, Serialize};
+ use serde_json::{Value, json};
+ 
+-use crate::model::{Event, RunError, RunManifest, RunStatus};
++use crate::model::{Event, PACKAGE_VERSION, RunError, RunManifest, RunStatus};
+ use crate::schema::{RUN_EVENT_SCHEMA, RUN_MANIFEST_SCHEMA, validate_value};
+ use crate::util::{append_jsonl, atomic_write, read_json, utc_now, write_json};
+ 
+@@ -296,7 +296,7 @@ impl Store {
+         }
+         let sequence = existing.last().map_or(1, |event| event.sequence + 1);
+         let event = Event {
+-            event_version: "1.0".to_string(),
++            event_version: PACKAGE_VERSION.to_string(),
+             sequence,
+             timestamp: timestamp.to_string(),
+             run_id: run_id.to_string(),
+@@ -495,7 +495,7 @@ impl Store {
+         });
+         if !already_recorded {
+             let event = Event {
+-                event_version: "1.0".into(),
++                event_version: PACKAGE_VERSION.into(),
+                 sequence: events.last().map_or(1, |event| event.sequence + 1),
+                 timestamp: pending.timestamp.clone(),
+                 run_id: manifest.run_id.clone(),

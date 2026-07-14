@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QUINTE 残差管理机制调优分析报告</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#c9d1d9;font-size:13px;line-height:1.45;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;padding:20px;width:92vw;max-width:1400px;margin:0 auto}
+h1{color:#ffffff;font-size:22px;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid #21262d}
+h2{color:#58a6ff;font-size:16px;margin:20px 0 12px;padding-left:8px;border-left:3px solid #58a6ff}
+h3{color:#8b949e;font-size:14px;margin:16px 0 8px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px 20px;margin:12px 0}
+.card-green{border-left:3px solid #3fb950}
+.card-blue{border-left:3px solid #58a6ff}
+.card-yellow{border-left:3px solid #d29922}
+.card-red{border-left:3px solid #f85149}
+.card-purple{border-left:3px solid #bc8cff}
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;margin-right:6px}
+.badge-green{background:#238636;color:#ffffff}
+.badge-blue{background:#1f6feb;color:#ffffff}
+.badge-yellow{background:#9e6a03;color:#ffffff}
+.badge-red{background:#da3633;color:#ffffff}
+.badge-purple{background:#8957e5;color:#ffffff}
+table{width:100%;border-collapse:collapse;margin:8px 0;font-size:12px}
+th{background:#21262d;color:#8b949e;text-align:left;padding:6px 10px;border:1px solid #30363d;font-weight:600}
+td{padding:6px 10px;border:1px solid #30363d;vertical-align:top}
+tr:nth-child(even){background:#161b22}
+tr:nth-child(odd){background:#0d1117}
+.total-row{background:#1c2128!important;font-weight:700}
+.total-row td{border-top:2px solid #58a6ff}
+.highlight{color:#f0883e;font-weight:600}
+.success{color:#3fb950}
+.warning{color:#d29922}
+.error{color:#f85149}
+.info{color:#58a6ff}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin:12px 0}
+.stat{text-align:center;padding:16px}
+.stat-value{font-size:24px;font-weight:700;color:#ffffff}
+.stat-label{font-size:11px;color:#8b949e;margin-top:4px}
+ul,ol{padding-left:22px;margin:8px 0}
+li{margin:4px 0}
+.meta{color:#8b949e;font-size:11px;margin-top:4px}
+.divider{border:0;border-top:1px solid #21262d;margin:16px 0}
+.verdict-box{background:#0d1117;border:2px solid #3fb950;border-radius:8px;padding:16px 20px;margin:16px 0}
+.verdict-title{color:#3fb950;font-size:16px;font-weight:700;margin-bottom:8px}
+.residual-box{background:#0d1117;border:2px solid #d29922;border-radius:8px;padding:16px 20px;margin:12px 0}
+.residual-title{color:#d29922;font-size:14px;font-weight:700;margin-bottom:8px}
+.quinte-badge{display:inline-flex;align-items:center;gap:4px;background:#21262d;border:1px solid #30363d;border-radius:4px;padding:2px 8px;font-size:11px;color:#8b949e}
+.quinte-dot{width:6px;height:6px;border-radius:50%;background:#3fb950}
+</style>
+</head>
+<body>
+
+<h1>QUINTE 残差管理机制调优分析报告</h1>
+
+<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+  <div class="meta">Run ID: 019f610a-05e6-7ec2-b376-54fc670cf889</div>
+  <div class="meta">日期: 2026-07-14</div>
+  <div class="meta">案例: KING LOONG 装港滞期费</div>
+  <div class="meta">
+    <span class="quinte-badge"><span class="quinte-dot"></span>QUINTE 五方辩论</span>
+  </div>
+</div>
+
+<hr class="divider">
+
+<!-- 汇总统计 -->
+<div class="grid">
+  <div class="card card-purple stat">
+    <div class="stat-value">5/5</div>
+    <div class="stat-label">五方全员出席</div>
+  </div>
+  <div class="card card-green stat">
+    <div class="stat-value">10/10</div>
+    <div class="stat-label">R1+R2 输出通过</div>
+  </div>
+  <div class="card card-yellow stat">
+    <div class="stat-value">6</div>
+    <div class="stat-label">QUINTE 识别残差</div>
+  </div>
+  <div class="card card-blue stat">
+    <div class="stat-value">~10min</div>
+    <div class="stat-label">总运行时间</div>
+  </div>
+</div>
+
+<!-- 核心结论 -->
+<h2>核心结论</h2>
+
+<div class="verdict-box">
+  <div class="verdict-title">五方共识结论</div>
+  <p>QUINTE残差管理机制在KING LOONG案例中表现基本健全，但暴露<strong>四个结构性缺口</strong>：</p>
+  <ol>
+    <li><strong>残差识别准确性</strong>受同模型家族盲区限制——五方均使用mimo-v2.5-pro，识别结果高度一致但可能遗漏共同盲区</li>
+    <li><strong>严重度分级</strong>无量化标准——三个MEDIUM残差金额跨度7.5倍($1,081-$8,163)，缺乏金额阈值指引</li>
+    <li><strong>residual_type</strong>为自由文本无枚举约束——阻碍跨run聚合、先例匹配和自动化closure路由</li>
+    <li><strong>closure机制</strong>纯描述性——无结构化路径区分可自动关闭(data_gap)与需外部证据(contract_ambiguity)的残差</li>
+  </ol>
+  <p style="margin-top:12px"><strong>核心建议</strong>：引入L1枚举+L2自由文本的分层类型、可选impact_amount_usd字段、closure_pathway枚举+auto_closeable布尔值。</p>
+</div>
+
+<!-- QUINTE 识别的残差 -->
+<h2>QUINTE 识别的残差（6项）</h2>
+
+<div class="residual-box">
+  <div class="residual-title"><span class="badge badge-red">HIGH</span> R1-residual-type-free-text</div>
+  <table>
+    <tr><th style="width:160px">发现</th><td>residual_type为自由文本(minLength 1, maxLength 100, 无枚举约束)。KING LOONG四个残差使用不同标签，无法程序化分类。五方R1+R2共10个输出一致指出此问题。</td></tr>
+    <tr><th>影响范围</th><td>lane-output.schema.json residual定义，影响所有QUINTE run</td></tr>
+    <tr><th>closure要求</th><td>在lane-output.schema.json中增加L1枚举(contract_ambiguity, calculation_ambiguity, documentation_gap, operational_ambiguity, evidence_quality, precedent_conflict, systemic_risk) + 保留L2自由文本detail字段</td></tr>
+    <tr><th>状态</th><td><span class="badge badge-yellow">unresolved</span> <span class="badge badge-gray">open</span></td></tr>
+  </table>
+</div>
+
+<div class="residual-box">
+  <div class="residual-title"><span class="badge badge-yellow">MEDIUM</span> R1-same-family-blind-spot-unencoded</div>
+  <table>
+    <tr><th style="width:160px">发现</th><td>五方均使用mimo-v2.5-pro behavioral perturbations（不是独立确认）。所有party识别完全相同的4个残差，无独特发现。NOR接受验证和$0.31舍入差被普遍遗漏。</td></tr>
+    <tr><th>影响范围</th><td>QUINTE协议残差识别可靠性，影响所有run</td></tr>
+    <tr><th>closure要求</th><td>引入独立模型家族，或在每次run的result中强制附加systemic_risk残差标记同族限制</td></tr>
+    <tr><th>状态</th><td><span class="badge badge-yellow">unresolved</span> <span class="badge badge-gray">open</span></td></tr>
+  </table>
+</div>
+
+<div class="residual-box">
+  <div class="residual-title"><span class="badge badge-yellow">MEDIUM</span> R2-severity-no-quantified-threshold</div>
+  <table>
+    <tr><th style="width:160px">发现</th><td>severity枚举(LOW/MEDIUM/HIGH/CRITICAL/P0)无量化标准。KING LOONG三个MEDIUM残差金额$1,081-$8,163(跨度7.5倍)，无法区分优先级。</td></tr>
+    <tr><th>影响范围</th><td>lane-output.schema.json residual severity定义</td></tr>
+    <tr><th>closure要求</th><td>增加可选impact_amount_usd字段，或在schema文档中定义金额阈值指引</td></tr>
+    <tr><th>状态</th><td><span class="badge badge-yellow">unresolved</span> <span class="badge badge-gray">open</span></td></tr>
+  </table>
+</div>
+
+<div class="residual-box">
+  <div class="residual-title"><span class="badge badge-yellow">MEDIUM</span> R3-closure-no-pathway-metadata</div>
+  <table>
+    <tr><th style="width:160px">发现</th><td>closure_state/closure_evidence字段存在但无路径元数据。无法区分需外部证据的残差(contract_ambiguity)与可自动关闭的残差(documentation_gap)。五方一致指出此问题。</td></tr>
+    <tr><th>影响范围</th><td>lane-output.schema.json和result.schema.json残差定义</td></tr>
+    <tr><th>closure要求</th><td>增加closure_pathway枚举(document_retrieval, precedent_match, counterparty_confirmation, contractual_ruling, recalculation)和auto_closeable布尔值</td></tr>
+    <tr><th>状态</th><td><span class="badge badge-yellow">unresolved</span> <span class="badge badge-gray">open</span></td></tr>
+  </table>
+</div>
+
+<div class="residual-box">
+  <div class="residual-title"><span class="badge badge-yellow">MEDIUM</span> R4-same-family-blind-spot-unencoded</div>
+  <table>
+    <tr><th style="width:160px">发现</th><td>五方均使用mimo-v2.5-pro behavioral perturbations(PROTOCOL.md明确声明'not independent truth confirmation')。KING LOONG中五方识别完全相同的4个残差，无独特发现。同族模型风险在trial_manifest.contamination_risks中记录但未编码为残差。</td></tr>
+    <tr><th>影响范围</th><td>QUINTE协议层，影响所有使用同族模型的run</td></tr>
+    <tr><th>closure要求</th><td>引入独立模型家族，或在R3增加bias-audit步骤</td></tr>
+    <tr><th>状态</th><td><span class="badge badge-yellow">unresolved</span> <span class="badge badge-gray">open</span></td></tr>
+  </table>
+</div>
+
+<div class="residual-box">
+  <div class="residual-title"><span class="badge badge-gray">LOW</span> R2-r1-merge-dedup-undocumented</div>
+  <table>
+    <tr><th style="width:160px">发现</th><td>PROTOCOL.md记录R3双arbiter合并规则，但R1五方残差合并策略未文档化。不同party可能用不同id描述同一概念。CLI可能静默丢弃少数派的verified disposition。</td></tr>
+    <tr><th>影响范围</th><td>QUINTE CLI合并逻辑和PROTOCOL.md</td></tr>
+    <tr><th>closure要求</th><td>在CLI.md或PROTOCOL.md中记录R1五方残差去重策略</td></tr>
+    <tr><th>状态</th><td><span class="badge badge-yellow">unresolved</span> <span class="badge badge-gray">open</span></td></tr>
+  </table>
+</div>
+
+<!-- 调优建议 -->
+<h2>调优建议（按优先级）</h2>
+
+<div class="card card-green">
+  <h3><span class="badge badge-red">P0</span> 立即实施</h3>
+  <table>
+    <tr><th style="width:200px">项目</th><th>具体措施</th><th>涉及文件</th></tr>
+    <tr>
+      <td>residual_type枚举化</td>
+      <td>改为L1枚举(~6类型: contract_ambiguity, calculation_ambiguity, documentation_gap, operational_ambiguity, evidence_quality, precedent_conflict) + L2自由文本detail字段</td>
+      <td>lane-output.schema.json</td>
+    </tr>
+    <tr>
+      <td>impact_amount字段</td>
+      <td>增加可选impact_amount_usd数值字段，支持数据驱动严重度判定</td>
+      <td>lane-output.schema.json</td>
+    </tr>
+  </table>
+</div>
+
+<div class="card card-blue">
+  <h3><span class="badge badge-yellow">P1</span> 短期实施</h3>
+  <table>
+    <tr><th style="width:200px">项目</th><th>具体措施</th><th>涉及文件</th></tr>
+    <tr>
+      <td>closure_pathway枚举</td>
+      <td>增加closure_pathway枚举(document_retrieval, precedent_match, counterparty_confirmation, contractual_ruling, recalculation)和auto_closeable布尔值</td>
+      <td>lane-output.schema.json</td>
+    </tr>
+    <tr>
+      <td>closure自动化</td>
+      <td>对documentation_gap类型实现snapshot自动验证closure</td>
+      <td>src/run.rs</td>
+    </tr>
+  </table>
+</div>
+
+<div class="card card-purple">
+  <h3><span class="badge badge-gray">P2</span> 中期实施</h3>
+  <table>
+    <tr><th style="width:200px">项目</th><th>具体措施</th><th>涉及文件</th></tr>
+    <tr>
+      <td>R1合并策略文档化</td>
+      <td>在CLI.md或PROTOCOL.md中记录R1五方残差去重策略</td>
+      <td>CLI.md, PROTOCOL.md</td>
+    </tr>
+    <tr>
+      <td>独立模型家族</td>
+      <td>引入至少一个独立模型家族，或在R3增加bias-audit步骤</td>
+      <td>policy.json, PROTOCOL.md</td>
+    </tr>
+  </table>
+</div>
+
+<!-- 五方参与情况 -->
+<h2>五方参与情况</h2>
+
+<div class="card card-purple">
+  <table>
+    <tr><th>Party</th><th>Route</th><th>R1</th><th>R2</th><th>R3</th><th>主要贡献</th></tr>
+    <tr><td>Party A</td><td>codewhale</td><td><span class="badge badge-green">✓</span></td><td><span class="badge badge-green">✓</span></td><td>—</td><td>提出closure_pathway枚举、同族盲区检测</td></tr>
+    <tr><td>Party B</td><td>opencode</td><td><span class="badge badge-green">✓</span></td><td><span class="badge badge-green">✓</span></td><td>—</td><td>提出divergence_ratio字段、先例驱动closure</td></tr>
+    <tr><td>Party C</td><td>kilo</td><td><span class="badge badge-green">✓</span></td><td><span class="badge badge-green">✓</span></td><td>—</td><td>提出auto_closeable布尔值、amount_impact字段</td></tr>
+    <tr><td>Party D</td><td>mimo</td><td><span class="badge badge-green">✓</span></td><td><span class="badge badge-green">✓</span></td><td>—</td><td>提出closure_path字段、NOR验证checklist</td></tr>
+    <tr><td>Party E</td><td>omp</td><td><span class="badge badge-green">✓</span></td><td><span class="badge badge-green">✓</span></td><td>—</td><td>提出residual_type_enum枚举、required_closure_type</td></tr>
+    <tr><td>Auditor B</td><td>claude</td><td>—</td><td>—</td><td><span class="badge badge-green">✓</span></td><td>综合R1/R2，提出L1枚举+L2自由文本分层方案</td></tr>
+    <tr><td>Hermes</td><td>hm</td><td>—</td><td>—</td><td><span class="badge badge-green">✓</span></td><td>独立裁决，提出P0/P1/P2优先级排序</td></tr>
+  </table>
+</div>
+
+<!-- 残差本质 -->
+<h2>残差的本质</h2>
+
+<div class="card card-blue">
+  <h3>残差的四重身份</h3>
+  <table>
+    <tr><th>语境</th><th>定义</th><th>在QUINTE中的体现</th></tr>
+    <tr><td>数学</td><td>观测值与模型预测的差异 (ε = y - ŷ)</td><td>问题的全部复杂性 - 五方共识能覆盖的部分</td></tr>
+    <tr><td>形式验证</td><td>验证后仍未证明的性质 (remaining proof obligations)</td><td>五方辩论后仍无法达成共识的claim</td></tr>
+    <tr><td>风险管理</td><td>实施控制措施后仍存在的残余风险 (ISO 31000)</td><td>五方辩论+交叉审查后仍未解决的问题</td></tr>
+    <tr><td>认识论</td><td>系统对自身无知的诚实声明</td><td>"这是我们能确认的，这是我们无法确认的"</td></tr>
+  </table>
+</div>
+
+<div class="card card-blue">
+  <h3>残差 vs 相关概念</h3>
+  <table>
+    <tr><th>概念</th><th>定义</th><th>与残差的关系</th></tr>
+    <tr><td>误差 (Error)</td><td>观测值与真实值的差异</td><td>误差不可知，残差可计算</td></tr>
+    <tr><td>不确定性 (Uncertainty)</td><td>对结论的信心不足</td><td>残差是不确定性的结构化表达</td></tr>
+    <tr><td>异议 (Dissent)</td><td>两个arbiter对结论的不同判断</td><td>异议是关于"答案"的分歧，残差是"问题"本身</td></tr>
+    <tr><td>风险 (Risk)</td><td>未来可能发生的问题</td><td>残差是已实现的风险，不是潜在的风险</td></tr>
+  </table>
+</div>
+
+<hr class="divider">
+
+<div class="meta" style="margin-top:16px">
+  <p>报告生成: 2026-07-14 | 核对方式: QUINTE v0.1.1 五方辩论 + Hermes hm 握手</p>
+  <p>证据来源: QUINTE仓库源码 / KING LOONG滞期费核对报告 / 珠电业务规则 / lane-output.schema.json / result.schema.json / PROTOCOL.md</p>
+  <p>QUINTE Run ID: 019f610a-05e6-7ec2-b376-54fc670cf889</p>
+</div>
+
+</body>
+</html>
