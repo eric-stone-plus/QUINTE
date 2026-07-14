@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(windows)]
+use std::path::Component;
+
 use anyhow::{Context, anyhow, bail};
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
@@ -170,10 +173,18 @@ pub struct ResolvedCommand {
     pub program: PathBuf,
     pub prefix_args: Vec<String>,
     pub source: PathBuf,
+    pub launcher: CommandLauncher,
 }
 
-/// Resolves a command exactly as QUINTE will launch it. On Windows, npm's
-/// PowerShell shim avoids the unsafe argument boundary of `.cmd` wrappers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandLauncher {
+    Native,
+    NpmShim,
+}
+
+/// Resolves a command exactly as QUINTE will launch it. On Windows, a standard
+/// npm PowerShell shim is reduced to its runtime and entrypoint so no shell
+/// reparses QUINTE's arguments.
 pub fn resolve_command(command: &str) -> Option<ResolvedCommand> {
     resolve_command_with_path(command, std::env::var_os("PATH").as_deref())
 }
@@ -203,6 +214,7 @@ fn resolve_command_candidate(candidate: &Path) -> Option<ResolvedCommand> {
             program: source.clone(),
             prefix_args: Vec::new(),
             source,
+            launcher: CommandLauncher::Native,
         }
     })
 }
@@ -242,46 +254,174 @@ fn direct_command(path: &Path) -> ResolvedCommand {
         program: source.clone(),
         prefix_args: Vec::new(),
         source,
+        launcher: CommandLauncher::Native,
     }
 }
 
 #[cfg(windows)]
 fn resolve_powershell_shim(path: &Path) -> Option<ResolvedCommand> {
-    if !path.is_file() {
-        return None;
-    }
     let source = absolute_path(path);
+    let (program, prefix_args) = parse_npm_powershell_shim(&source)?;
     Some(ResolvedCommand {
-        program: system_powershell()?,
-        prefix_args: vec![
-            "-NoLogo".into(),
-            "-NoProfile".into(),
-            "-NonInteractive".into(),
-            "-ExecutionPolicy".into(),
-            "Bypass".into(),
-            "-File".into(),
-            source.display().to_string(),
-        ],
+        program,
+        prefix_args,
         source,
+        launcher: CommandLauncher::NpmShim,
     })
 }
 
 #[cfg(windows)]
-fn system_powershell() -> Option<PathBuf> {
-    for root_name in ["SYSTEMROOT", "WINDIR"] {
-        if let Some(root) = std::env::var_os(root_name) {
-            let candidate =
-                PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-            if candidate.is_file() {
-                return Some(absolute_path(&candidate));
-            }
-        }
+fn parse_npm_powershell_shim(path: &Path) -> Option<(PathBuf, Vec<String>)> {
+    let script = fs::read_to_string(path).ok()?;
+    parse_standard_npm_runtime_shim(path, &script)
+        .or_else(|| parse_standard_npm_native_shim(path, &script))
+}
+
+#[cfg(windows)]
+fn parse_standard_npm_runtime_shim(path: &Path, script: &str) -> Option<(PathBuf, Vec<String>)> {
+    let pattern = regex::Regex::new(
+        r#"(?m)^\s*(?:\$input\s*\|\s*)?&\s+"(?:(?:\$basedir/)?(?P<runtime>node|bun)\$exe)"\s+\s*"(?P<entry>\$basedir/[^"\r\n]+)"\s+\$args\s*$"#,
+    )
+    .ok()?;
+    let captures = pattern.captures_iter(script).collect::<Vec<_>>();
+    let first = captures.first()?;
+    let runtime = first.name("runtime")?.as_str();
+    let raw_entry = first.name("entry")?.as_str();
+    if captures.len() != 4
+        || captures.iter().any(|capture| {
+            capture.name("runtime").map(|value| value.as_str()) != Some(runtime)
+                || capture.name("entry").map(|value| value.as_str()) != Some(raw_entry)
+        })
+        || script != standard_npm_powershell_shim(runtime, raw_entry)?
+    {
+        return None;
     }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|directory| directory.join("powershell.exe"))
-        .find(|candidate| candidate.is_file())
-        .map(|candidate| absolute_path(&candidate))
+
+    let directory = path.parent()?;
+    let program = directory.join(format!("{runtime}.exe"));
+    let program = if program.is_file() {
+        program.canonicalize().ok()?
+    } else {
+        resolve_command_with_path(
+            &format!("{runtime}.exe"),
+            std::env::var_os("PATH").as_deref(),
+        )?
+        .program
+    };
+    let entrypoint = canonical_shim_child(directory, raw_entry)?;
+    Some((program, vec![entrypoint.display().to_string()]))
+}
+
+#[cfg(windows)]
+fn parse_standard_npm_native_shim(path: &Path, script: &str) -> Option<(PathBuf, Vec<String>)> {
+    let pattern = regex::Regex::new(
+        r#"(?m)^\s*(?:\$input\s*\|\s*)?&\s+"(?P<program>\$basedir/[^"\r\n]+\.(?:exe|com))"\s+\s*\$args\s*$"#,
+    )
+    .ok()?;
+    let captures = pattern.captures_iter(script).collect::<Vec<_>>();
+    let first = captures.first()?;
+    let raw_program = first.name("program")?.as_str();
+    if captures.len() != 2
+        || captures
+            .iter()
+            .any(|capture| capture.name("program").map(|value| value.as_str()) != Some(raw_program))
+        || script != standard_npm_native_powershell_shim(raw_program)?
+    {
+        return None;
+    }
+
+    let program = canonical_shim_child(path.parent()?, raw_program)?;
+    Some((program, Vec::new()))
+}
+
+#[cfg(windows)]
+fn canonical_shim_child(directory: &Path, raw_path: &str) -> Option<PathBuf> {
+    let relative = raw_path.strip_prefix("$basedir/")?;
+    if relative.contains('$') || relative.contains('`') {
+        return None;
+    }
+    let relative = PathBuf::from(relative.replace('/', "\\"));
+    if !relative
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return None;
+    }
+    let directory_canonical = directory.canonicalize().ok()?;
+    let launch_path = absolute_path(&directory.join(relative));
+    let canonical = launch_path.canonicalize().ok()?;
+    if !canonical.is_file() || !canonical.starts_with(&directory_canonical) {
+        return None;
+    }
+    Some(launch_path)
+}
+
+#[cfg(windows)]
+fn standard_npm_powershell_shim(runtime: &str, entry: &str) -> Option<String> {
+    matches!(runtime, "node" | "bun").then(|| {
+        format!(
+            r#"#!/usr/bin/env pwsh
+$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent
+
+$exe=""
+if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) {{
+  # Fix case when both the Windows and Linux builds of Node
+  # are installed in the same directory
+  $exe=".exe"
+}}
+$ret=0
+if (Test-Path "$basedir/{runtime}$exe") {{
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {{
+    $input | & "$basedir/{runtime}$exe"  "{entry}" $args
+  }} else {{
+    & "$basedir/{runtime}$exe"  "{entry}" $args
+  }}
+  $ret=$LASTEXITCODE
+}} else {{
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {{
+    $input | & "{runtime}$exe"  "{entry}" $args
+  }} else {{
+    & "{runtime}$exe"  "{entry}" $args
+  }}
+  $ret=$LASTEXITCODE
+}}
+exit $ret
+"#
+        )
+    })
+}
+
+#[cfg(windows)]
+fn standard_npm_native_powershell_shim(program: &str) -> Option<String> {
+    let extension = Path::new(program)
+        .extension()
+        .and_then(|value| value.to_str())?;
+    ["exe", "com"]
+        .iter()
+        .any(|supported| extension.eq_ignore_ascii_case(supported))
+        .then(|| {
+            format!(
+                r#"#!/usr/bin/env pwsh
+$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent
+
+$exe=""
+if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) {{
+  # Fix case when both the Windows and Linux builds of Node
+  # are installed in the same directory
+  $exe=".exe"
+}}
+# Support pipeline input
+if ($MyInvocation.ExpectingInput) {{
+  $input | & "{program}"   $args
+}} else {{
+  & "{program}"   $args
+}}
+exit $LASTEXITCODE
+"#
+            )
+        })
 }
 
 fn absolute_path(path: &Path) -> PathBuf {
@@ -306,15 +446,46 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn resolves_windows_npm_shim_without_batch_argument_parsing() {
-        const SCRIPT: &str = r#"if ($args.Count -ne 2) { exit 90 }
-if ($args[0] -cne "line one`nline two & <review>") { exit 91 }
-if ($args[1] -cne 'quote"value') { exit 92 }
-exit 0
+        const SCRIPT: &str = r#"#!/usr/bin/env pwsh
+$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent
+
+$exe=""
+if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) {
+  # Fix case when both the Windows and Linux builds of Node
+  # are installed in the same directory
+  $exe=".exe"
+}
+$ret=0
+if (Test-Path "$basedir/node$exe") {
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {
+    $input | & "$basedir/node$exe"  "$basedir/node_modules/fake/entry.js" $args
+  } else {
+    & "$basedir/node$exe"  "$basedir/node_modules/fake/entry.js" $args
+  }
+  $ret=$LASTEXITCODE
+} else {
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {
+    $input | & "node$exe"  "$basedir/node_modules/fake/entry.js" $args
+  } else {
+    & "node$exe"  "$basedir/node_modules/fake/entry.js" $args
+  }
+  $ret=$LASTEXITCODE
+}
+exit $ret
 "#;
         let temporary = tempfile::tempdir().unwrap();
         std::fs::write(temporary.path().join("agent"), "#!/bin/sh\n").unwrap();
         std::fs::write(temporary.path().join("agent.cmd"), "@exit /b 0\r\n").unwrap();
         std::fs::write(temporary.path().join("agent.ps1"), SCRIPT).unwrap();
+        std::fs::write(temporary.path().join("node.exe"), b"runtime").unwrap();
+        std::fs::create_dir_all(temporary.path().join("node_modules/fake")).unwrap();
+        std::fs::write(
+            temporary.path().join("node_modules/fake/entry.js"),
+            b"entry",
+        )
+        .unwrap();
         let search_path = std::env::join_paths([temporary.path()]).unwrap();
 
         let resolved = super::resolve_command_with_path("agent", Some(&search_path)).unwrap();
@@ -322,20 +493,142 @@ exit 0
         assert_eq!(resolved.source, temporary.path().join("agent.ps1"));
         assert_eq!(
             resolved.program.file_name().unwrap().to_string_lossy(),
-            "powershell.exe"
+            "node.exe"
+        );
+        assert_eq!(
+            std::fs::canonicalize(&resolved.prefix_args[0]).unwrap(),
+            std::fs::canonicalize(temporary.path().join("node_modules/fake/entry.js")).unwrap()
         );
         std::fs::remove_file(temporary.path().join("agent.ps1")).unwrap();
         assert!(super::resolve_command_with_path("agent", Some(&search_path)).is_none());
-        std::fs::write(temporary.path().join("agent.ps1"), SCRIPT).unwrap();
-        assert!(
-            std::process::Command::new(resolved.program)
-                .args(resolved.prefix_args)
-                .arg("line one\nline two & <review>")
-                .arg("quote\"value")
-                .status()
-                .unwrap()
-                .success()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_ambiguous_or_escaping_npm_powershell_shims() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(temporary.path().join("node.exe"), b"runtime").unwrap();
+        std::fs::create_dir_all(temporary.path().join("node_modules/fake")).unwrap();
+        std::fs::write(
+            temporary.path().join("node_modules/fake/entry.js"),
+            b"entry",
+        )
+        .unwrap();
+        let shim = temporary.path().join("agent.ps1");
+        let valid =
+            super::standard_npm_powershell_shim("node", "$basedir/node_modules/fake/entry.js")
+                .unwrap();
+
+        for malicious in [
+            format!("Write-Output 'unexpected side effect'\n{valid}"),
+            format!("<#\n{valid}#>\n"),
+            format!("@'\n{valid}'@\n"),
+            format!("if ($false) {{\n{valid}}}\n"),
+            valid.replacen("$ret=0\n", "$args=@('--changed') + $args\n$ret=0\n", 1),
+            valid.replacen(
+                "  } else {\n    & \"$basedir/node$exe\"",
+                "  } elseif ($false) {\n    & \"$basedir/node$exe\"",
+                1,
+            ),
+        ] {
+            std::fs::write(&shim, malicious).unwrap();
+            assert!(super::resolve_powershell_shim(&shim).is_none());
+        }
+
+        std::fs::write(
+            &shim,
+            "#!/usr/bin/env pwsh\n& \"$basedir/node$exe\" \"$basedir/node_modules/fake/entry.js\" $args\n& \"$basedir/bun$exe\" \"$basedir/node_modules/fake/entry.js\" $args\n",
+        )
+        .unwrap();
+        assert!(super::resolve_powershell_shim(&shim).is_none());
+
+        std::fs::write(
+            &shim,
+            "#!/usr/bin/env pwsh\n& \"$basedir/node$exe\" \"$basedir/../outside.js\" $args\n",
+        )
+        .unwrap();
+        assert!(super::resolve_powershell_shim(&shim).is_none());
+
+        std::fs::write(
+            &shim,
+            "Write-Output 'not an npm-generated PowerShell shim'\n",
+        )
+        .unwrap();
+        assert!(super::resolve_powershell_shim(&shim).is_none());
+
+        std::fs::write(
+            &shim,
+            super::standard_npm_powershell_shim("node", "$basedir/node_modules/fake/entry.js")
+                .unwrap(),
+        )
+        .unwrap();
+        std::fs::remove_file(temporary.path().join("node_modules/fake/entry.js")).unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        std::os::windows::fs::symlink_file(
+            outside.path(),
+            temporary.path().join("node_modules/fake/entry.js"),
+        )
+        .unwrap();
+        assert!(super::resolve_powershell_shim(&shim).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_standard_bun_npm_powershell_shim() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(temporary.path().join("bun.exe"), b"runtime").unwrap();
+        std::fs::create_dir_all(temporary.path().join("node_modules/fake")).unwrap();
+        std::fs::write(
+            temporary.path().join("node_modules/fake/entry.js"),
+            b"entry",
+        )
+        .unwrap();
+        let shim = temporary.path().join("agent.ps1");
+        std::fs::write(
+            &shim,
+            super::standard_npm_powershell_shim("bun", "$basedir/node_modules/fake/entry.js")
+                .unwrap(),
+        )
+        .unwrap();
+
+        let resolved = super::resolve_powershell_shim(&shim).unwrap();
+        assert!(resolved.program.ends_with("bun.exe"));
+        assert_eq!(resolved.launcher, super::CommandLauncher::NpmShim);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_standard_native_npm_powershell_shim() {
+        let temporary = tempfile::tempdir().unwrap();
+        let program = temporary
+            .path()
+            .join("node_modules/fake-agent/bin/agent.exe");
+        std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+        std::fs::write(&program, b"native agent").unwrap();
+        let shim = temporary.path().join("agent.ps1");
+        let raw_program = "$basedir/node_modules/fake-agent/bin/agent.exe";
+        std::fs::write(
+            &shim,
+            super::standard_npm_native_powershell_shim(raw_program).unwrap(),
+        )
+        .unwrap();
+
+        let resolved = super::resolve_powershell_shim(&shim).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&resolved.program).unwrap(),
+            std::fs::canonicalize(&program).unwrap()
         );
+        assert!(resolved.prefix_args.is_empty());
+
+        let malicious = super::standard_npm_native_powershell_shim(raw_program)
+            .unwrap()
+            .replacen(
+                "# Support pipeline input\n",
+                "$args=@('--changed') + $args\n# Support pipeline input\n",
+                1,
+            );
+        std::fs::write(&shim, malicious).unwrap();
+        assert!(super::resolve_powershell_shim(&shim).is_none());
     }
 
     #[cfg(unix)]

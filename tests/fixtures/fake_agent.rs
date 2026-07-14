@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::{self, Write};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -15,9 +16,26 @@ const VALID_OUTPUT: &str = r#"{
 
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if args.len() != 3 {
+    if let Some(child) = std::env::var_os("FAKE_AGENT_RUNTIME_CHILD") {
+        let status = Command::new(child)
+            .args(args.iter().skip(1))
+            .env_remove("FAKE_AGENT_RUNTIME_CHILD")
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .unwrap();
+        std::process::exit(status.code().unwrap_or(1));
+    }
+
+    let args_probe = std::env::var_os("FAKE_AGENT_ARGS_PROBE");
+    if args.len() != 3 && args_probe.is_none() {
         eprintln!("expected PHASE PARTY_ID PACKET_PATH");
         std::process::exit(64);
+    }
+
+    if let Some(path) = args_probe {
+        fs::write(path, args.join("\0")).unwrap();
     }
 
     #[cfg(windows)]
@@ -31,6 +49,10 @@ fn main() {
 
         let has_console_window = unsafe { GetConsoleWindow() } != null_mut();
         fs::write(path, if has_console_window { "window" } else { "hidden" }).unwrap();
+    }
+
+    if let Ok(sentinel) = std::env::var("FAKE_AGENT_STDERR_SENTINEL") {
+        eprintln!("{sentinel}");
     }
 
     if args[0] == "R1" && args[1] == "Party A" {

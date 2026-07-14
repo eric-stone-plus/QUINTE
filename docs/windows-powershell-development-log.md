@@ -31,9 +31,14 @@ fragile and an avoidable injection boundary.
 
 - `doctor` and runtime now share one resolver.
 - Native `.exe` and `.com` programs are launched directly by absolute path.
-- npm-style commands are resolved to their sibling `.ps1` shim.
-- PowerShell shims run through the absolute Windows PowerShell executable with
-  `-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File`.
+- npm-style commands are validated through their sibling `.ps1` shim, then
+  resolved to the exact Node.js or Bun runtime and package entrypoint, or the
+  package-local native executable, named by that standard npm shim. The
+  validator accepts complete npm `cmd-shim` templates only; extra commands,
+  altered control flow, ambiguous calls, and escaping paths fail closed.
+- QUINTE launches the runtime directly. This avoids npm's PowerShell pipeline
+  branch treating QUINTE's null stdin as an empty pipeline and exiting 0
+  without ever starting the package entrypoint.
 - Every QUINTE argument remains a separate OS argument. No prompt or path is
   concatenated into a shell command string.
 - A lone `.cmd` or `.bat` without a sibling `.ps1` fails closed.
@@ -59,8 +64,9 @@ fragile and an avoidable injection boundary.
 
 ### Silent adapter processes
 
-- Every Windows lane process is created with `CREATE_NO_WINDOW`, including
-  native executables and PowerShell npm shims that subsequently start Node.js.
+- Every Windows lane process is created with `CREATE_NO_WINDOW`, including the
+  Node.js or Bun runtime and package-local native executable resolved from a
+  validated npm PowerShell shim.
 - QUINTE still captures stdout and stderr through pipes; hiding the console
   window does not discard model output or diagnostics.
 - Silent launch is a QUINTE runtime guarantee, not a per-device PowerShell or
@@ -69,15 +75,18 @@ fragile and an avoidable injection boundary.
 
 ### Lane environment
 
-The minimal environment still preserves the explicit process `PATH`. Windows
+The minimal environment still preserves the explicit process `PATH` and the
+Windows OS-root contract (`SystemRoot`, `WinDir`, and `SystemDrive`). Windows
 lanes additionally bind `USERPROFILE`, `TEMP`, `TMP`, `APPDATA`, and
 `LOCALAPPDATA` to the lane root. This prevents Node-based agents from ignoring
-`HOME`/`TMPDIR` and falling back to the real user profile or system temp.
+`HOME`/`TMPDIR`, while keeping system-drive expansions from becoming literal
+`%SystemDrive%` directories beneath the lane. Shared machine configuration
+roots such as `ProgramData` remain outside the lane environment.
 
 ### Diagnostics and CI
 
 - Doctor output includes the configured executable, resolved source, resolved
-  launcher, and launcher type (`native` or `powershell`).
+  launcher, and launcher type (`native` or `npm-runtime`).
 - The release matrix runs the full feature-enabled tests on every native build
   host before packaging.
 
@@ -89,6 +98,11 @@ Windows tests cover:
 - fail-closed behavior when only the unsafe `.cmd` sibling remains;
 - lossless arguments containing newlines, quotes, `&`, and `<`;
 - build, spawn, output capture, and schema parsing through an npm-style shim;
+- real Node.js and Bun wrappers spawning the final fake agent with inherited
+  streams and no wrapper-specific window-hiding option;
+- rejection of comment, here-string, dead-branch, argument-rewrite, ambiguous,
+  incomplete, and path-escaping shim variants, plus Bun and package-local
+  native template resolution;
 - no-window creation flags on Windows adapter commands;
 - Windows profile and temp-directory isolation;
 - immediate queued return from a PowerShell-hosted background worker;

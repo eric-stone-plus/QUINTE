@@ -119,33 +119,88 @@ fn fake_agent_runs_through_build_spawn_and_direct_json_parse() {
 fn fake_agent_runs_through_windows_npm_style_shim() {
     let temporary = tempfile::tempdir().unwrap();
     let shim = temporary.path().join("quinte-fake-shim");
+    let child = common::compile_fake_agent(temporary.path());
+    let entrypoint = temporary.path().join("node_modules/fake-agent/entry.js");
+    fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+    fs::write(
+        &entrypoint,
+        r#"const { spawnSync } = require("node:child_process");
+const result = spawnSync(process.env.FAKE_AGENT_RUNTIME_CHILD, process.argv.slice(2), {
+  stdio: "inherit",
+  env: { ...process.env, FAKE_AGENT_RUNTIME_CHILD: undefined },
+});
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+"#,
+    )
+    .unwrap();
     fs::write(&shim, "#!/bin/sh\n").unwrap();
     fs::write(shim.with_extension("cmd"), "@exit /b 99\r\n").unwrap();
     fs::write(
         shim.with_extension("ps1"),
-        r#"if ($args.Count -ne 4) { exit 90 }
-if ($args[0] -cne 'R1') { exit 91 }
-if ($args[1] -cne 'Party A') { exit 92 }
-if (-not $args[2].EndsWith('input\packet.json')) { exit 93 }
-Add-Type -Namespace Native -Name Console -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow();'
-if ([Native.Console]::GetConsoleWindow() -eq [IntPtr]::Zero) { 'hidden' | Set-Content -NoNewline $args[3] } else { 'window' | Set-Content -NoNewline $args[3] }
-[Console]::Out.Write('{"lane_output_version":"1.0","task_restatement":"Review the supplied evidence packet.","verdict":"The bounded review completed.","confidence":0.75,"claims":[],"residuals":[],"uncertainties":[]}')
-exit 0
+        r#"#!/usr/bin/env pwsh
+$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent
+
+$exe=""
+if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) {
+  # Fix case when both the Windows and Linux builds of Node
+  # are installed in the same directory
+  $exe=".exe"
+}
+$ret=0
+if (Test-Path "$basedir/node$exe") {
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {
+    $input | & "$basedir/node$exe"  "$basedir/node_modules/fake-agent/entry.js" $args
+  } else {
+    & "$basedir/node$exe"  "$basedir/node_modules/fake-agent/entry.js" $args
+  }
+  $ret=$LASTEXITCODE
+} else {
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {
+    $input | & "node$exe"  "$basedir/node_modules/fake-agent/entry.js" $args
+  } else {
+    & "node$exe"  "$basedir/node_modules/fake-agent/entry.js" $args
+  }
+  $ret=$LASTEXITCODE
+}
+exit $ret
 "#,
     )
     .unwrap();
     let run_dir = temporary.path().join("run-shim");
     let packet = create_run_packet(&run_dir);
     let lane_root = run_dir.join("lane");
-    let route = fake_route(&shim);
+    let special_args = ["line one\nline two & <review>", "quote\"value"];
+    let mut route = fake_route(&shim);
+    route.party_id = special_args[1].into();
 
-    let invocation = build(&route, "R1", TEXT_MODEL, &packet, &lane_root, 30).unwrap();
-    let probe = temporary.path().join("powershell-console-probe.txt");
-    let mut invocation = invocation;
-    invocation.args.push(probe.display().to_string());
-
-    assert!(invocation.program.ends_with("powershell.exe"));
-    assert!(invocation.args.iter().any(|arg| arg.ends_with(".ps1")));
+    let mut invocation =
+        build(&route, special_args[0], TEXT_MODEL, &packet, &lane_root, 30).unwrap();
+    let child_probe = temporary.path().join("child-console-probe.txt");
+    let args_probe = temporary.path().join("child-args-probe.txt");
+    invocation.env.insert(
+        "FAKE_AGENT_CONSOLE_PROBE".into(),
+        child_probe.display().to_string(),
+    );
+    invocation.env.insert(
+        "FAKE_AGENT_ARGS_PROBE".into(),
+        args_probe.display().to_string(),
+    );
+    invocation.env.insert(
+        "FAKE_AGENT_STDERR_SENTINEL".into(),
+        "child-stderr-sentinel".into(),
+    );
+    invocation.env.insert(
+        "FAKE_AGENT_RUNTIME_CHILD".into(),
+        child.display().to_string(),
+    );
+    assert!(invocation.program.ends_with("node.exe"));
+    assert_eq!(
+        fs::canonicalize(&invocation.args[0]).unwrap(),
+        fs::canonicalize(&entrypoint).unwrap()
+    );
     let output = spawn_command(&invocation).output().unwrap();
     assert!(
         output.status.success(),
@@ -156,16 +211,106 @@ exit 0
     );
     assert!(
         !output.stdout.is_empty(),
-        "fake npm-style shim produced no output: status={} stderr={} args={:?} env_keys={:?} probe={:?}",
+        "fake npm-style shim produced no output: status={} stderr={} args={:?} env_keys={:?} child_probe={:?}",
         output.status,
         String::from_utf8_lossy(&output.stderr),
         invocation.args,
         invocation.env.keys().collect::<Vec<_>>(),
-        fs::read_to_string(&probe)
+        fs::read_to_string(&child_probe)
     );
     let parsed = parse_output(invocation.output_kind, &output.stdout).unwrap();
     assert_eq!(parsed.confidence, 0.75);
-    assert_eq!(fs::read_to_string(probe).unwrap(), "hidden");
+    assert_eq!(fs::read_to_string(child_probe).unwrap(), "hidden");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("child-stderr-sentinel"));
+
+    let forwarded = fs::read_to_string(args_probe).unwrap();
+    let forwarded = forwarded.split('\0').collect::<Vec<_>>();
+    assert_eq!(&forwarded[..2], &special_args);
+    assert!(forwarded[2].ends_with(r"input\packet.json"));
+}
+
+#[cfg(windows)]
+#[test]
+fn fake_agent_runs_through_windows_bun_npm_style_shim() {
+    let temporary = tempfile::tempdir().unwrap();
+    let shim = temporary.path().join("quinte-fake-bun-shim");
+    let child = common::compile_fake_agent(temporary.path());
+    let entrypoint = temporary.path().join("node_modules/fake-agent/entry.js");
+    fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+    fs::write(
+        &entrypoint,
+        r#"const { spawnSync } = require("node:child_process");
+const result = spawnSync(process.env.FAKE_AGENT_RUNTIME_CHILD, process.argv.slice(2), {
+  stdio: "inherit",
+  env: { ...process.env, FAKE_AGENT_RUNTIME_CHILD: undefined },
+});
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+"#,
+    )
+    .unwrap();
+    fs::write(&shim, "#!/bin/sh\n").unwrap();
+    fs::write(shim.with_extension("cmd"), "@exit /b 99\r\n").unwrap();
+    fs::write(
+        shim.with_extension("ps1"),
+        r#"#!/usr/bin/env pwsh
+$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent
+
+$exe=""
+if ($PSVersionTable.PSVersion -lt "6.0" -or $IsWindows) {
+  # Fix case when both the Windows and Linux builds of Node
+  # are installed in the same directory
+  $exe=".exe"
+}
+$ret=0
+if (Test-Path "$basedir/bun$exe") {
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {
+    $input | & "$basedir/bun$exe"  "$basedir/node_modules/fake-agent/entry.js" $args
+  } else {
+    & "$basedir/bun$exe"  "$basedir/node_modules/fake-agent/entry.js" $args
+  }
+  $ret=$LASTEXITCODE
+} else {
+  # Support pipeline input
+  if ($MyInvocation.ExpectingInput) {
+    $input | & "bun$exe"  "$basedir/node_modules/fake-agent/entry.js" $args
+  } else {
+    & "bun$exe"  "$basedir/node_modules/fake-agent/entry.js" $args
+  }
+  $ret=$LASTEXITCODE
+}
+exit $ret
+"#,
+    )
+    .unwrap();
+    let run_dir = temporary.path().join("run-bun-shim");
+    let packet = create_run_packet(&run_dir);
+    let lane_root = run_dir.join("lane");
+    let route = fake_route(&shim);
+    let mut invocation = build(&route, "R1", TEXT_MODEL, &packet, &lane_root, 30).unwrap();
+    let child_probe = temporary.path().join("bun-child-console-probe.txt");
+    invocation.env.insert(
+        "FAKE_AGENT_CONSOLE_PROBE".into(),
+        child_probe.display().to_string(),
+    );
+    invocation.env.insert(
+        "FAKE_AGENT_RUNTIME_CHILD".into(),
+        child.display().to_string(),
+    );
+
+    assert!(invocation.program.ends_with("bun.exe"));
+    let output = spawn_command(&invocation).output().unwrap();
+    assert!(
+        output.status.success(),
+        "fake Bun npm-style shim failed: status={} stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed = parse_output(invocation.output_kind, &output.stdout).unwrap();
+    assert_eq!(parsed.confidence, 0.75);
+    assert_eq!(fs::read_to_string(child_probe).unwrap(), "hidden");
 }
 
 #[cfg(windows)]
