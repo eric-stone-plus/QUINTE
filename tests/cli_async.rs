@@ -267,3 +267,52 @@ fn wait_reports_a_dead_background_worker() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn wait_accepts_a_durable_waiting_hm_state_after_worker_exit() {
+    use quinte::run::{self, RunOptions};
+
+    let fixture = fixture(0);
+    let store = Store::new(fixture.home.clone());
+    let previous_allow_fake = std::env::var_os("QUINTE_ALLOW_FAKE_ADAPTERS");
+    unsafe { std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", "1") };
+    let created = run::create(
+        &store,
+        &fake_policy(&fixture.executable),
+        &RunOptions {
+            brief_path: fixture.brief.clone(),
+        },
+    )
+    .unwrap();
+    let mut manifest = store.load_manifest(&created.run_id).unwrap();
+    manifest.status = RunStatus::WaitingHm;
+    manifest.current_phase = Some("R3".into());
+    store.save_manifest(&manifest).unwrap();
+    write_json(
+        &store
+            .run_dir(&created.run_id)
+            .join("diagnostics/worker.json"),
+        &serde_json::json!({"pid": u32::MAX, "started_at": "2026-01-01T00:00:00Z"}),
+    )
+    .unwrap();
+    unsafe {
+        if let Some(value) = previous_allow_fake {
+            std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", value);
+        } else {
+            std::env::remove_var("QUINTE_ALLOW_FAKE_ADAPTERS");
+        }
+    }
+
+    let output = quinte(&fixture)
+        .args(["wait", &created.run_id, "--json"])
+        .timeout(Duration::from_secs(2))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["data"]["status"], "waiting_hm");
+}

@@ -86,7 +86,9 @@ roots such as `ProgramData` remain outside the lane environment.
 ### Diagnostics and CI
 
 - Doctor output includes the configured executable, resolved source, resolved
-  launcher, and launcher type (`native` or `npm-runtime`).
+  launcher, launcher type (`native` or `npm-runtime`), and a stable resolution
+  code. Missing runtimes, missing or unsafe entrypoints, unsupported shims, and
+  absent PATH commands are reported separately.
 - The release matrix runs the full feature-enabled tests on every native build
   host before packaging.
 

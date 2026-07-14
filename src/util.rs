@@ -169,6 +169,42 @@ pub fn command_exists(command: &str) -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandResolution {
+    pub command: Option<ResolvedCommand>,
+    pub code: CommandResolutionCode,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandResolutionCode {
+    Available,
+    NotFound,
+    UnsupportedExecutable,
+    UnsafeBatchShim,
+    ShimUnreadable,
+    UnsupportedShim,
+    RuntimeMissing,
+    EntrypointMissing,
+    EntrypointUnsafe,
+}
+
+impl CommandResolutionCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::NotFound => "not_found",
+            Self::UnsupportedExecutable => "unsupported_executable",
+            Self::UnsafeBatchShim => "unsafe_batch_shim",
+            Self::ShimUnreadable => "shim_unreadable",
+            Self::UnsupportedShim => "unsupported_shim",
+            Self::RuntimeMissing => "runtime_missing",
+            Self::EntrypointMissing => "entrypoint_missing",
+            Self::EntrypointUnsafe => "entrypoint_unsafe",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedCommand {
     pub program: PathBuf,
     pub prefix_args: Vec<String>,
@@ -189,6 +225,52 @@ pub fn resolve_command(command: &str) -> Option<ResolvedCommand> {
     resolve_command_with_path(command, std::env::var_os("PATH").as_deref())
 }
 
+pub fn diagnose_command(command: &str) -> CommandResolution {
+    diagnose_command_with_path(command, std::env::var_os("PATH").as_deref())
+}
+
+fn diagnose_command_with_path(
+    command: &str,
+    search_path: Option<&std::ffi::OsStr>,
+) -> CommandResolution {
+    if let Some(resolved) = resolve_command_with_path(command, search_path) {
+        return CommandResolution {
+            command: Some(resolved),
+            code: CommandResolutionCode::Available,
+            message: "available".into(),
+        };
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some((code, message)) = diagnose_windows_command(command, search_path) {
+            return CommandResolution {
+                command: None,
+                code,
+                message,
+            };
+        }
+        let command_path = Path::new(command);
+        let has_directory = command_path.is_absolute()
+            || command_path
+                .parent()
+                .is_some_and(|parent| !parent.as_os_str().is_empty());
+        if has_directory {
+            return CommandResolution {
+                command: None,
+                code: CommandResolutionCode::NotFound,
+                message: format!("command path not found: {}", command_path.display()),
+            };
+        }
+    }
+
+    CommandResolution {
+        command: None,
+        code: CommandResolutionCode::NotFound,
+        message: "not found on PATH".into(),
+    }
+}
+
 fn resolve_command_with_path(
     command: &str,
     search_path: Option<&std::ffi::OsStr>,
@@ -199,15 +281,19 @@ fn resolve_command_with_path(
             .parent()
             .is_some_and(|parent| !parent.as_os_str().is_empty());
     if has_directory {
-        return resolve_command_candidate(command_path);
+        return resolve_command_candidate(command_path, search_path);
     }
     let search_path = search_path?;
-    std::env::split_paths(search_path)
-        .find_map(|directory| resolve_command_candidate(&directory.join(command_path)))
+    std::env::split_paths(search_path).find_map(|directory| {
+        resolve_command_candidate(&directory.join(command_path), Some(search_path))
+    })
 }
 
 #[cfg(not(windows))]
-fn resolve_command_candidate(candidate: &Path) -> Option<ResolvedCommand> {
+fn resolve_command_candidate(
+    candidate: &Path,
+    _search_path: Option<&std::ffi::OsStr>,
+) -> Option<ResolvedCommand> {
     candidate.is_file().then(|| {
         let source = absolute_path(candidate);
         ResolvedCommand {
@@ -220,7 +306,10 @@ fn resolve_command_candidate(candidate: &Path) -> Option<ResolvedCommand> {
 }
 
 #[cfg(windows)]
-fn resolve_command_candidate(candidate: &Path) -> Option<ResolvedCommand> {
+fn resolve_command_candidate(
+    candidate: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Option<ResolvedCommand> {
     if let Some(extension) = candidate.extension().and_then(|value| value.to_str()) {
         if ["exe", "com"]
             .iter()
@@ -229,13 +318,13 @@ fn resolve_command_candidate(candidate: &Path) -> Option<ResolvedCommand> {
             return candidate.is_file().then(|| direct_command(candidate));
         }
         if extension.eq_ignore_ascii_case("ps1") {
-            return resolve_powershell_shim(candidate);
+            return resolve_powershell_shim(candidate, search_path);
         }
         if ["cmd", "bat"]
             .iter()
             .any(|supported| extension.eq_ignore_ascii_case(supported))
         {
-            return resolve_powershell_shim(&candidate.with_extension("ps1"));
+            return resolve_powershell_shim(&candidate.with_extension("ps1"), search_path);
         }
         return None;
     }
@@ -244,7 +333,104 @@ fn resolve_command_candidate(candidate: &Path) -> Option<ResolvedCommand> {
         .map(|extension| candidate.with_extension(extension))
         .find(|path| path.is_file())
         .map(|path| direct_command(&path))
-        .or_else(|| resolve_powershell_shim(&candidate.with_extension("ps1")))
+        .or_else(|| resolve_powershell_shim(&candidate.with_extension("ps1"), search_path))
+}
+
+#[cfg(windows)]
+fn diagnose_windows_command(
+    command: &str,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Option<(CommandResolutionCode, String)> {
+    let command_path = Path::new(command);
+    let has_directory = command_path.is_absolute()
+        || command_path
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty());
+    if has_directory {
+        return diagnose_windows_candidate(command_path, search_path);
+    }
+    let search_path = search_path?;
+    let mut first_rejection = None;
+    for directory in std::env::split_paths(search_path) {
+        let candidate = directory.join(command_path);
+        if resolve_command_candidate(&candidate, Some(search_path)).is_some() {
+            return None;
+        }
+        if first_rejection.is_none() {
+            first_rejection = diagnose_windows_candidate(&candidate, Some(search_path));
+        }
+    }
+    first_rejection
+}
+
+#[cfg(windows)]
+fn diagnose_windows_candidate(
+    candidate: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Option<(CommandResolutionCode, String)> {
+    let shim = match candidate.extension().and_then(|value| value.to_str()) {
+        Some(extension) if extension.eq_ignore_ascii_case("ps1") => candidate.to_path_buf(),
+        Some(extension)
+            if ["cmd", "bat"]
+                .iter()
+                .any(|supported| extension.eq_ignore_ascii_case(supported)) =>
+        {
+            candidate.with_extension("ps1")
+        }
+        Some(extension)
+            if ["exe", "com"]
+                .iter()
+                .any(|supported| extension.eq_ignore_ascii_case(supported)) =>
+        {
+            return candidate.exists().then(|| {
+                (
+                    CommandResolutionCode::UnsupportedExecutable,
+                    format!(
+                        "native executable is not a regular file: {}",
+                        candidate.display()
+                    ),
+                )
+            });
+        }
+        Some(_) => {
+            return candidate.exists().then(|| {
+                (
+                    CommandResolutionCode::UnsupportedExecutable,
+                    "unsupported executable type".into(),
+                )
+            });
+        }
+        None => {
+            if ["exe", "com"]
+                .iter()
+                .map(|extension| candidate.with_extension(extension))
+                .any(|path| path.exists())
+            {
+                return Some((
+                    CommandResolutionCode::UnsupportedExecutable,
+                    "native executable is not a regular file".into(),
+                ));
+            }
+            candidate.with_extension("ps1")
+        }
+    };
+
+    if shim.exists() {
+        return Some(diagnose_npm_powershell_shim(&shim, search_path));
+    }
+    ["cmd", "bat"]
+        .iter()
+        .map(|extension| candidate.with_extension(extension))
+        .find(|path| path.exists())
+        .map(|path| {
+            (
+                CommandResolutionCode::UnsafeBatchShim,
+                format!(
+                    "unsafe batch shim has no validated PowerShell sibling: {}",
+                    path.display()
+                ),
+            )
+        })
 }
 
 #[cfg(windows)]
@@ -259,9 +445,12 @@ fn direct_command(path: &Path) -> ResolvedCommand {
 }
 
 #[cfg(windows)]
-fn resolve_powershell_shim(path: &Path) -> Option<ResolvedCommand> {
+fn resolve_powershell_shim(
+    path: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Option<ResolvedCommand> {
     let source = absolute_path(path);
-    let (program, prefix_args) = parse_npm_powershell_shim(&source)?;
+    let (program, prefix_args) = parse_npm_powershell_shim(&source, search_path)?;
     Some(ResolvedCommand {
         program,
         prefix_args,
@@ -271,14 +460,187 @@ fn resolve_powershell_shim(path: &Path) -> Option<ResolvedCommand> {
 }
 
 #[cfg(windows)]
-fn parse_npm_powershell_shim(path: &Path) -> Option<(PathBuf, Vec<String>)> {
+fn parse_npm_powershell_shim(
+    path: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Option<(PathBuf, Vec<String>)> {
     let script = fs::read_to_string(path).ok()?;
-    parse_standard_npm_runtime_shim(path, &script)
+    parse_standard_npm_runtime_shim(path, &script, search_path)
         .or_else(|| parse_standard_npm_native_shim(path, &script))
 }
 
 #[cfg(windows)]
-fn parse_standard_npm_runtime_shim(path: &Path, script: &str) -> Option<(PathBuf, Vec<String>)> {
+fn diagnose_npm_powershell_shim(
+    path: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> (CommandResolutionCode, String) {
+    let script = match fs::read_to_string(path) {
+        Ok(script) => script,
+        Err(error) => {
+            return (
+                CommandResolutionCode::ShimUnreadable,
+                format!("cannot read PowerShell shim {}: {error}", path.display()),
+            );
+        }
+    };
+    if let Some((runtime, entrypoint)) = npm_runtime_shim_contract(&script) {
+        let directory = match path.parent() {
+            Some(directory) => directory,
+            None => {
+                return (
+                    CommandResolutionCode::EntrypointUnsafe,
+                    format!(
+                        "PowerShell shim has no parent directory: {}",
+                        path.display()
+                    ),
+                );
+            }
+        };
+        if let Some(issue) = diagnose_shim_child_safety(directory, entrypoint, "npm entrypoint") {
+            return issue;
+        }
+        let local_runtime = directory.join(format!("{runtime}.exe"));
+        if !local_runtime.is_file()
+            && resolve_command_with_path(&format!("{runtime}.exe"), search_path).is_none()
+        {
+            return (
+                CommandResolutionCode::RuntimeMissing,
+                format!(
+                    "validated npm shim requires {runtime}.exe, but no runtime was found beside the shim or on PATH"
+                ),
+            );
+        }
+        return diagnose_shim_child(directory, entrypoint, "npm entrypoint");
+    }
+    if let Some(program) = npm_native_shim_contract(&script) {
+        let Some(directory) = path.parent() else {
+            return (
+                CommandResolutionCode::EntrypointUnsafe,
+                format!(
+                    "PowerShell shim has no parent directory: {}",
+                    path.display()
+                ),
+            );
+        };
+        if let Some(issue) = diagnose_shim_child_safety(directory, program, "npm native entrypoint")
+        {
+            return issue;
+        }
+        return diagnose_shim_child(directory, program, "npm native entrypoint");
+    }
+    (
+        CommandResolutionCode::UnsupportedShim,
+        format!(
+            "PowerShell shim is not a supported standard npm cmd-shim template: {}",
+            path.display()
+        ),
+    )
+}
+
+#[cfg(windows)]
+fn diagnose_shim_child_safety(
+    directory: &Path,
+    raw_path: &str,
+    label: &str,
+) -> Option<(CommandResolutionCode, String)> {
+    let Some(relative) = raw_path.strip_prefix("$basedir/") else {
+        return Some((
+            CommandResolutionCode::EntrypointUnsafe,
+            format!("{label} is not relative to the shim directory"),
+        ));
+    };
+    if relative.contains('$') || relative.contains('`') {
+        return Some((
+            CommandResolutionCode::EntrypointUnsafe,
+            format!("{label} contains unsupported PowerShell expansion"),
+        ));
+    }
+    let relative = PathBuf::from(relative.replace('/', "\\"));
+    if !relative
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Some((
+            CommandResolutionCode::EntrypointUnsafe,
+            format!("{label} escapes the shim directory"),
+        ));
+    }
+    let candidate = directory.join(relative);
+    if candidate.is_file()
+        && let (Ok(directory_canonical), Ok(candidate_canonical)) =
+            (directory.canonicalize(), candidate.canonicalize())
+        && !candidate_canonical.starts_with(directory_canonical)
+    {
+        return Some((
+            CommandResolutionCode::EntrypointUnsafe,
+            format!("{label} resolves outside the shim directory"),
+        ));
+    }
+    None
+}
+
+#[cfg(windows)]
+fn diagnose_shim_child(
+    directory: &Path,
+    raw_path: &str,
+    label: &str,
+) -> (CommandResolutionCode, String) {
+    if let Some(issue) = diagnose_shim_child_safety(directory, raw_path, label) {
+        return issue;
+    }
+    let relative = raw_path.strip_prefix("$basedir/").unwrap();
+    let relative = PathBuf::from(relative.replace('/', "\\"));
+    let candidate = directory.join(relative);
+    if !candidate.is_file() {
+        return (
+            CommandResolutionCode::EntrypointMissing,
+            format!("{label} is missing: {}", candidate.display()),
+        );
+    }
+    let Some(directory_canonical) = directory.canonicalize().ok() else {
+        return (
+            CommandResolutionCode::EntrypointUnsafe,
+            format!("cannot resolve shim directory: {}", directory.display()),
+        );
+    };
+    let Some(candidate_canonical) = candidate.canonicalize().ok() else {
+        return (
+            CommandResolutionCode::EntrypointMissing,
+            format!("cannot resolve {label}: {}", candidate.display()),
+        );
+    };
+    if !candidate_canonical.starts_with(directory_canonical) {
+        return (
+            CommandResolutionCode::EntrypointUnsafe,
+            format!("{label} resolves outside the shim directory"),
+        );
+    }
+    (
+        CommandResolutionCode::EntrypointUnsafe,
+        format!("{label} could not be resolved"),
+    )
+}
+
+#[cfg(windows)]
+fn parse_standard_npm_runtime_shim(
+    path: &Path,
+    script: &str,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Option<(PathBuf, Vec<String>)> {
+    let (runtime, raw_entry) = npm_runtime_shim_contract(script)?;
+    let directory = path.parent()?;
+    let program = directory.join(format!("{runtime}.exe"));
+    let program = if program.is_file() {
+        program.canonicalize().ok()?
+    } else {
+        resolve_command_with_path(&format!("{runtime}.exe"), search_path)?.program
+    };
+    let entrypoint = canonical_shim_child(directory, raw_entry)?;
+    Some((program, vec![entrypoint.display().to_string()]))
+}
+
+#[cfg(windows)]
+fn npm_runtime_shim_contract(script: &str) -> Option<(&str, &str)> {
     let pattern = regex::Regex::new(
         r#"(?m)^\s*(?:\$input\s*\|\s*)?&\s+"(?:(?:\$basedir/)?(?P<runtime>node|bun)\$exe)"\s+\s*"(?P<entry>\$basedir/[^"\r\n]+)"\s+\$args\s*$"#,
     )
@@ -296,24 +658,18 @@ fn parse_standard_npm_runtime_shim(path: &Path, script: &str) -> Option<(PathBuf
     {
         return None;
     }
-
-    let directory = path.parent()?;
-    let program = directory.join(format!("{runtime}.exe"));
-    let program = if program.is_file() {
-        program.canonicalize().ok()?
-    } else {
-        resolve_command_with_path(
-            &format!("{runtime}.exe"),
-            std::env::var_os("PATH").as_deref(),
-        )?
-        .program
-    };
-    let entrypoint = canonical_shim_child(directory, raw_entry)?;
-    Some((program, vec![entrypoint.display().to_string()]))
+    Some((runtime, raw_entry))
 }
 
 #[cfg(windows)]
 fn parse_standard_npm_native_shim(path: &Path, script: &str) -> Option<(PathBuf, Vec<String>)> {
+    let raw_program = npm_native_shim_contract(script)?;
+    let program = canonical_shim_child(path.parent()?, raw_program)?;
+    Some((program, Vec::new()))
+}
+
+#[cfg(windows)]
+fn npm_native_shim_contract(script: &str) -> Option<&str> {
     let pattern = regex::Regex::new(
         r#"(?m)^\s*(?:\$input\s*\|\s*)?&\s+"(?P<program>\$basedir/[^"\r\n]+\.(?:exe|com))"\s+\s*\$args\s*$"#,
     )
@@ -329,9 +685,7 @@ fn parse_standard_npm_native_shim(path: &Path, script: &str) -> Option<(PathBuf,
     {
         return None;
     }
-
-    let program = canonical_shim_child(path.parent()?, raw_program)?;
-    Some((program, Vec::new()))
+    Some(raw_program)
 }
 
 #[cfg(windows)]
@@ -532,7 +886,7 @@ exit $ret
             ),
         ] {
             std::fs::write(&shim, malicious).unwrap();
-            assert!(super::resolve_powershell_shim(&shim).is_none());
+            assert!(super::resolve_powershell_shim(&shim, None).is_none());
         }
 
         std::fs::write(
@@ -540,21 +894,21 @@ exit $ret
             "#!/usr/bin/env pwsh\n& \"$basedir/node$exe\" \"$basedir/node_modules/fake/entry.js\" $args\n& \"$basedir/bun$exe\" \"$basedir/node_modules/fake/entry.js\" $args\n",
         )
         .unwrap();
-        assert!(super::resolve_powershell_shim(&shim).is_none());
+        assert!(super::resolve_powershell_shim(&shim, None).is_none());
 
         std::fs::write(
             &shim,
             "#!/usr/bin/env pwsh\n& \"$basedir/node$exe\" \"$basedir/../outside.js\" $args\n",
         )
         .unwrap();
-        assert!(super::resolve_powershell_shim(&shim).is_none());
+        assert!(super::resolve_powershell_shim(&shim, None).is_none());
 
         std::fs::write(
             &shim,
             "Write-Output 'not an npm-generated PowerShell shim'\n",
         )
         .unwrap();
-        assert!(super::resolve_powershell_shim(&shim).is_none());
+        assert!(super::resolve_powershell_shim(&shim, None).is_none());
 
         std::fs::write(
             &shim,
@@ -569,7 +923,7 @@ exit $ret
             temporary.path().join("node_modules/fake/entry.js"),
         )
         .unwrap();
-        assert!(super::resolve_powershell_shim(&shim).is_none());
+        assert!(super::resolve_powershell_shim(&shim, None).is_none());
     }
 
     #[cfg(windows)]
@@ -591,7 +945,7 @@ exit $ret
         )
         .unwrap();
 
-        let resolved = super::resolve_powershell_shim(&shim).unwrap();
+        let resolved = super::resolve_powershell_shim(&shim, None).unwrap();
         assert!(resolved.program.ends_with("bun.exe"));
         assert_eq!(resolved.launcher, super::CommandLauncher::NpmShim);
     }
@@ -613,7 +967,7 @@ exit $ret
         )
         .unwrap();
 
-        let resolved = super::resolve_powershell_shim(&shim).unwrap();
+        let resolved = super::resolve_powershell_shim(&shim, None).unwrap();
         assert_eq!(
             std::fs::canonicalize(&resolved.program).unwrap(),
             std::fs::canonicalize(&program).unwrap()
@@ -628,7 +982,114 @@ exit $ret
                 1,
             );
         std::fs::write(&shim, malicious).unwrap();
-        assert!(super::resolve_powershell_shim(&shim).is_none());
+        assert!(super::resolve_powershell_shim(&shim, None).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn diagnoses_missing_command_invalid_shim_runtime_and_entrypoint() {
+        let temporary = tempfile::tempdir().unwrap();
+        let search_path = std::env::join_paths([temporary.path()]).unwrap();
+
+        let missing = super::diagnose_command_with_path("absent", Some(&search_path));
+        assert!(missing.command.is_none());
+        assert_eq!(missing.code, super::CommandResolutionCode::NotFound);
+        assert_eq!(missing.message, "not found on PATH");
+
+        let shim = temporary.path().join("agent.ps1");
+        std::fs::write(&shim, "#!/usr/bin/env pwsh\nWrite-Output 'custom'\n").unwrap();
+        let invalid = super::diagnose_command_with_path("agent", Some(&search_path));
+        assert!(invalid.command.is_none());
+        assert_eq!(invalid.code, super::CommandResolutionCode::UnsupportedShim);
+        assert!(invalid.message.contains("not a supported standard npm"));
+
+        let entry = "$basedir/node_modules/fake/entry.js";
+        std::fs::write(
+            &shim,
+            super::standard_npm_powershell_shim("node", entry).unwrap(),
+        )
+        .unwrap();
+        let runtime = super::diagnose_command_with_path("agent", Some(&search_path));
+        assert!(runtime.command.is_none());
+        assert_eq!(runtime.code, super::CommandResolutionCode::RuntimeMissing);
+        assert!(runtime.message.contains("requires node.exe"));
+
+        std::fs::write(temporary.path().join("node.exe"), b"runtime").unwrap();
+        let entrypoint = super::diagnose_command_with_path("agent", Some(&search_path));
+        assert!(entrypoint.command.is_none());
+        assert_eq!(
+            entrypoint.code,
+            super::CommandResolutionCode::EntrypointMissing
+        );
+        assert!(entrypoint.message.contains("npm entrypoint is missing"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn diagnoses_batch_shim_without_safe_powershell_sibling() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(temporary.path().join("agent.cmd"), "@exit /b 0\r\n").unwrap();
+        let search_path = std::env::join_paths([temporary.path()]).unwrap();
+
+        let diagnosis = super::diagnose_command_with_path("agent", Some(&search_path));
+        assert!(diagnosis.command.is_none());
+        assert_eq!(
+            diagnosis.code,
+            super::CommandResolutionCode::UnsafeBatchShim
+        );
+        assert!(diagnosis.message.contains("unsafe batch shim"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn diagnosis_uses_injected_path_and_prefers_unsafe_entrypoints() {
+        let temporary = tempfile::tempdir().unwrap();
+        let runtime_dir = temporary.path().join("runtime");
+        let shim_dir = temporary.path().join("shim");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        std::fs::create_dir_all(shim_dir.join("node_modules/fake")).unwrap();
+        std::fs::write(runtime_dir.join("node.exe"), b"runtime").unwrap();
+        std::fs::write(shim_dir.join("node_modules/fake/entry.js"), b"entry").unwrap();
+        std::fs::write(
+            shim_dir.join("agent.ps1"),
+            super::standard_npm_powershell_shim("node", "$basedir/node_modules/fake/entry.js")
+                .unwrap(),
+        )
+        .unwrap();
+        let search_path = std::env::join_paths([&shim_dir, &runtime_dir]).unwrap();
+
+        let available = super::diagnose_command_with_path("agent", Some(&search_path));
+        assert_eq!(available.code, super::CommandResolutionCode::Available);
+        assert!(available.command.is_some());
+
+        std::fs::write(
+            shim_dir.join("agent.ps1"),
+            super::standard_npm_powershell_shim("node", "$basedir/../outside.js").unwrap(),
+        )
+        .unwrap();
+        std::fs::remove_file(runtime_dir.join("node.exe")).unwrap();
+        let unsafe_entry = super::diagnose_command_with_path("agent", Some(&search_path));
+        assert_eq!(
+            unsafe_entry.code,
+            super::CommandResolutionCode::EntrypointUnsafe
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn diagnosis_continues_past_broken_path_candidate_to_valid_executable() {
+        let temporary = tempfile::tempdir().unwrap();
+        let broken = temporary.path().join("broken");
+        let valid = temporary.path().join("valid");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::create_dir_all(&valid).unwrap();
+        std::fs::write(broken.join("agent.ps1"), "Write-Output 'custom'\n").unwrap();
+        std::fs::write(valid.join("agent.exe"), b"native").unwrap();
+        let search_path = std::env::join_paths([broken, valid]).unwrap();
+
+        let diagnosis = super::diagnose_command_with_path("agent", Some(&search_path));
+        assert_eq!(diagnosis.code, super::CommandResolutionCode::Available);
+        assert!(diagnosis.command.unwrap().program.ends_with("agent.exe"));
     }
 
     #[cfg(unix)]

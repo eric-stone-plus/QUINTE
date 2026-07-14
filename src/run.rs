@@ -2856,6 +2856,12 @@ fn ensure_worker_liveness(store: &Store, run_id: &str) -> anyhow::Result<()> {
         .is_some_and(|elapsed| elapsed > Duration::from_secs(15));
     let pid = worker.get("pid").and_then(serde_json::Value::as_u64);
     if stale || pid.is_some_and(|pid| !process_alive(pid as u32)) {
+        // The worker may publish a durable stop state between the waiter's
+        // manifest read and this process check.
+        let status = store.load_manifest(run_id)?.status;
+        if status.terminal() || status == RunStatus::WaitingHm {
+            return Ok(());
+        }
         bail!("worker is not alive; run `quinte resume {run_id}` to recover the run");
     }
     Ok(())
