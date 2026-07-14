@@ -1,3 +1,5 @@
+> **Historical analysis only (non-normative).** Current product version is **0.1.1**. Read `GROK_HANDOFF.md` first.
+
 # QUINTE 残差管理机制调优分析
 
 **日期**: 2026-07-14
@@ -236,7 +238,7 @@ quinte doctor --json
 # 3. 写brief
 cat > brief.json << 'EOF'
 {
-  "brief_version": "1.0",
+  "brief_version": "0.1.1",
   "question": "问题",
   "context": "上下文+业务规则+checklist",
   "evidence_roots": ["/tmp/evidence"],

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["event_version", "sequence", "timestamp", "run_id", "event_type", "phase", "party_id", "attempt", "data"],
   "properties": {
-    "event_version": { "const": "0.1.4" },
+    "event_version": { "const": "0.1.1" },
     "sequence": { "type": "integer", "minimum": 1 },
     "timestamp": { "type": "string", "format": "date-time" },
     "run_id": { "type": "string", "minLength": 1 },

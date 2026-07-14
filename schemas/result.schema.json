@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["result_version", "run_id", "status", "summary", "recommendation", "dissent", "residuals", "trial_manifest"],
   "properties": {
-    "result_version": { "const": "0.1.4" },
+    "result_version": { "const": "0.1.1" },
     "run_id": { "type": "string", "minLength": 1 },
     "status": { "enum": ["completed", "degraded"] },
     "summary": { "type": "string", "minLength": 1 },
@@ -18,7 +18,7 @@
       "additionalProperties": false,
       "required": ["manifest_version", "base_model_relation", "perspective_count", "perspectives", "perturbation_axes", "independence_controls", "contamination_risks", "wall_time_seconds"],
       "properties": {
-        "manifest_version": { "const": "0.1.4" },
+        "manifest_version": { "const": "0.1.1" },
         "base_model_relation": { "const": "same_model" },
         "perspective_count": { "const": 5 },
         "perspectives": {

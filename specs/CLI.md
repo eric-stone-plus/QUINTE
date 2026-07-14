@@ -34,7 +34,7 @@ download and verify that executable; end users do not need Rust, Cargo, or a
 repository checkout. The release build excludes all test-adapter code.
 
 QUINTE is not a hosted proxy and does not bundle or impersonate its fixed
-native routes. CodeWhale, OpenCode, Kilo, MiMo, OMP, Claude Code, and their
+native routes. CodeWhale, OpenCode, KiloCode, MiMoCode, Oh-My-Pi, ClaudeCode, and their
 existing token-plan credentials remain runtime prerequisites for a complete
 run. `doctor` reports the exact missing prerequisite before execution.
 
@@ -66,8 +66,8 @@ command.
 Creates the state root, `policy.json`, and `runs/`. It refuses to replace an
 existing policy unless `--force` is supplied.
 
-The default policy fixes Party A-E to CodeWhale, OpenCode, Kilo, MiMo, and OMP,
-and fixes Auditor B to Claude Code. Text uses `mimo-v2.5-pro`; a supported image
+The default policy fixes Party A-E to CodeWhale, OpenCode, KiloCode, MiMoCode, and Oh-My-Pi,
+and fixes Auditor B to ClaudeCode. Text uses `mimo-v2.5-pro`; a supported image
 attachment selects `mimo-v2.5` for the whole run.
 
 ### `status`
@@ -157,7 +157,7 @@ command.
 
 ```json
 {
-  "brief_version": "0.1.4",
+  "brief_version": "0.1.1",
   "question": "Required non-empty question",
   "context": "Optional bounded context",
   "evidence_roots": ["/absolute/or/resolvable/path"],
@@ -244,7 +244,7 @@ draft its verdict, and write a response conforming to
 
 ```json
 {
-  "hm_response_version": "0.1.4",
+  "hm_response_version": "0.1.1",
   "run_id": "exact value from hm-request.json",
   "nonce": "exact value from hm-request.json",
   "policy_sha256": "exact value from hm-request.json",
@@ -252,7 +252,7 @@ draft its verdict, and write a response conforming to
   "input_receipt_sha256": "exact value from hm-request.json",
   "action_scope": "exact value from hm-request.json, including null",
   "verdict": {
-    "arbiter_verdict_version": "0.1.4",
+    "arbiter_verdict_version": "0.1.1",
     "summary": "Hermes evidence-based summary",
     "recommendation": "Hermes recommendation",
     "residuals": []
@@ -301,7 +301,7 @@ to stdout:
 
 ```json
 {
-  "cli_envelope_version": "0.1.4",
+  "cli_envelope_version": "0.1.1",
   "ok": true,
   "data": {}
 }

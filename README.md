@@ -34,10 +34,10 @@ The default policy binds the protocol roles to these native routes:
 | --- | --- | --- |
 | Party A | CodeWhale | R1, R2 |
 | Party B | OpenCode | R1, R2 |
-| Party C | Kilo | R1, R2 |
-| Party D | MiMo | R1, R2 |
-| Party E | OMP | R1, R2 |
-| Auditor B | Claude Code | R3 only |
+| Party C | KiloCode | R1, R2 |
+| Party D | MiMoCode | R1, R2 |
+| Party E | Oh-My-Pi | R1, R2 |
+| Auditor B | ClaudeCode | R3 only |
 
 R1 and R2 use `mimo-v2.5-pro` for text-only briefs. A supported image
 attachment selects `mimo-v2.5` for the run. These are same-family behavioral
@@ -51,7 +51,7 @@ pass.
 R2 is scheduler-serialized and paced: the default policy leaves at least ten
 seconds between R2 transport starts. Trusted retry signals stay on the same
 route and use a bounded attempt budget: host-observed timeouts, exact
-rate-limit errors, MiMo's structured repetition-detector terminal error, and a
+rate-limit errors, MiMoCode's structured repetition-detector terminal error, and a
 CodeWhale stream that reports both `completed` and `done` but contains no JSON
 candidate or only a truncated final candidate. Backoff is bounded and
 deterministically jittered, and persisted cooldowns prevent `resume` from
@@ -86,9 +86,9 @@ container.
 
 The CLI executable is self-contained, but a complete run intentionally depends
 on its fixed native agent roster and existing token-plan credentials. Run
-`quinte doctor` to check CodeWhale, OpenCode, Kilo, MiMo, OMP, Claude Code, and
-their credential sources. The installer never downloads those tools or creates
-credentials silently.
+`quinte doctor` to check CodeWhale, OpenCode, KiloCode, MiMoCode, Oh-My-Pi,
+ClaudeCode, and their credential sources. The installer never downloads those
+tools or creates credentials silently.
 
 Source builds remain available to contributors with `cargo build --release`.
 
@@ -96,7 +96,7 @@ Create a brief such as `brief.json`:
 
 ```json
 {
-  "brief_version": "0.1.4",
+  "brief_version": "0.1.1",
   "question": "Which material risks remain in this change?",
   "context": "Review the implementation, tests, and operational boundary.",
   "evidence_roots": ["/absolute/path/to/project"],
@@ -115,14 +115,14 @@ The default command returns immediately with a queued run while a supervised
 background worker advances R1, R2, and Auditor B:
 
 ```json
-{"cli_envelope_version":"0.1.4","ok":true,"data":{"run_id":"...","status":"queued","run_dir":"..."}}
+{"cli_envelope_version":"0.1.1","ok":true,"data":{"run_id":"...","status":"queued","run_dir":"..."}}
 ```
 
 Use `--wait` to keep the initiating terminal attached to state observation
 (not to the worker itself). It normally returns when Hermes input is required:
 
 ```json
-{"cli_envelope_version":"0.1.4","ok":true,"data":{"run_id":"...","status":"waiting_hm","run_dir":"..."}}
+{"cli_envelope_version":"0.1.1","ok":true,"data":{"run_id":"...","status":"waiting_hm","run_dir":"..."}}
 ```
 
 `waiting_hm` with exit code `0` is a successful handoff, not a completed
@@ -170,11 +170,11 @@ input receipt before Hermes sees the challenge. The final manifest also binds
 `result.json` by SHA-256. Files are created as the run reaches each phase, so
 failed or waiting runs are expected to have only a prefix of this layout.
 
-OpenCode, Kilo, and MiMo receive validated images with native `--file`
-arguments, OMP receives staged `@file` inputs, and CodeWhale/Claude receive
-their native read-only image path forms. OMP runs from a WAL-consistent,
-per-attempt SQLite credential snapshot; copied credentials are removed after
-each attempt.
+OpenCode, KiloCode, and MiMoCode receive validated images with native `--file`
+arguments, Oh-My-Pi receives staged `@file` inputs, and CodeWhale/ClaudeCode
+receive their native read-only image path forms. Oh-My-Pi runs from a
+WAL-consistent, per-attempt SQLite credential snapshot; copied credentials are
+removed after each attempt.
 
 ## Isolation and Authorization
 

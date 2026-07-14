@@ -8,7 +8,7 @@ fn lane_output_accepts_valid_closed_document() {
     let bytes = serde_json::to_vec(&common::valid_lane_output()).unwrap();
     let output = parse_and_validate::<LaneOutput>(&bytes, LANE_OUTPUT_SCHEMA).unwrap();
 
-    assert_eq!(output.lane_output_version, "0.1.4");
+    assert_eq!(output.lane_output_version, "0.1.1");
     assert_eq!(output.claims.len(), 1);
     assert_eq!(output.residuals.len(), 1);
 }

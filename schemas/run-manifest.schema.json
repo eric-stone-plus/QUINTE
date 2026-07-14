@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["manifest_version", "run_id", "created_at", "updated_at", "status", "brief_sha256", "policy_sha256", "snapshot_sha256", "runtime_sha256", "protocol_version", "effective_model", "sandbox_mode", "current_phase", "error", "r3_input_receipt", "hm_challenge", "hm_submission", "result_sha256"],
   "properties": {
-    "manifest_version": { "const": "0.1.4" },
+    "manifest_version": { "const": "0.1.1" },
     "run_id": { "type": "string", "format": "uuid" },
     "created_at": { "type": "string", "format": "date-time" },
     "updated_at": { "type": "string", "format": "date-time" },
@@ -15,7 +15,7 @@
     "policy_sha256": { "$ref": "#/$defs/digest" },
     "snapshot_sha256": { "$ref": "#/$defs/digest" },
     "runtime_sha256": { "$ref": "#/$defs/digest" },
-    "protocol_version": { "const": "0.1.4" },
+    "protocol_version": { "const": "0.1.1" },
     "effective_model": { "enum": ["mimo-v2.5-pro", "mimo-v2.5"] },
     "sandbox_mode": { "enum": ["strict", "process"] },
     "current_phase": { "type": ["string", "null"] },
@@ -48,7 +48,7 @@
           "additionalProperties": false,
           "required": ["challenge_version", "run_id", "nonce", "policy_sha256", "evidence_packet_sha256", "input_receipt_sha256", "action_scope", "issued_at", "expires_at", "consumed"],
           "properties": {
-            "challenge_version": { "const": "0.1.4" },
+            "challenge_version": { "const": "0.1.1" },
             "run_id": { "type": "string", "minLength": 1 },
             "nonce": { "type": "string", "minLength": 32 },
             "policy_sha256": { "$ref": "#/$defs/digest" },
@@ -70,7 +70,7 @@
           "additionalProperties": false,
           "required": ["submission_receipt_version", "state", "response_ref", "response_sha256", "input_receipt_sha256", "staged_at", "accepted_at"],
           "properties": {
-            "submission_receipt_version": { "const": "0.1.4" },
+            "submission_receipt_version": { "const": "0.1.1" },
             "state": { "enum": ["staging", "accepted"] },
             "response_ref": { "const": "r3/hm-response.json" },
             "response_sha256": { "$ref": "#/$defs/digest" },

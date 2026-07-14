@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["lane_output_version", "task_restatement", "verdict", "confidence", "claims", "residuals", "uncertainties"],
   "properties": {
-    "lane_output_version": { "const": "0.1.4" },
+    "lane_output_version": { "const": "0.1.1" },
     "task_restatement": { "type": "string", "minLength": 1, "maxLength": 4000 },
     "verdict": { "type": "string", "minLength": 1, "maxLength": 20000 },
     "confidence": { "type": "number", "minimum": 0, "maximum": 1 },

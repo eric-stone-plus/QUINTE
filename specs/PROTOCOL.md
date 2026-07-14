@@ -1,4 +1,4 @@
-# QUINTE Protocol v0.1.4
+# QUINTE Protocol v0.1.1
 
 This document defines the product protocol enforced by the `quinte` CLI. The
 CLI scheduler is the canonical runtime authority. Hermes is a trigger and one
@@ -36,10 +36,10 @@ The v1 policy binds exactly these routes:
 | --- | --- | --- |
 | Party A | CodeWhale | R1, R2 |
 | Party B | OpenCode | R1, R2 |
-| Party C | Kilo | R1, R2 |
-| Party D | MiMo | R1, R2 |
-| Party E | OMP | R1, R2 |
-| Auditor B | Claude Code (`cc`) | R3 only |
+| Party C | KiloCode | R1, R2 |
+| Party D | MiMoCode | R1, R2 |
+| Party E | Oh-My-Pi | R1, R2 |
+| Auditor B | ClaudeCode (`cc`) | R3 only |
 | Primary arbiter | Hermes (`hm`) | R3 only |
 
 All inference routes use the same MiMo token-plan family. Text-only runs use
@@ -110,7 +110,7 @@ not make the underlying model family independent.
 After R2 passes, the scheduler writes an evidence packet containing the bound
 question, accepted R1 and R2 outputs, and snapshot digest.
 
-Auditor B runs through the fixed Claude Code route and returns a typed verdict.
+Auditor B runs through the fixed ClaudeCode route and returns a typed verdict.
 The scheduler then creates a single-use Hermes challenge bound to:
 
 - run id;
@@ -173,12 +173,12 @@ The scheduler recognizes only these trusted transient conditions:
 - on a failed transport, an adapter-appropriate structured error with exact
   status `429`/canonical rate-limit code or an explicit nonzero-exit stderr 429
   marker;
-- MiMo's structured terminal error from its repetition detector; or
+- MiMoCode's structured terminal error from its repetition detector; or
 - a CodeWhale stream whose control events report both `completed` and `done`
   but whose content contains no JSON candidate or only a truncated final
   candidate.
 
-The MiMo condition must come from its structured error event, and the CodeWhale
+The MiMoCode condition must come from its structured error event, and the CodeWhale
 condition must come from its terminal control events with otherwise valid
 stream framing. Similar free-form model text is not trusted. A malformed event,
 or schema-invalid complete candidate is non-retryable even if CodeWhale later

@@ -36,7 +36,7 @@ fn direct_json_parses_valid_lane_output() {
     let bytes = serde_json::to_vec(&common::valid_lane_output()).unwrap();
     let output = parse_output(OutputKind::DirectJson, &bytes).unwrap();
 
-    assert_eq!(output.lane_output_version, "0.1.4");
+    assert_eq!(output.lane_output_version, "0.1.1");
     assert_eq!(output.verdict, "The bounded review completed.");
 }
 
@@ -71,7 +71,7 @@ fn policy_output_limit_is_enforced_before_schema_parsing() {
 fn full_supported_policy_limit_is_not_shadowed_by_a_lower_parser_cap() {
     let bytes = serde_json::to_vec(&common::valid_lane_output()).unwrap();
     let output = parse_output_with_limit(OutputKind::DirectJson, &bytes, 16 * 1024 * 1024).unwrap();
-    assert_eq!(output.lane_output_version, "0.1.4");
+    assert_eq!(output.lane_output_version, "0.1.1");
 }
 
 #[test]

@@ -1,11 +1,14 @@
 # Windows Real-Machine Acceptance Memo
 
-Date: 2026-07-15
+Date: 2026-07-15  
 
 This is a release gate, not a unit-test wish list. Run it on a real supported
 Windows machine after implementing descendant-process containment. Record the
-QUINTE commit, Windows build, shell version, adapter versions, and hashes of all
-captured artifacts.
+QUINTE commit, **product version `0.1.1`**, Windows build, shell version,
+adapter versions, and hashes of all captured artifacts.
+
+Implementation on macOS is **not** a substitute pass. Gate status and product
+version are summarized in `GROK_HANDOFF.md`.
 
 ## 1. Defect this plan must close
 
@@ -107,7 +110,7 @@ For a successful and each failed/cancelled run, verify:
   omit it
 - conflicting residual fields produce an explicit conservative result
 - no artifact changes after finalization or cancellation
-- every QUINTE-owned version field equals the release package version `0.1.4`
+- every QUINTE-owned version field equals the release package version `0.1.1`
 
 ## 8. Evidence bundle
 

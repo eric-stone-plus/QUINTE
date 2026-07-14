@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 fn manifest(run_id: &str) -> RunManifest {
     RunManifest {
-        manifest_version: "0.1.4".into(),
+        manifest_version: "0.1.1".into(),
         run_id: run_id.into(),
         created_at: "2026-07-13T00:00:00.000Z".into(),
         updated_at: "2026-07-13T00:00:00.000Z".into(),
@@ -17,7 +17,7 @@ fn manifest(run_id: &str) -> RunManifest {
         policy_sha256: format!("sha256:{}", "b".repeat(64)),
         snapshot_sha256: format!("sha256:{}", "c".repeat(64)),
         runtime_sha256: format!("sha256:{}", "d".repeat(64)),
-        protocol_version: "0.1.4".into(),
+        protocol_version: "0.1.1".into(),
         effective_model: "mimo-v2.5-pro".into(),
         sandbox_mode: SandboxMode::Process,
         current_phase: None,

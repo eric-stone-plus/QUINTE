@@ -3948,7 +3948,7 @@ mod retry_tests {
         let temporary = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temporary.path().join("input")).unwrap();
         let manifest = SnapshotManifest {
-            snapshot_version: "0.1.4".into(),
+            snapshot_version: "0.1.1".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
             entries: vec![SnapshotEntry {
                 snapshot_ref: VALID_SNAPSHOT_REF.into(),
@@ -3970,7 +3970,7 @@ mod retry_tests {
 
     fn lane_output_with_evidence(claim_ref: &str, closure_ref: &str) -> LaneOutput {
         serde_json::from_value(serde_json::json!({
-            "lane_output_version": "0.1.4",
+            "lane_output_version": "0.1.1",
             "task_restatement": "test evidence references",
             "verdict": "test verdict",
             "confidence": 0.9,
@@ -4336,7 +4336,7 @@ mod retry_tests {
     #[test]
     fn timeout_accepts_only_a_complete_schema_valid_lane_output() {
         let valid = serde_json::json!({
-            "lane_output_version": "0.1.4",
+            "lane_output_version": "0.1.1",
             "task_restatement": "bounded task",
             "verdict": "complete before timeout",
             "confidence": 0.9,
@@ -4363,7 +4363,7 @@ mod retry_tests {
         let (output, error, retry) = evaluate_attempt_output(
             "fake",
             OutputKind::DirectJson,
-            br#"{"lane_output_version":"0.1.4""#,
+            br#"{"lane_output_version":"0.1.1""#,
             b"",
             None,
             true,
@@ -4481,7 +4481,7 @@ mod retry_tests {
     #[test]
     fn typed_mimo_error_wins_over_an_earlier_valid_candidate() {
         let valid = serde_json::json!({
-            "lane_output_version": "0.1.4",
+            "lane_output_version": "0.1.1",
             "task_restatement": "bounded task",
             "verdict": "partial output",
             "confidence": 0.9,

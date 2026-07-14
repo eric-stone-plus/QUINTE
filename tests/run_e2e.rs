@@ -91,7 +91,7 @@ impl<T> Drop for ControlledWorker<T> {
 fn fake_policy(executable: &std::path::Path) -> Policy {
     let parties = ["Party A", "Party B", "Party C", "Party D", "Party E"];
     Policy {
-        policy_version: "0.1.4".into(),
+        policy_version: "0.1.1".into(),
         roster: parties
             .iter()
             .enumerate()
@@ -143,7 +143,7 @@ fn create_waiting_run(
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "What remains unresolved?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -165,7 +165,7 @@ fn create_waiting_run(
     let cc: ArbiterVerdict =
         read_json(&store.run_dir(&created.run_id).join("r3/cc-response.json")).unwrap();
     let response = HmResponse {
-        hm_response_version: "0.1.4".into(),
+        hm_response_version: "0.1.1".into(),
         run_id: challenge.run_id,
         nonce: challenge.nonce,
         policy_sha256: challenge.policy_sha256,
@@ -190,7 +190,7 @@ fn full_fake_run_reaches_hm_then_completes() {
     let evidence = temporary.path().join("evidence.txt");
     fs::write(&evidence, "bounded evidence\n").unwrap();
     let brief = Brief {
-        brief_version: "0.1.4".into(),
+        brief_version: "0.1.1".into(),
         question: "What remains unresolved?".into(),
         context: None,
         evidence_roots: vec![evidence],
@@ -218,7 +218,7 @@ fn full_fake_run_reaches_hm_then_completes() {
     let cc: ArbiterVerdict =
         read_json(&store.run_dir(&created.run_id).join("r3/cc-response.json")).unwrap();
     let response = HmResponse {
-        hm_response_version: "0.1.4".into(),
+        hm_response_version: "0.1.1".into(),
         run_id: challenge.run_id,
         nonce: challenge.nonce,
         policy_sha256: challenge.policy_sha256,
@@ -348,7 +348,7 @@ fn hm_staging_receipt_is_retryable_when_response_write_never_happened() {
     write_json(&response_path, &response).unwrap();
     let mut manifest = store.load_manifest(&run_id).unwrap();
     manifest.hm_submission = Some(HmSubmissionReceipt {
-        submission_receipt_version: "0.1.4".into(),
+        submission_receipt_version: "0.1.1".into(),
         state: HmSubmissionState::Staging,
         response_ref: "r3/hm-response.json".into(),
         response_sha256: sha256_file(&response_path).unwrap(),
@@ -375,7 +375,7 @@ fn hm_staged_file_is_recovered_without_resubmission() {
     write_json(&response_path, &response).unwrap();
     let mut manifest = store.load_manifest(&run_id).unwrap();
     manifest.hm_submission = Some(HmSubmissionReceipt {
-        submission_receipt_version: "0.1.4".into(),
+        submission_receipt_version: "0.1.1".into(),
         state: HmSubmissionState::Staging,
         response_ref: "r3/hm-response.json".into(),
         response_sha256: sha256_file(&response_path).unwrap(),
@@ -412,7 +412,7 @@ fn accepted_hm_submission_resumes_after_expiry_and_is_idempotent() {
     manifest.hm_challenge.as_mut().unwrap().consumed = true;
     manifest.hm_challenge.as_mut().unwrap().expires_at = "2000-01-01T00:00:00Z".into();
     manifest.hm_submission = Some(HmSubmissionReceipt {
-        submission_receipt_version: "0.1.4".into(),
+        submission_receipt_version: "0.1.1".into(),
         state: HmSubmissionState::Accepted,
         response_ref: "r3/hm-response.json".into(),
         response_sha256: sha256_file(&internal_response).unwrap(),
@@ -452,7 +452,7 @@ fn cancelling_active_workers_is_terminal_and_cannot_be_overwritten_by_failure() 
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Can an active run be cancelled safely?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -512,7 +512,7 @@ fn invalid_early_r1_lane_still_drains_all_workers() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Do failed parallel lanes retain scheduler ownership?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -566,7 +566,7 @@ fn output_limit_caps_captured_memory_and_fails_the_lane() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Does QUINTE cap child output while reading it?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -615,7 +615,7 @@ fn r2_rate_limit_retries_same_route_with_persisted_scheduler_events() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Does the scheduler recover a typed R2 rate limit?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -672,7 +672,7 @@ fn typed_mimo_repetition_error_retries_and_preserves_the_real_error() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Does a typed MiMo repetition failure recover?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -758,7 +758,7 @@ fn typed_mimo_repetition_stops_after_the_bounded_attempts() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Does bounded retry stop?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -831,7 +831,7 @@ fn timeout_recovers_a_flushed_valid_output_without_retrying() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Can a complete output be recovered at timeout?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -888,7 +888,7 @@ fn invalid_evidence_is_rejected_before_lane_finished_is_recorded_as_accepted() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Can invalid evidence be marked accepted?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -951,7 +951,7 @@ fn completed_codewhale_with_a_truncated_final_candidate_retries_on_the_same_rout
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Does a completed CodeWhale stream retry a truncated final candidate?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -1011,7 +1011,7 @@ fn r3_auditor_timeout_uses_the_same_bounded_retry_policy() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Does the R3 auditor recover from a transient timeout?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -1067,7 +1067,7 @@ fn resume_consumes_existing_attempt_directories_in_r1_and_r3() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Does resume preserve the attempt budget?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -1127,7 +1127,7 @@ fn resume_honors_a_persisted_r1_retry_deadline_before_starting_the_next_attempt(
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Does resume preserve a pending retry cooldown?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -1144,7 +1144,7 @@ fn resume_honors_a_persisted_r1_retry_deadline_before_starting_the_next_attempt(
     write_json(
         &lane_dir.join("retry-deadline.json"),
         &serde_json::json!({
-            "retry_state_version": "0.1.4",
+            "retry_state_version": "0.1.1",
             "phase": "R1",
             "route_id": "fake-0",
             "previous_attempt": 1,
@@ -1196,7 +1196,7 @@ fn resume_honors_a_persisted_r3_retry_deadline_before_starting_the_auditor() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Does resume preserve the auditor retry cooldown?".into(),
             context: None,
             evidence_roots: vec![evidence],
@@ -1214,7 +1214,7 @@ fn resume_honors_a_persisted_r3_retry_deadline_before_starting_the_auditor() {
     write_json(
         &lane_dir.join("retry-deadline.json"),
         &serde_json::json!({
-            "retry_state_version": "0.1.4",
+            "retry_state_version": "0.1.1",
             "phase": "R3",
             "route_id": "fake-cc",
             "previous_attempt": 1,
@@ -1265,7 +1265,7 @@ fn resume_fails_closed_when_an_existing_attempt_consumed_the_budget() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "0.1.4".into(),
+            brief_version: "0.1.1".into(),
             question: "Can resume bypass an exhausted attempt budget?".into(),
             context: None,
             evidence_roots: vec![evidence],

@@ -213,8 +213,8 @@ def validate_manifest(manifest: Any) -> list[str]:
         return ["dispatch manifest must be an object"]
 
     validate_fields("manifest", manifest, TOP_LEVEL_FIELDS, errors)
-    if manifest.get("dispatch_manifest_version") != "0.1.4":
-        errors.append("dispatch_manifest_version must be 0.1.4")
+    if manifest.get("dispatch_manifest_version") != "0.1.1":
+        errors.append("dispatch_manifest_version must be 0.1.1")
     for field in ("run_id", "question", "prompt_ref", "archive_dir"):
         if not is_nonempty_string(manifest.get(field)):
             errors.append(f"{field} must be a non-empty string")
@@ -607,7 +607,7 @@ def build_ledger(manifest_path: Path, manifest: dict[str, Any]) -> dict[str, Any
         )
 
     return {
-        "dispatch_ledger_version": "0.1.4",
+        "dispatch_ledger_version": "0.1.1",
         "run_id": manifest["run_id"],
         "phase": manifest["phase"],
         "status": status,
@@ -724,8 +724,8 @@ def validate_ledger(ledger: Any) -> list[str]:
         return ["dispatch ledger must be an object"]
 
     validate_fields("ledger", ledger, LEDGER_FIELDS, errors)
-    if ledger.get("dispatch_ledger_version") != "0.1.4":
-        errors.append("dispatch_ledger_version must be 0.1.4")
+    if ledger.get("dispatch_ledger_version") != "0.1.1":
+        errors.append("dispatch_ledger_version must be 0.1.1")
     if not is_nonempty_string(ledger.get("run_id")):
         errors.append("run_id must be a non-empty string")
     if ledger.get("phase") not in PHASES:

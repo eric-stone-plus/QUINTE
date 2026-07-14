@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 #[allow(dead_code)]
 pub fn valid_lane_output() -> Value {
     json!({
-        "lane_output_version": "0.1.4",
+        "lane_output_version": "0.1.1",
         "task_restatement": "Review the supplied evidence packet.",
         "verdict": "The bounded review completed.",
         "confidence": 0.75,

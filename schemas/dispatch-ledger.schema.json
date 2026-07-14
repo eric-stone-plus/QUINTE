@@ -20,7 +20,7 @@
   "properties": {
     "dispatch_ledger_version": {
       "type": "string",
-      "const": "0.1.4"
+      "const": "0.1.1"
     },
     "run_id": {
       "type": "string",

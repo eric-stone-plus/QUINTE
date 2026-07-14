@@ -11,7 +11,7 @@ credentials, and runtime artifacts.
 
 ## Incident Signature
 
-- CodeWhale, Kilo, MiMo, and OMP were installed as npm shims.
+- CodeWhale, KiloCode, MiMoCode, and Oh-My-Pi were installed as npm shims.
 - OpenCode was installed as a native `.exe` and was the only R1 lane that
   started successfully.
 - Adding the npm directory to `PATH` did not fix the four failed lanes.
