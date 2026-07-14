@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -23,7 +23,7 @@ use crate::model::{
     HmChallenge, HmResponse, HmSubmissionReceipt, HmSubmissionState, LaneArtifactBinding,
     LaneOutput, MULTIMODAL_MODEL, PACKAGE_VERSION, PROTOCOL_VERSION, Policy, R2Packet,
     R3InputReceipt, RESULT_VERSION, Residual, ResultEnvelope, RunError, RunManifest, RunStatus,
-    SnapshotEntry, SnapshotManifest, TEXT_MODEL, TrialManifest, TrialPerspective,
+    Severity, SnapshotEntry, SnapshotManifest, TEXT_MODEL, TrialManifest, TrialPerspective,
 };
 use crate::policy;
 use crate::schema::{
@@ -1227,7 +1227,11 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
     }
     let hm: HmResponse = validate_file(&hm_path, HM_RESPONSE_SCHEMA)?;
     validate_hm_response_binding(&manifest, &hm, &brief, &evidence_packet_path)?;
+    // HM challenge binding alone is insufficient: residual evidence refs must
+    // resolve to the exact snapshot, and residual IDs must be unique before merge.
+    validate_arbiter_semantics(&hm.verdict, &run_dir)?;
     let cc: ArbiterVerdict = read_json(&cc_path)?;
+    validate_unique_residual_ids(&cc.residuals, "cc")?;
     let result = merge_verdicts(&manifest, &policy, &r1, &r2, &hm.verdict, &cc);
     validate_value(&serde_json::to_value(&result)?, RESULT_SCHEMA)?;
     let finalization = store.finalization_guard(run_id)?;
@@ -2966,6 +2970,30 @@ fn arbiter_from_lane(output: LaneOutput) -> ArbiterVerdict {
     }
 }
 
+fn residual_fields_conflict(left: &Residual, right: &Residual) -> bool {
+    left.disposition != right.disposition
+        || left.closure_state != right.closure_state
+        || left.finding != right.finding
+        || left.severity != right.severity
+        || left.residual_type != right.residual_type
+        || left.source != right.source
+        || left.evidence_refs != right.evidence_refs
+        || left.required_closure != right.required_closure
+        || left.scope != right.scope
+        || left.closure_evidence != right.closure_evidence
+}
+
+fn is_high_risk_severity(severity: Severity) -> bool {
+    matches!(severity, Severity::High | Severity::Critical | Severity::P0)
+}
+
+fn conservative_unresolved(mut residual: Residual) -> Residual {
+    residual.disposition = Disposition::Unresolved;
+    residual.closure_state = ClosureState::Open;
+    residual.closure_evidence = Vec::new();
+    residual
+}
+
 fn merge_verdicts(
     manifest: &RunManifest,
     policy: &Policy,
@@ -2977,26 +3005,54 @@ fn merge_verdicts(
     let mut residuals = BTreeMap::<String, Residual>::new();
     let mut dissent = Vec::new();
     for residual in hm.residuals.iter().chain(cc.residuals.iter()) {
-        if let Some(existing) = residuals.get(&residual.id)
-            && (existing.disposition != residual.disposition
-                || existing.closure_state != residual.closure_state
-                || existing.finding != residual.finding)
-        {
-            dissent.push(format!(
-                "Residual {} differs between hm and cc; retained as unresolved/open.",
-                residual.id
-            ));
-            let mut merged = existing.clone();
-            merged.disposition = Disposition::Unresolved;
-            merged.closure_state = ClosureState::Open;
-            merged.closure_evidence = Vec::new();
-            residuals.insert(residual.id.clone(), merged);
+        if let Some(existing) = residuals.get(&residual.id) {
+            if residual_fields_conflict(existing, residual) {
+                dissent.push(format!(
+                    "Residual {} differs between hm and cc (finding, disposition, closure, severity, type, source, evidence, required_closure, or scope); retained as unresolved/open.",
+                    residual.id
+                ));
+                let merged = conservative_unresolved(existing.clone());
+                residuals.insert(residual.id.clone(), merged);
+            }
             continue;
         }
-        residuals
-            .entry(residual.id.clone())
-            .or_insert_with(|| residual.clone());
+        residuals.insert(residual.id.clone(), residual.clone());
     }
+
+    // Conservative R1/R2 preservation: high-risk residuals accepted in earlier
+    // phases must not disappear solely because both R3 arbiters omitted them.
+    let mut earlier = BTreeMap::<String, Residual>::new();
+    for lane in r1.iter().chain(r2.iter()) {
+        for residual in &lane.output.residuals {
+            if !is_high_risk_severity(residual.severity) {
+                continue;
+            }
+            if let Some(existing) = earlier.get(&residual.id) {
+                if residual_fields_conflict(existing, residual) {
+                    dissent.push(format!(
+                        "Residual {} high-risk variants conflict across R1/R2; preserving as unresolved/open.",
+                        residual.id
+                    ));
+                    earlier.insert(
+                        residual.id.clone(),
+                        conservative_unresolved(existing.clone()),
+                    );
+                }
+            } else {
+                earlier.insert(residual.id.clone(), residual.clone());
+            }
+        }
+    }
+    for (id, residual) in earlier {
+        if residuals.contains_key(&id) {
+            continue;
+        }
+        dissent.push(format!(
+            "Residual {id} was high-risk in R1/R2 but omitted by both R3 arbiters; preserved as unresolved/open."
+        ));
+        residuals.insert(id, conservative_unresolved(residual));
+    }
+
     if hm.recommendation != cc.recommendation {
         dissent.push(format!(
             "hm: {}\ncc: {}",
@@ -3083,13 +3139,72 @@ fn render_report(result: &ResultEnvelope) -> String {
     report
 }
 
-fn validate_evidence_refs(output: &LaneOutput, run_dir: &Path) -> anyhow::Result<()> {
+fn validate_unique_ids<'a, I>(ids: I, kind: &str) -> anyhow::Result<()>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            bail!("duplicate {kind} id: {id}");
+        }
+    }
+    Ok(())
+}
+
+fn validate_unique_claim_ids(claims: &[crate::model::Claim]) -> anyhow::Result<()> {
+    validate_unique_ids(claims.iter().map(|claim| claim.id.as_str()), "claim")
+}
+
+fn validate_unique_residual_ids(residuals: &[Residual], context: &str) -> anyhow::Result<()> {
+    validate_unique_ids(
+        residuals.iter().map(|residual| residual.id.as_str()),
+        &format!("{context} residual"),
+    )
+}
+
+fn snapshot_refs(run_dir: &Path) -> anyhow::Result<BTreeSet<String>> {
     let snapshot: SnapshotManifest = read_json(&run_dir.join("input/snapshot-manifest.json"))?;
-    let valid = snapshot
+    Ok(snapshot
         .entries
-        .iter()
-        .map(|entry| entry.snapshot_ref.as_str())
-        .collect::<Vec<_>>();
+        .into_iter()
+        .map(|entry| entry.snapshot_ref)
+        .collect())
+}
+
+fn validate_snapshot_reference(reference: &str, valid: &BTreeSet<String>) -> anyhow::Result<()> {
+    if reference.is_empty() {
+        return Ok(());
+    }
+    if !reference.starts_with("snapshot://") || !valid.contains(reference) {
+        bail!("unresolvable evidence reference: {reference}");
+    }
+    Ok(())
+}
+
+fn validate_residual_evidence_refs(residuals: &[Residual], run_dir: &Path) -> anyhow::Result<()> {
+    let valid = snapshot_refs(run_dir)?;
+    for residual in residuals {
+        for reference in residual
+            .evidence_refs
+            .iter()
+            .chain(residual.closure_evidence.iter())
+        {
+            validate_snapshot_reference(reference, &valid)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_arbiter_semantics(verdict: &ArbiterVerdict, run_dir: &Path) -> anyhow::Result<()> {
+    validate_unique_residual_ids(&verdict.residuals, "arbiter")?;
+    validate_residual_evidence_refs(&verdict.residuals, run_dir)
+}
+
+fn validate_evidence_refs(output: &LaneOutput, run_dir: &Path) -> anyhow::Result<()> {
+    validate_unique_claim_ids(&output.claims)?;
+    validate_unique_residual_ids(&output.residuals, "lane")?;
+    let valid = snapshot_refs(run_dir)?;
     for reference in output
         .claims
         .iter()
@@ -3107,12 +3222,7 @@ fn validate_evidence_refs(output: &LaneOutput, run_dir: &Path) -> anyhow::Result
                 .flat_map(|residual| residual.closure_evidence.iter()),
         )
     {
-        if reference.is_empty() {
-            continue;
-        }
-        if !reference.starts_with("snapshot://") || !valid.contains(&reference.as_str()) {
-            bail!("unresolvable evidence reference: {reference}");
-        }
+        validate_snapshot_reference(reference, &valid)?;
     }
     Ok(())
 }
@@ -3403,12 +3513,16 @@ fn process_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod retry_tests {
     use super::{
-        MIMO_REPETITION_ERROR, RateLimitSignal, RetryClass, classify_rate_limit,
-        evaluate_attempt_output, next_attempt, retry_allowed, retry_schedule,
-        validate_evidence_refs,
+        LaneAccepted, MIMO_REPETITION_ERROR, RateLimitSignal, RetryClass, classify_rate_limit,
+        evaluate_attempt_output, merge_verdicts, next_attempt, residual_fields_conflict,
+        retry_allowed, retry_schedule, validate_arbiter_semantics, validate_evidence_refs,
+        validate_unique_claim_ids, validate_unique_residual_ids,
     };
     use crate::adapters::OutputKind;
-    use crate::model::{LaneOutput, SnapshotEntry, SnapshotManifest};
+    use crate::model::{
+        ArbiterVerdict, ClosureState, Disposition, LaneOutput, PACKAGE_VERSION, Residual,
+        RunManifest, RunStatus, SandboxMode, Severity, SnapshotEntry, SnapshotManifest,
+    };
     use crate::policy::default_policy;
 
     #[cfg(unix)]
@@ -3659,6 +3773,272 @@ mod retry_tests {
 
         let error = validate_evidence_refs(&output, temporary.path()).unwrap_err();
         assert!(error.to_string().contains("snapshot://missing.txt"));
+    }
+
+    fn sample_residual(id: &str, severity: Severity, finding: &str) -> Residual {
+        Residual {
+            id: id.into(),
+            severity,
+            residual_type: "generic".into(),
+            source: "test".into(),
+            finding: finding.into(),
+            evidence_refs: vec![],
+            disposition: Disposition::Unresolved,
+            required_closure: "close with evidence".into(),
+            closure_state: ClosureState::Open,
+            closure_evidence: vec![],
+            scope: "test-scope".into(),
+        }
+    }
+
+    fn sample_lane(id: &str, residual: Residual) -> LaneAccepted {
+        LaneAccepted {
+            party_id: "Party A".into(),
+            route_id: "party-a".into(),
+            output: LaneOutput {
+                lane_output_version: PACKAGE_VERSION.into(),
+                task_restatement: "task".into(),
+                verdict: "verdict".into(),
+                confidence: 0.5,
+                claims: vec![],
+                residuals: vec![residual],
+                uncertainties: vec![],
+            },
+            artifact_ref: format!("lanes/R1/{id}/accepted.json"),
+        }
+    }
+
+    fn sample_manifest() -> RunManifest {
+        RunManifest {
+            manifest_version: PACKAGE_VERSION.into(),
+            run_id: "run-residual-test".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            status: RunStatus::Merging,
+            brief_sha256: format!("sha256:{}", "a".repeat(64)),
+            policy_sha256: format!("sha256:{}", "b".repeat(64)),
+            snapshot_sha256: format!("sha256:{}", "c".repeat(64)),
+            runtime_sha256: format!("sha256:{}", "d".repeat(64)),
+            protocol_version: PACKAGE_VERSION.into(),
+            effective_model: "mimo-v2.5-pro".into(),
+            sandbox_mode: SandboxMode::Process,
+            current_phase: Some("R3".into()),
+            error: None,
+            r3_input_receipt: None,
+            hm_challenge: None,
+            hm_submission: None,
+            result_sha256: None,
+        }
+    }
+
+    fn empty_roster_lanes(policy: &crate::model::Policy) -> (Vec<LaneAccepted>, Vec<LaneAccepted>) {
+        let r1: Vec<LaneAccepted> = policy
+            .roster
+            .iter()
+            .map(|route| LaneAccepted {
+                party_id: route.party_id.clone(),
+                route_id: route.route_id.clone(),
+                output: LaneOutput {
+                    lane_output_version: PACKAGE_VERSION.into(),
+                    task_restatement: "task".into(),
+                    verdict: "ok".into(),
+                    confidence: 0.5,
+                    claims: vec![],
+                    residuals: vec![],
+                    uncertainties: vec![],
+                },
+                artifact_ref: format!("lanes/R1/{}/accepted.json", route.route_id),
+            })
+            .collect();
+        let r2 = r1
+            .iter()
+            .map(|lane| {
+                let mut clone = lane.clone();
+                clone.artifact_ref = format!("lanes/R2/{}/accepted.json", lane.route_id);
+                clone
+            })
+            .collect();
+        (r1, r2)
+    }
+
+    #[test]
+    fn duplicate_claim_ids_are_rejected() {
+        let mut output = lane_output_with_evidence(VALID_SNAPSHOT_REF, "");
+        output.claims.push(output.claims[0].clone());
+        let error = validate_unique_claim_ids(&output.claims).unwrap_err();
+        assert!(error.to_string().contains("duplicate claim id"));
+        let temporary = evidence_test_run_dir();
+        let error = validate_evidence_refs(&output, temporary.path()).unwrap_err();
+        assert!(error.to_string().contains("duplicate claim id"));
+    }
+
+    #[test]
+    fn duplicate_residual_ids_are_rejected_for_lanes_and_arbiters() {
+        let residual = sample_residual("r-dup", Severity::Medium, "finding");
+        let error = validate_unique_residual_ids(&[residual.clone(), residual.clone()], "lane")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate lane residual id: r-dup")
+        );
+
+        let temporary = evidence_test_run_dir();
+        let mut output = lane_output_with_evidence(VALID_SNAPSHOT_REF, "");
+        output.residuals.push(output.residuals[0].clone());
+        let error = validate_evidence_refs(&output, temporary.path()).unwrap_err();
+        assert!(error.to_string().contains("duplicate lane residual id"));
+
+        let verdict = ArbiterVerdict {
+            arbiter_verdict_version: PACKAGE_VERSION.into(),
+            summary: "s".into(),
+            recommendation: "r".into(),
+            residuals: vec![residual.clone(), residual],
+        };
+        let error = validate_arbiter_semantics(&verdict, temporary.path()).unwrap_err();
+        assert!(error.to_string().contains("duplicate arbiter residual id"));
+    }
+
+    #[test]
+    fn hm_residual_evidence_refs_must_match_snapshot() {
+        let temporary = evidence_test_run_dir();
+        let mut residual = sample_residual("hm-r1", Severity::High, "risk");
+        residual.evidence_refs = vec!["snapshot://missing-from-snapshot.txt".into()];
+        let verdict = ArbiterVerdict {
+            arbiter_verdict_version: PACKAGE_VERSION.into(),
+            summary: "s".into(),
+            recommendation: "r".into(),
+            residuals: vec![residual],
+        };
+        let error = validate_arbiter_semantics(&verdict, temporary.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unresolvable evidence reference: snapshot://missing-from-snapshot.txt")
+        );
+
+        let mut ok = sample_residual("hm-r1", Severity::High, "risk");
+        ok.evidence_refs = vec![VALID_SNAPSHOT_REF.into()];
+        let verdict = ArbiterVerdict {
+            arbiter_verdict_version: PACKAGE_VERSION.into(),
+            summary: "s".into(),
+            recommendation: "r".into(),
+            residuals: vec![ok],
+        };
+        validate_arbiter_semantics(&verdict, temporary.path()).unwrap();
+    }
+
+    #[test]
+    fn residual_merge_detects_severity_type_source_evidence_scope_conflicts() {
+        let left = sample_residual("conflict-1", Severity::High, "same finding");
+        let mut right = left.clone();
+        right.severity = Severity::Low;
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        right.residual_type = "other".into();
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        right.source = "other-source".into();
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        right.evidence_refs = vec![VALID_SNAPSHOT_REF.into()];
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        right.required_closure = "different closure".into();
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        right.scope = "other-scope".into();
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        assert!(!residual_fields_conflict(&left, &right));
+
+        let policy = default_policy();
+        let (r1, r2) = empty_roster_lanes(&policy);
+        let hm = ArbiterVerdict {
+            arbiter_verdict_version: PACKAGE_VERSION.into(),
+            summary: "hm".into(),
+            recommendation: "proceed carefully".into(),
+            residuals: vec![sample_residual(
+                "conflict-1",
+                Severity::High,
+                "same finding",
+            )],
+        };
+        let mut cc_residual = sample_residual("conflict-1", Severity::High, "same finding");
+        cc_residual.severity = Severity::Critical;
+        cc_residual.scope = "cc-scope".into();
+        let cc = ArbiterVerdict {
+            arbiter_verdict_version: PACKAGE_VERSION.into(),
+            summary: "cc".into(),
+            recommendation: "proceed carefully".into(),
+            residuals: vec![cc_residual],
+        };
+        let result = merge_verdicts(&sample_manifest(), &policy, &r1, &r2, &hm, &cc);
+        let merged = result
+            .residuals
+            .iter()
+            .find(|residual| residual.id == "conflict-1")
+            .unwrap();
+        assert_eq!(merged.disposition, Disposition::Unresolved);
+        assert_eq!(merged.closure_state, ClosureState::Open);
+        assert!(
+            result
+                .dissent
+                .iter()
+                .any(|item| item.contains("differs between hm and cc"))
+        );
+    }
+
+    #[test]
+    fn high_risk_r1_r2_residual_is_preserved_when_both_arbiters_omit_it() {
+        let policy = default_policy();
+        let (mut r1, r2) = empty_roster_lanes(&policy);
+        let high_risk = sample_residual(
+            "r1-high-risk",
+            Severity::Critical,
+            "critical earlier finding",
+        );
+        r1[0].output.residuals.push(high_risk.clone());
+        // Also cover a medium residual that must NOT be auto-preserved.
+        r1[0].output.residuals.push(sample_residual(
+            "r1-medium",
+            Severity::Medium,
+            "medium only",
+        ));
+
+        let hm = ArbiterVerdict {
+            arbiter_verdict_version: PACKAGE_VERSION.into(),
+            summary: "hm".into(),
+            recommendation: "ok".into(),
+            residuals: vec![],
+        };
+        let cc = ArbiterVerdict {
+            arbiter_verdict_version: PACKAGE_VERSION.into(),
+            summary: "cc".into(),
+            recommendation: "ok".into(),
+            residuals: vec![],
+        };
+        let result = merge_verdicts(&sample_manifest(), &policy, &r1, &r2, &hm, &cc);
+        assert!(
+            result
+                .residuals
+                .iter()
+                .any(|residual| residual.id == "r1-high-risk"
+                    && residual.disposition == Disposition::Unresolved
+                    && residual.closure_state == ClosureState::Open)
+        );
+        assert!(
+            result
+                .residuals
+                .iter()
+                .all(|residual| residual.id != "r1-medium")
+        );
+        assert!(
+            result.dissent.iter().any(|item| item
+                .contains("was high-risk in R1/R2 but omitted by both R3 arbiters"))
+        );
+        // silence unused helper warning if compiler optimizes oddly
+        let _ = sample_lane("x", high_risk);
     }
 
     #[test]
