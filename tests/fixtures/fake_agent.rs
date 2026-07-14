@@ -127,8 +127,9 @@ fn main() {
     {
         print!("{VALID_OUTPUT}");
         io::stdout().flush().unwrap();
-        thread::sleep(Duration::from_secs(10));
-        return;
+        loop {
+            thread::sleep(Duration::from_secs(60));
+        }
     }
 
     let timeout_once_party = std::env::current_exe()
@@ -148,7 +149,9 @@ fn main() {
             .unwrap_or(0);
         fs::write(counter, (attempts + 1).to_string()).unwrap();
         if attempts == 0 {
-            thread::sleep(Duration::from_secs(10));
+            loop {
+                thread::sleep(Duration::from_secs(60));
+            }
         }
     }
 
