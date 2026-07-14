@@ -1427,6 +1427,7 @@ dependencies = [
  "hex",
  "infer",
  "jsonschema",
+ "libc",
  "predicates",
  "rand",
  "regex",

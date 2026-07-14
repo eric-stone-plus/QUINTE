@@ -917,13 +917,21 @@ pub fn codewhale_completed_with_retryable_content(stdout: &[u8]) -> bool {
 
 fn has_truncated_final_candidate(content: &str) -> bool {
     let blocks = lane_output_object_blocks(content);
-    blocks.last().is_some_and(|block| block.end.is_none())
-        || content.rfind("```json").is_some_and(|fence| {
-            blocks
-                .last()
-                .and_then(|block| block.end)
-                .is_none_or(|end| fence > end)
-        })
+    let unresolved = blocks
+        .last()
+        .filter(|block| block.end.is_none())
+        .map(|block| (block.start, &content[block.start..]))
+        .or_else(|| last_lane_output_prefix(content));
+    let fence = last_json_fence(content);
+    if let Some(fence) = fence
+        .filter(|fence| unresolved.is_none_or(|(candidate_start, _)| fence.start > candidate_start))
+    {
+        return !fence.closed
+            && serde_json::from_str::<Value>(fence.body).is_err_and(|error| error.is_eof());
+    }
+    unresolved.is_some_and(|(_, candidate)| {
+        serde_json::from_str::<Value>(candidate).is_err_and(|error| error.is_eof())
+    })
 }
 
 fn extract_json_from_text(stdout: &[u8]) -> anyhow::Result<LaneOutput> {
@@ -1008,7 +1016,9 @@ fn parse_last_complete_candidate(candidate: &str) -> Option<LaneOutput> {
     let blocks = lane_output_object_blocks(candidate);
     let block = blocks.last()?;
     let end = block.end?;
-    if candidate[end..].contains("```json") {
+    if last_json_fence(&candidate[end..]).is_some()
+        || last_lane_output_prefix(&candidate[end..]).is_some()
+    {
         return None;
     }
     if block.required_key_mask != LANE_OUTPUT_REQUIRED_KEY_MASK {
@@ -1234,6 +1244,56 @@ fn fenced_json_blocks(text: &str) -> Vec<&str> {
         remainder = &after_marker[end + 3..];
     }
     blocks
+}
+
+struct JsonFence<'a> {
+    start: usize,
+    body: &'a str,
+    closed: bool,
+}
+
+fn last_json_fence(text: &str) -> Option<JsonFence<'_>> {
+    let mut last = None;
+    text.match_indices("```json")
+        .filter(|(start, _)| {
+            (*start == 0 || text[..*start].ends_with(['\n', '\r']))
+                && text[*start + "```json".len()..].starts_with(['\n', '\r'])
+        })
+        .for_each(|(start, _)| {
+            let after_marker = &text[start + "```json".len()..];
+            let closing = after_marker.match_indices("```").find(|(end, _)| {
+                (*end == 0 || after_marker[..*end].ends_with(['\n', '\r']))
+                    && after_marker[*end + 3..]
+                        .chars()
+                        .next()
+                        .is_none_or(|character| matches!(character, '\n' | '\r'))
+            });
+            last = Some(JsonFence {
+                start,
+                body: closing
+                    .map_or(after_marker, |(end, _)| &after_marker[..end])
+                    .trim(),
+                closed: closing.is_some(),
+            });
+        });
+    last
+}
+
+fn last_lane_output_prefix(text: &str) -> Option<(usize, &str)> {
+    text.match_indices('{')
+        .filter_map(|(start, _)| {
+            let candidate = &text[start..];
+            let remainder = candidate[1..].trim_start_matches(char::is_whitespace);
+            let key = remainder.strip_prefix('"')?.trim_end();
+            let truncated_schema_key = key
+                .strip_suffix('"')
+                .is_some_and(|key| key == "lane_output_version");
+            ("lane_output_version".starts_with(key)
+                || truncated_schema_key
+                || key.starts_with("lane_output0"))
+            .then_some((start, candidate))
+        })
+        .next_back()
 }
 
 fn provider_model(adapter: &str, model: &str) -> String {
@@ -1806,6 +1866,34 @@ mod tests {
     }
 
     #[test]
+    fn codewhale_parser_never_falls_back_past_a_truncated_lane_output_key() {
+        let old = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "stale draft",
+            "verdict": "must not be accepted",
+            "confidence": 0.2,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let content = format!("{old}\n{{\"lane_output0");
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+
+        let error = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("contains no valid LaneOutput"));
+
+        let content = format!("{old}\n{{\"lane_output_version\"");
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+        let error = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("contains no valid LaneOutput"));
+
+        let content = format!("{old}\n{{\"lane_output_version\"   ");
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+        let error = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("contains no valid LaneOutput"));
+    }
+
+    #[test]
     fn codewhale_parser_rejects_a_new_truncated_candidate_with_reordered_keys() {
         let old = serde_json::json!({
             "lane_output_version": "1.0",
@@ -1881,6 +1969,25 @@ mod tests {
 
         let parsed = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap();
         assert_eq!(parsed.verdict, "accepted despite later prose braces");
+    }
+
+    #[test]
+    fn codewhale_parser_ignores_inline_fence_examples_after_a_valid_output() {
+        let output = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "current result",
+            "verdict": "inline Markdown is prose",
+            "confidence": 0.9,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let content =
+            format!("{output}\nUse ```json for examples, but do not emit another object.");
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+
+        let parsed = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap();
+        assert_eq!(parsed.verdict, "inline Markdown is prose");
     }
 
     #[test]
@@ -2017,6 +2124,85 @@ mod tests {
         );
         assert!(!codewhale_completed_with_retryable_content(
             schema_invalid.as_bytes()
+        ));
+
+        let schema_invalid_then_closed_fence = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({
+                "type": "content",
+                "content": concat!(
+                    "{\"lane_output_version\":\"1.0\",",
+                    "\"task_restatement\":\"missing fields\"}\n",
+                    "```json\n{}\n```"
+                )
+            }),
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        assert!(!codewhale_completed_with_retryable_content(
+            schema_invalid_then_closed_fence.as_bytes()
+        ));
+
+        let malformed_closed_fence = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({
+                "type": "content",
+                "content": "```json\n{\"task_restatement\":\"cut off\n```"
+            }),
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        assert!(!codewhale_completed_with_retryable_content(
+            malformed_closed_fence.as_bytes()
+        ));
+
+        let malformed_unclosed = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({
+                "type": "content",
+                "content": "{\"task_restatement\":\"x\" \"verdict\":\"y\""
+            }),
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        assert!(!codewhale_completed_with_retryable_content(
+            malformed_unclosed.as_bytes()
+        ));
+
+        let truncated_key = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({"type": "content", "content": "{\"lane_output0"}),
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        assert!(codewhale_completed_with_retryable_content(
+            truncated_key.as_bytes()
+        ));
+
+        let truncated_complete_key = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({
+                "type": "content",
+                "content": "{\"lane_output_version\""
+            }),
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        assert!(codewhale_completed_with_retryable_content(
+            truncated_complete_key.as_bytes()
+        ));
+
+        let closed_invalid_then_truncated = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({
+                "type": "content",
+                "content": "```json\n{}\n```\n{\"lane_output_vers"
+            }),
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        assert!(codewhale_completed_with_retryable_content(
+            closed_invalid_then_truncated.as_bytes()
         ));
 
         let truncated = format!(

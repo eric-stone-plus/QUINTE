@@ -39,6 +39,7 @@ use crate::util::{
 };
 
 static INTERRUPTED: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+static RUNTIME_SHA256: OnceLock<anyhow::Result<String, String>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 pub struct RunOptions {
@@ -75,6 +76,7 @@ struct ChildCleanup<'a> {
     store: &'a Store,
     run_id: &'a str,
     registered: Option<ActiveProcess>,
+    tree_cleaned: bool,
 }
 
 impl<'a> ChildCleanup<'a> {
@@ -84,6 +86,7 @@ impl<'a> ChildCleanup<'a> {
             store,
             run_id,
             registered: None,
+            tree_cleaned: false,
         }
     }
 
@@ -92,8 +95,9 @@ impl<'a> ChildCleanup<'a> {
     }
 
     fn unregister(&mut self) -> anyhow::Result<()> {
-        if let Some(process) = self.registered.take() {
-            self.store.remove_active_process(self.run_id, &process)?;
+        if let Some(process) = self.registered.as_ref() {
+            self.store.remove_active_process(self.run_id, process)?;
+            self.registered = None;
         }
         Ok(())
     }
@@ -101,7 +105,7 @@ impl<'a> ChildCleanup<'a> {
 
 impl Drop for ChildCleanup<'_> {
     fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
+        if !self.tree_cleaned {
             let _ = terminate_child(&mut self.child, Duration::from_millis(500));
         }
         if let Some(process) = self.registered.take() {
@@ -1652,7 +1656,14 @@ fn verify_resume_integrity(
 }
 
 fn runtime_sha256() -> anyhow::Result<String> {
-    sha256_file(&std::env::current_exe()?)
+    RUNTIME_SHA256
+        .get_or_init(|| {
+            std::env::current_exe()
+                .map_err(|error| error.to_string())
+                .and_then(|path| sha256_file(&path).map_err(|error| error.to_string()))
+        })
+        .clone()
+        .map_err(anyhow::Error::msg)
 }
 
 fn phase_complete(run_dir: &Path, phase: &str, policy: &Policy) -> bool {
@@ -2211,7 +2222,9 @@ fn run_attempt(
         };
         registration.add_process(active_process.clone())?;
         child.mark_registered(active_process);
-    } else if child.child.try_wait()?.is_none() {
+    } else if child_exited_without_reaping(&mut child.child)? {
+        kill_residual_process_group(pid);
+    } else {
         bail!("cannot identify spawned adapter process");
     }
     drop(registration);
@@ -2255,9 +2268,10 @@ fn run_attempt(
         &store.run_dir(&manifest.run_id),
         &output_limited,
     )?;
-    child.unregister()?;
+    child.tree_cleaned = true;
     let stdout = receive_captured_output(stdout_receiver, "stdout")?;
     let stderr = receive_captured_output(stderr_receiver, "stderr")?;
+    child.unregister()?;
     let output_limit_exceeded = output_limit_exceeded || output_limited.load(Ordering::SeqCst);
     atomic_write(&lane_root.join("stdout.bin"), &stdout)?;
     atomic_write(&lane_root.join("stderr.bin"), &stderr)?;
@@ -2513,7 +2527,9 @@ fn wait_child(
 ) -> anyhow::Result<(Option<ExitStatus>, bool, bool, bool)> {
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     loop {
-        if let Some(status) = child.try_wait()? {
+        if child_exited_without_reaping(child)? {
+            kill_residual_process_group(child.id());
+            let status = child.wait()?;
             return Ok((
                 Some(status),
                 false,
@@ -2541,19 +2557,22 @@ fn wait_child(
 }
 
 fn terminate_child(child: &mut Child, grace: Duration) -> Option<ExitStatus> {
-    kill_process_tree(child.id(), false);
+    let pid = child.id();
+    kill_process_tree(pid, false);
     let deadline = Instant::now() + grace;
     while Instant::now() < deadline {
-        if let Ok(Some(status)) = child.try_wait() {
-            return Some(status);
+        if child_exited_without_reaping(child).ok()? {
+            kill_residual_process_group(pid);
+            return child.wait().ok();
         }
         thread::sleep(Duration::from_millis(25));
     }
-    kill_process_tree(child.id(), true);
+    kill_process_tree(pid, true);
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        if let Ok(Some(status)) = child.try_wait() {
-            return Some(status);
+        if child_exited_without_reaping(child).ok()? {
+            kill_residual_process_group(pid);
+            return child.wait().ok();
         }
         thread::sleep(Duration::from_millis(25));
     }
@@ -2562,12 +2581,43 @@ fn terminate_child(child: &mut Child, grace: Duration) -> Option<ExitStatus> {
     let _ = child.kill();
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        if let Ok(Some(status)) = child.try_wait() {
-            return Some(status);
+        if child_exited_without_reaping(child).ok()? {
+            kill_residual_process_group(pid);
+            return child.wait().ok();
         }
         thread::sleep(Duration::from_millis(25));
     }
+    kill_residual_process_group(pid);
     None
+}
+
+#[cfg(unix)]
+fn child_exited_without_reaping(child: &mut Child) -> std::io::Result<bool> {
+    let mut siginfo = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id() as libc::id_t,
+            siginfo.as_mut_ptr(),
+            libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let siginfo = unsafe { siginfo.assume_init() };
+    match siginfo.si_signo {
+        libc::SIGCHLD => Ok(true),
+        0 => Ok(false),
+        signal => Err(std::io::Error::other(format!(
+            "waitid returned unexpected signal {signal}"
+        ))),
+    }
+}
+
+#[cfg(windows)]
+fn child_exited_without_reaping(child: &mut Child) -> std::io::Result<bool> {
+    child.try_wait().map(|status| status.is_some())
 }
 
 fn read_capped(
@@ -3196,6 +3246,21 @@ fn kill_process_tree(pid: u32, force: bool) {
     }
 }
 
+#[cfg(unix)]
+fn kill_residual_process_group(pid: u32) {
+    use core::ffi::c_int;
+
+    unsafe extern "C" {
+        fn kill(pid: c_int, signal: c_int) -> c_int;
+    }
+
+    if let Ok(pid) = c_int::try_from(pid) {
+        // Do not fall back to the positive PID after the leader has exited: a
+        // recycled PID could belong to an unrelated process.
+        let _ = unsafe { kill(-pid, 9) };
+    }
+}
+
 #[cfg(windows)]
 fn kill_process_tree(pid: u32, force: bool) {
     let mut args = vec!["/PID".to_string(), pid.to_string(), "/T".to_string()];
@@ -3210,6 +3275,9 @@ fn kill_process_tree(pid: u32, force: bool) {
     configure_hidden_process(&mut command);
     let _ = command.status();
 }
+
+#[cfg(windows)]
+fn kill_residual_process_group(_pid: u32) {}
 
 fn install_interrupt_handler() {
     let flag = interrupt_flag().clone();
@@ -3348,6 +3416,12 @@ mod retry_tests {
     #[cfg(unix)]
     use std::process::{Command, Stdio};
     #[cfg(unix)]
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    #[cfg(unix)]
+    use std::sync::mpsc;
+    #[cfg(unix)]
+    use std::thread;
+    #[cfg(unix)]
     use std::time::{Duration, Instant};
 
     const VALID_SNAPSHOT_REF: &str = "snapshot://evidence.txt";
@@ -3369,6 +3443,97 @@ mod retry_tests {
 
         assert!(status.is_some());
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exited_group_leader_does_not_leave_a_pipe_holding_grandchild() {
+        use core::ffi::c_int;
+
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "(trap '' TERM; while :; do sleep 60; done) & printf '%s\\n' \"$!\"; exit 0",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let mut child = command.spawn().unwrap();
+        let group_id = child.id();
+        let mut stdout = child.stdout.take().unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let _ = sender.send(super::read_capped(
+                &mut stdout,
+                1024,
+                &AtomicUsize::new(0),
+                &AtomicBool::new(false),
+            ));
+        });
+
+        let status = super::wait_child(
+            &mut child,
+            2,
+            tempfile::tempdir().unwrap().path(),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .0;
+        assert!(status.is_some_and(|status| status.success()));
+
+        let output = super::receive_captured_output(receiver, "stdout").unwrap();
+        let grandchild_pid: c_int = std::str::from_utf8(&output)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let group_id = c_int::try_from(group_id).unwrap();
+        assert!(!process_is_running(grandchild_pid));
+        assert!(!process_group_has_running_member(group_id));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_is_running(pid: core::ffi::c_int) -> bool {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/stat"));
+        status.is_ok_and(|status| status.split_whitespace().nth(2) != Some("Z"))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_group_has_running_member(group_id: core::ffi::c_int) -> bool {
+        std::fs::read_dir("/proc").is_ok_and(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                    return false;
+                };
+                let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                    return false;
+                };
+                let fields = status.split_whitespace().collect::<Vec<_>>();
+                fields.get(2) != Some(&"Z")
+                    && fields
+                        .get(4)
+                        .and_then(|value| value.parse::<core::ffi::c_int>().ok())
+                        == Some(group_id)
+            })
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn process_is_running(pid: core::ffi::c_int) -> bool {
+        unsafe extern "C" {
+            fn kill(pid: core::ffi::c_int, signal: core::ffi::c_int) -> core::ffi::c_int;
+        }
+        (unsafe { kill(pid, 0) }) == 0
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn process_group_has_running_member(group_id: core::ffi::c_int) -> bool {
+        unsafe extern "C" {
+            fn kill(pid: core::ffi::c_int, signal: core::ffi::c_int) -> core::ffi::c_int;
+        }
+        (unsafe { kill(-group_id, 0) }) == 0
     }
 
     #[test]
