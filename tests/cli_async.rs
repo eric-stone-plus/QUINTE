@@ -244,7 +244,7 @@ fn wait_reports_a_dead_background_worker() {
         &store
             .run_dir(&created.run_id)
             .join("diagnostics/worker.json"),
-        &serde_json::json!({"pid": u32::MAX, "started_at": "2026-01-01T00:00:00Z"}),
+        &serde_json::json!({"pid": 2_147_483_647_u32, "started_at": "2026-01-01T00:00:00Z"}),
     )
     .unwrap();
     unsafe {
@@ -292,7 +292,7 @@ fn wait_accepts_a_durable_waiting_hm_state_after_worker_exit() {
         &store
             .run_dir(&created.run_id)
             .join("diagnostics/worker.json"),
-        &serde_json::json!({"pid": u32::MAX, "started_at": "2026-01-01T00:00:00Z"}),
+        &serde_json::json!({"pid": 2_147_483_647_u32, "started_at": "2026-01-01T00:00:00Z"}),
     )
     .unwrap();
     unsafe {

@@ -61,6 +61,9 @@ fragile and an avoidable injection boundary.
 - A short-lived child that exits before process identity collection is treated
   as completed, not as an unidentified live process. A still-running child
   without a verifiable identity continues to fail closed.
+- Worker liveness uses native Windows process handles rather than localized
+  `tasklist` text. Waiters reload the durable manifest after a worker exit so
+  a concurrently published `waiting_hm` state cannot be mistaken for a crash.
 
 ### Silent adapter processes
 

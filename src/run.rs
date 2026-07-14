@@ -31,9 +31,11 @@ use crate::schema::{
     validate_file, validate_value,
 };
 use crate::store::{ActiveProcess, Store};
+#[cfg(windows)]
+use crate::util::configure_hidden_process;
 use crate::util::{
-    atomic_write, canonical_existing, configure_hidden_process, read_json, relative_slash,
-    sha256_bytes, sha256_file, utc_now, write_json,
+    atomic_write, canonical_existing, read_json, relative_slash, sha256_bytes, sha256_file,
+    utc_now, write_json,
 };
 
 static INTERRUPTED: OnceLock<Arc<AtomicBool>> = OnceLock::new();
@@ -2869,8 +2871,8 @@ fn ensure_worker_liveness(store: &Store, run_id: &str) -> anyhow::Result<()> {
 
 #[cfg(unix)]
 fn process_alive(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
+    std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "pid="])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -2879,14 +2881,21 @@ fn process_alive(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn process_alive(pid: u32) -> bool {
-    let mut command = std::process::Command::new("tasklist");
-    command
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .stderr(Stdio::null());
-    configure_hidden_process(&mut command);
-    command
-        .output()
-        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return false;
+    }
+    let mut exit_code = 0;
+    let ok = unsafe { GetExitCodeProcess(process, &mut exit_code) } != 0;
+    unsafe {
+        CloseHandle(process);
+    }
+    ok && exit_code == STILL_ACTIVE as u32
 }
 
 #[cfg(test)]
