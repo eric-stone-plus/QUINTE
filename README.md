@@ -34,10 +34,10 @@ The default policy binds the protocol roles to these native routes:
 | --- | --- | --- |
 | Party A | CodeWhale | R1, R2 |
 | Party B | OpenCode | R1, R2 |
-| Party C | Kilo | R1, R2 |
-| Party D | MiMo | R1, R2 |
-| Party E | OMP | R1, R2 |
-| Auditor B | Claude Code | R3 only |
+| Party C | KiloCode| R1, R2 |
+| Party D | MiMoCode| R1, R2 |
+| Party E | Oh-My-Pi | R1, R2 |
+| Auditor B | ClaudeCode | R3 only |
 
 R1 and R2 use `mimo-v2.5-pro` for text-only briefs. A supported image
 attachment selects `mimo-v2.5` for the run. These are same-family behavioral
