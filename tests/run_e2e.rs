@@ -924,7 +924,7 @@ fn invalid_evidence_is_rejected_before_lane_finished_is_recorded_as_accepted() {
 }
 
 #[test]
-fn completed_codewhale_without_lane_output_retries_on_the_same_route() {
+fn completed_codewhale_with_a_truncated_final_candidate_retries_on_the_same_route() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::compile_fake_agent(temporary.path());
@@ -952,7 +952,7 @@ fn completed_codewhale_without_lane_output_retries_on_the_same_route() {
         &brief_path,
         &Brief {
             brief_version: "1.0".into(),
-            question: "Does a completed CodeWhale stream retry without LaneOutput?".into(),
+            question: "Does a completed CodeWhale stream retry a truncated final candidate?".into(),
             context: None,
             evidence_roots: vec![evidence],
             attachments: Vec::new(),

@@ -175,7 +175,7 @@ fn main() {
             .unwrap_or(0);
         fs::write(counter, (attempts + 1).to_string()).unwrap();
         let content = if attempts == 0 {
-            "analysis completed without a LaneOutput".to_string()
+            "analysis completed before a truncated final candidate\n```json\n{\"task_restatement\":\"cut off\"".to_string()
         } else {
             VALID_OUTPUT.to_string()
         };

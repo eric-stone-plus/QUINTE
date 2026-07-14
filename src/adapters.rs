@@ -878,7 +878,7 @@ pub fn structured_stream_error(kind: OutputKind, stdout: &[u8]) -> Option<Adapte
     Some(AdapterStreamError { name, message })
 }
 
-pub fn codewhale_completed_without_json_candidate(stdout: &[u8]) -> bool {
+pub fn codewhale_completed_with_retryable_content(stdout: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(stdout) else {
         return false;
     };
@@ -910,7 +910,20 @@ pub fn codewhale_completed_without_json_candidate(stdout: &[u8]) -> bool {
             _ => {}
         }
     }
-    completed && done && !contains_json_candidate(&content)
+    completed
+        && done
+        && (!contains_json_candidate(&content) || has_truncated_final_candidate(&content))
+}
+
+fn has_truncated_final_candidate(content: &str) -> bool {
+    let blocks = lane_output_object_blocks(content);
+    blocks.last().is_some_and(|block| block.end.is_none())
+        || content.rfind("```json").is_some_and(|fence| {
+            blocks
+                .last()
+                .and_then(|block| block.end)
+                .is_none_or(|end| fence > end)
+        })
 }
 
 fn extract_json_from_text(stdout: &[u8]) -> anyhow::Result<LaneOutput> {
@@ -1962,14 +1975,14 @@ mod tests {
     }
 
     #[test]
-    fn codewhale_retry_completion_requires_valid_events_and_no_json_candidate() {
+    fn codewhale_retry_completion_requires_valid_events_and_retryable_content() {
         let stream = format!(
             "{}\n{}\n{}\n",
             serde_json::json!({"type": "content", "content": "analysis without final JSON"}),
             serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
             serde_json::json!({"type": "done"})
         );
-        assert!(codewhale_completed_without_json_candidate(
+        assert!(codewhale_completed_with_retryable_content(
             stream.as_bytes()
         ));
 
@@ -1977,10 +1990,10 @@ mod tests {
             "type": "metadata",
             "meta": {"status": "completed"}
         });
-        assert!(!codewhale_completed_without_json_candidate(
+        assert!(!codewhale_completed_with_retryable_content(
             incomplete.to_string().as_bytes()
         ));
-        assert!(!codewhale_completed_without_json_candidate(
+        assert!(!codewhale_completed_with_retryable_content(
             b"model prose mentioning completed and done"
         ));
 
@@ -1989,7 +2002,7 @@ mod tests {
             serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
             serde_json::json!({"type": "done"})
         );
-        assert!(!codewhale_completed_without_json_candidate(
+        assert!(!codewhale_completed_with_retryable_content(
             malformed.as_bytes()
         ));
 
@@ -2002,7 +2015,7 @@ mod tests {
             serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
             serde_json::json!({"type": "done"})
         );
-        assert!(!codewhale_completed_without_json_candidate(
+        assert!(!codewhale_completed_with_retryable_content(
             schema_invalid.as_bytes()
         ));
 
@@ -2015,7 +2028,7 @@ mod tests {
             serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
             serde_json::json!({"type": "done"})
         );
-        assert!(!codewhale_completed_without_json_candidate(
+        assert!(codewhale_completed_with_retryable_content(
             truncated.as_bytes()
         ));
     }

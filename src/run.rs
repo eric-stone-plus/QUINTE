@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -102,12 +102,7 @@ impl<'a> ChildCleanup<'a> {
 impl Drop for ChildCleanup<'_> {
     fn drop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
-            kill_process_tree(self.child.id(), false);
-            thread::sleep(Duration::from_millis(500));
-            if self.child.try_wait().ok().flatten().is_none() {
-                kill_process_tree(self.child.id(), true);
-            }
-            let _ = self.child.wait();
+            let _ = terminate_child(&mut self.child, Duration::from_millis(500));
         }
         if let Some(process) = self.registered.take() {
             let _ = self.store.remove_active_process(self.run_id, &process);
@@ -2234,23 +2229,25 @@ fn run_attempt(
     let output_limited = Arc::new(AtomicBool::new(false));
     let stdout_total = total_output.clone();
     let stdout_limited = output_limited.clone();
-    let stdout_thread = thread::spawn(move || {
-        read_capped(
+    let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = stdout_sender.send(read_capped(
             &mut stdout_reader,
             max_output_bytes,
             &stdout_total,
             &stdout_limited,
-        )
+        ));
     });
     let stderr_total = total_output.clone();
     let stderr_limited = output_limited.clone();
-    let stderr_thread = thread::spawn(move || {
-        read_capped(
+    let (stderr_sender, stderr_receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = stderr_sender.send(read_capped(
             &mut stderr_reader,
             max_output_bytes,
             &stderr_total,
             &stderr_limited,
-        )
+        ));
     });
     let (status, timed_out, cancelled, output_limit_exceeded) = wait_child(
         &mut child.child,
@@ -2259,12 +2256,8 @@ fn run_attempt(
         &output_limited,
     )?;
     child.unregister()?;
-    let stdout = stdout_thread
-        .join()
-        .map_err(|_| anyhow!("stdout reader panicked"))??;
-    let stderr = stderr_thread
-        .join()
-        .map_err(|_| anyhow!("stderr reader panicked"))??;
+    let stdout = receive_captured_output(stdout_receiver, "stdout")?;
+    let stderr = receive_captured_output(stderr_receiver, "stderr")?;
     let output_limit_exceeded = output_limit_exceeded || output_limited.load(Ordering::SeqCst);
     atomic_write(&lane_root.join("stdout.bin"), &stdout)?;
     atomic_write(&lane_root.join("stderr.bin"), &stderr)?;
@@ -2412,7 +2405,7 @@ fn evaluate_attempt_output(
         Ok(output) => (Some(output), None, RetryClass::Never),
         Err(parse_error) => {
             let retry = if matches!(adapter, "codewhale" | "fake_codewhale")
-                && adapters::codewhale_completed_without_json_candidate(stdout)
+                && adapters::codewhale_completed_with_retryable_content(stdout)
             {
                 RetryClass::TransientAdapter
             } else {
@@ -2529,25 +2522,52 @@ fn wait_child(
             ));
         }
         if cancellation_requested(run_dir) {
-            kill_process_tree(child.id(), false);
-            thread::sleep(Duration::from_millis(500));
-            kill_process_tree(child.id(), true);
-            return Ok((child.wait().ok(), false, true, false));
+            let status = terminate_child(child, Duration::from_millis(500))
+                .ok_or_else(|| anyhow!("cannot terminate cancelled adapter process"))?;
+            return Ok((Some(status), false, true, false));
         }
         if output_limited.load(Ordering::SeqCst) {
-            kill_process_tree(child.id(), false);
-            thread::sleep(Duration::from_millis(100));
-            kill_process_tree(child.id(), true);
-            return Ok((child.wait().ok(), false, false, true));
+            let status = terminate_child(child, Duration::from_millis(100))
+                .ok_or_else(|| anyhow!("cannot terminate output-limited adapter process"))?;
+            return Ok((Some(status), false, false, true));
         }
         if Instant::now() >= deadline {
-            kill_process_tree(child.id(), false);
-            thread::sleep(Duration::from_millis(500));
-            kill_process_tree(child.id(), true);
-            return Ok((child.wait().ok(), true, false, false));
+            let status = terminate_child(child, Duration::from_millis(500))
+                .ok_or_else(|| anyhow!("cannot terminate timed-out adapter process"))?;
+            return Ok((Some(status), true, false, false));
         }
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+fn terminate_child(child: &mut Child, grace: Duration) -> Option<ExitStatus> {
+    kill_process_tree(child.id(), false);
+    let deadline = Instant::now() + grace;
+    while Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Some(status);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    kill_process_tree(child.id(), true);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Some(status);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    // A failed process-group signal must never turn a bounded lane timeout into
+    // an unbounded scheduler wait.
+    let _ = child.kill();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Some(status);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    None
 }
 
 fn read_capped(
@@ -2572,6 +2592,16 @@ fn read_capped(
             exceeded.store(true, Ordering::SeqCst);
         }
     }
+}
+
+fn receive_captured_output(
+    receiver: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    stream: &str,
+) -> anyhow::Result<Vec<u8>> {
+    receiver
+        .recv_timeout(Duration::from_secs(5))
+        .with_context(|| format!("{stream} reader did not close after child termination"))?
+        .with_context(|| format!("cannot read adapter {stream}"))
 }
 
 fn build_r2_packet(
@@ -3150,18 +3180,19 @@ fn process_identity(pid: u32) -> Option<String> {
 
 #[cfg(unix)]
 fn kill_process_tree(pid: u32, force: bool) {
-    let signal = if force { "KILL" } else { "TERM" };
-    let group_status = std::process::Command::new("kill")
-        .args([format!("-{signal}"), format!("-{pid}")])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    if !group_status.is_ok_and(|status| status.success()) {
-        let _ = std::process::Command::new("kill")
-            .args([format!("-{signal}"), pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+    use core::ffi::c_int;
+
+    unsafe extern "C" {
+        fn kill(pid: c_int, signal: c_int) -> c_int;
+    }
+
+    let Ok(pid) = c_int::try_from(pid) else {
+        return;
+    };
+    let signal = if force { 9 } else { 15 };
+    // A negative PID targets the process group created for every adapter.
+    if unsafe { kill(-pid, signal) } != 0 {
+        let _ = unsafe { kill(pid, signal) };
     }
 }
 
@@ -3312,7 +3343,33 @@ mod retry_tests {
     use crate::model::{LaneOutput, SnapshotEntry, SnapshotManifest};
     use crate::policy::default_policy;
 
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
+    #[cfg(unix)]
+    use std::process::{Command, Stdio};
+    #[cfg(unix)]
+    use std::time::{Duration, Instant};
+
     const VALID_SNAPSHOT_REF: &str = "snapshot://evidence.txt";
+
+    #[cfg(unix)]
+    #[test]
+    fn stubborn_process_group_is_reaped_within_the_hard_bound() {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "trap '' TERM; while :; do sleep 60; done"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let mut child = command.spawn().unwrap();
+        let started = Instant::now();
+
+        let status = super::terminate_child(&mut child, Duration::from_millis(50));
+
+        assert!(status.is_some());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     #[test]
     fn next_attempt_uses_persisted_directories_and_ignores_malformed_entries() {
@@ -3551,7 +3608,7 @@ mod retry_tests {
     }
 
     #[test]
-    fn completed_codewhale_without_lane_output_is_bounded_retryable() {
+    fn completed_codewhale_with_retryable_content_is_bounded() {
         let stdout = format!(
             "{}\n{}\n{}\n",
             serde_json::json!({"type": "content", "content": "analysis without final JSON"}),

@@ -71,6 +71,7 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Test native target
+        timeout-minutes: 20
         run: cargo test --locked --all-features --target ${{ matrix.target }}
       - name: Build release binary
         run: cargo build --locked --release --target ${{ matrix.target }}

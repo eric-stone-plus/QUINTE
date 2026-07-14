@@ -175,16 +175,19 @@ The scheduler recognizes only these trusted transient conditions:
   marker;
 - MiMo's structured terminal error from its repetition detector; or
 - a CodeWhale stream whose control events report both `completed` and `done`
-  but whose content contains no JSON candidate.
+  but whose content contains no JSON candidate or only a truncated final
+  candidate.
 
 The MiMo condition must come from its structured error event, and the CodeWhale
 condition must come from its terminal control events with otherwise valid
 stream framing. Similar free-form model text is not trusted. A malformed event,
-truncated JSON candidate, or schema-invalid candidate is non-retryable even if
-CodeWhale later reports `completed` and `done`. Outside these exact terminal
-conditions, invalid UTF-8, JSON, or schema output is non-retryable. Valid model
-prose containing `429`, `timeout`, `auth`, `repetition`, or similar words is
-ordinary untrusted output and never controls retry policy.
+or schema-invalid complete candidate is non-retryable even if CodeWhale later
+reports `completed` and `done`. A truncated candidate is never accepted; only
+the trusted CodeWhale terminal controls above may make it retryable. Outside
+these exact terminal conditions, invalid UTF-8, JSON, or schema output is
+non-retryable. Valid model prose containing `429`, `timeout`, `auth`,
+`repetition`, or similar words is ordinary untrusted output and never controls
+retry policy.
 
 A host timeout does not automatically discard a complete output that was
 already captured. The scheduler may recover that output only if it validates
