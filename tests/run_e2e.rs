@@ -46,6 +46,47 @@ impl Drop for FakeAdapterEnv {
     }
 }
 
+struct ControlledWorker<T> {
+    release: std::path::PathBuf,
+    home: std::path::PathBuf,
+    run_id: String,
+    handle: Option<thread::JoinHandle<T>>,
+}
+
+impl<T> ControlledWorker<T> {
+    fn new(
+        release: std::path::PathBuf,
+        home: std::path::PathBuf,
+        run_id: String,
+        handle: thread::JoinHandle<T>,
+    ) -> Self {
+        Self {
+            release,
+            home,
+            run_id,
+            handle: Some(handle),
+        }
+    }
+
+    fn join(mut self) -> thread::Result<T> {
+        fs::write(&self.release, "release\n").unwrap();
+        self.handle.take().unwrap().join()
+    }
+}
+
+impl<T> Drop for ControlledWorker<T> {
+    fn drop(&mut self) {
+        if self.handle.is_none() {
+            return;
+        }
+        let _ = run::cancel(&Store::new(self.home.clone()), &self.run_id);
+        let _ = fs::write(&self.release, "release\n");
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 fn fake_policy(executable: &std::path::Path) -> Policy {
     let parties = ["Party A", "Party B", "Party C", "Party D", "Party E"];
     Policy {
@@ -392,7 +433,13 @@ fn cancelling_active_workers_is_terminal_and_cannot_be_overwritten_by_failure() 
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::compile_fake_agent(temporary.path());
-    fs::write(temporary.path().join("fake-agent-delay-ms"), "30000\n").unwrap();
+    let started = temporary.path().join("fake-agent-started");
+    let release = temporary.path().join("fake-agent-release");
+    fs::write(
+        temporary.path().join("fake-agent-controlled"),
+        "controlled\n",
+    )
+    .unwrap();
     let home = temporary.path().join("home");
     let store = Store::new(home.clone());
     fs::create_dir_all(&home).unwrap();
@@ -417,13 +464,18 @@ fn cancelling_active_workers_is_terminal_and_cannot_be_overwritten_by_failure() 
     let run_id = created.run_id.clone();
     let worker_home = home.clone();
     let worker_run_id = run_id.clone();
-    let worker = thread::spawn(move || run::advance(&Store::new(worker_home), &worker_run_id));
+    let worker = ControlledWorker::new(
+        release,
+        home,
+        run_id.clone(),
+        thread::spawn(move || run::advance(&Store::new(worker_home), &worker_run_id)),
+    );
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while store.active_pids(&run_id).unwrap().is_empty() {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !started.is_file() || store.active_pids(&run_id).unwrap().is_empty() {
         assert!(
             Instant::now() < deadline,
-            "worker never registered an active PID"
+            "fake agent did not start with a registered active PID"
         );
         thread::sleep(Duration::from_millis(20));
     }
@@ -470,22 +522,27 @@ fn invalid_early_r1_lane_still_drains_all_workers() {
     .unwrap();
     let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
 
-    let started = Instant::now();
     assert_eq!(
         run::advance(&store, &created.run_id).unwrap(),
         RunStatus::Failed
     );
-    assert!(
-        started.elapsed() >= Duration::from_millis(400),
-        "scheduler returned before slower R1 workers were drained"
-    );
     assert!(store.active_pids(&created.run_id).unwrap().is_empty());
+    let events = fs::read_to_string(store.run_dir(&created.run_id).join("events.jsonl")).unwrap();
     for index in 1..5 {
         assert!(
             store
                 .run_dir(&created.run_id)
                 .join(format!("lanes/R1/fake-{index}/attempt-1/stdout.bin"))
                 .is_file()
+        );
+        assert!(
+            events.lines().any(|line| {
+                let event: serde_json::Value = serde_json::from_str(line).unwrap();
+                event["event_type"] == "lane.finished"
+                    && event["phase"] == "R1"
+                    && event["party_id"] == format!("Party {}", (b'A' + index as u8) as char)
+            }),
+            "slower R1 lane {index} did not publish a terminal event"
         );
     }
 }

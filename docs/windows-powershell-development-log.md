@@ -163,3 +163,14 @@ Date: 2026-07-14
 - The Windows Node setup action is pinned to a Node 24 runtime release, avoiding
   the hosted-runner deprecation fallback while retaining the fixed Node version
   used by the npm-shim integration tests.
+- Fake-agent integration fixtures compile once per test binary and copy the
+  cached executable into isolated test directories. This removes repeated
+  runtime compiler contention on slower native ARM and Windows runners.
+- Cancellation and parallel-lane draining tests use fake-agent readiness and
+  durable lane completion evidence instead of short PID or elapsed-time gates.
+- Fixture compilation explicitly closes its scoped temporary directory after
+  caching the executable bytes. Panic cleanup cancels, releases, and joins a
+  controlled worker before the outer test directory is removed.
+- Final verification covered the complete feature-enabled suites on Windows
+  and Linux, plus the changed asynchronous, cancellation, and draining paths
+  under ARM64 user-mode emulation. Native ARM CI remains the release gate.
