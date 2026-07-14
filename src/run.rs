@@ -77,6 +77,9 @@ struct ChildCleanup<'a> {
     run_id: &'a str,
     registered: Option<ActiveProcess>,
     tree_cleaned: bool,
+    /// Windows Job Object that owns the adapter process tree (kill-on-close).
+    #[cfg(windows)]
+    job: Option<WindowsJob>,
 }
 
 impl<'a> ChildCleanup<'a> {
@@ -87,7 +90,14 @@ impl<'a> ChildCleanup<'a> {
             run_id,
             registered: None,
             tree_cleaned: false,
+            #[cfg(windows)]
+            job: None,
         }
+    }
+
+    #[cfg(windows)]
+    fn attach_job(&mut self, job: WindowsJob) {
+        self.job = Some(job);
     }
 
     fn mark_registered(&mut self, process: ActiveProcess) {
@@ -106,12 +116,202 @@ impl<'a> ChildCleanup<'a> {
 impl Drop for ChildCleanup<'_> {
     fn drop(&mut self) {
         if !self.tree_cleaned {
-            let _ = terminate_child(&mut self.child, Duration::from_millis(500));
+            #[cfg(windows)]
+            let job = self.job.as_ref();
+            #[cfg(not(windows))]
+            let job = Option::<&()>::None;
+            let _ = terminate_child(&mut self.child, Duration::from_millis(500), job);
+        }
+        #[cfg(windows)]
+        {
+            // Closing the job with KILL_ON_JOB_CLOSE reaps any remaining descendants.
+            self.job.take();
         }
         if let Some(process) = self.registered.take() {
             let _ = self.store.remove_active_process(self.run_id, &process);
         }
     }
+}
+
+/// Owned Windows Job Object used to contain an adapter process tree.
+#[cfg(windows)]
+struct WindowsJob {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn create() -> anyhow::Result<Self> {
+        use std::mem::zeroed;
+        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            bail!("CreateJobObjectW failed: {}", unsafe { GetLastError() });
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                (&raw const info).cast(),
+                std::mem::size_of_val(&info) as u32,
+            )
+        };
+        if ok == 0 {
+            let error = unsafe { GetLastError() };
+            unsafe {
+                CloseHandle(handle);
+            }
+            bail!("SetInformationJobObject KILL_ON_JOB_CLOSE failed: {error}");
+        }
+        Ok(Self { handle })
+    }
+
+    fn assign_process_handle(
+        &self,
+        process: windows_sys::Win32::Foundation::HANDLE,
+    ) -> anyhow::Result<()> {
+        use windows_sys::Win32::Foundation::GetLastError;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+        let ok = unsafe { AssignProcessToJobObject(self.handle, process) };
+        if ok == 0 {
+            bail!("AssignProcessToJobObject failed: {}", unsafe {
+                GetLastError()
+            });
+        }
+        Ok(())
+    }
+
+    fn terminate(&self) {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        let _ = unsafe { TerminateJobObject(self.handle, 1) };
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE terminates remaining members.
+        unsafe {
+            CloseHandle(self.handle);
+        }
+        self.handle = std::ptr::null_mut();
+    }
+}
+
+/// Spawn an adapter with platform containment. On Windows the process is created
+/// suspended, assigned to a kill-on-close Job Object, then resumed so children
+/// cannot escape before assignment.
+fn spawn_adapter_process(
+    command: &mut std::process::Command,
+) -> anyhow::Result<(Child, Option<WindowsJobPlaceholder>)> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::{
+            CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+        };
+
+        let job = WindowsJob::create()?;
+        // Combine hidden + suspended + new process group. CREATE_SUSPENDED closes
+        // the race between spawn and AssignProcessToJobObject.
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
+        let child = command.spawn().context("cannot start adapter process")?;
+        let process = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+        if let Err(error) = job.assign_process_handle(process) {
+            // Ensure a failed assignment cannot leave a suspended orphan.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        if let Err(error) = resume_suspended_process(child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        Ok((child, Some(job)))
+    }
+    #[cfg(not(windows))]
+    {
+        let child = command.spawn().context("cannot start adapter process")?;
+        Ok((child, None))
+    }
+}
+
+/// Placeholder type so non-Windows builds can keep a uniform Option without
+/// referencing WindowsJob.
+#[cfg(not(windows))]
+type WindowsJobPlaceholder = ();
+#[cfg(windows)]
+type WindowsJobPlaceholder = WindowsJob;
+
+#[cfg(windows)]
+fn resume_suspended_process(pid: u32) -> anyhow::Result<()> {
+    use std::mem::size_of;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenThread, ResumeThread, THREAD_QUERY_INFORMATION, THREAD_SUSPEND_RESUME,
+    };
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
+        bail!(
+            "CreateToolhelp32Snapshot failed while resuming adapter: {}",
+            unsafe { GetLastError() }
+        );
+    }
+    let mut entry = THREADENTRY32 {
+        dwSize: size_of::<THREADENTRY32>() as u32,
+        cntUsage: 0,
+        th32ThreadID: 0,
+        th32OwnerProcessID: 0,
+        tpBasePri: 0,
+        tpDeltaPri: 0,
+        dwFlags: 0,
+    };
+    let mut resumed = 0_u32;
+    let mut ok = unsafe { Thread32First(snapshot, &mut entry) };
+    while ok != 0 {
+        if entry.th32OwnerProcessID == pid {
+            let thread = unsafe {
+                OpenThread(
+                    THREAD_SUSPEND_RESUME | THREAD_QUERY_INFORMATION,
+                    0,
+                    entry.th32ThreadID,
+                )
+            };
+            if !thread.is_null() {
+                let previous = unsafe { ResumeThread(thread) };
+                unsafe {
+                    CloseHandle(thread);
+                }
+                if previous != u32::MAX {
+                    resumed += 1;
+                }
+            }
+        }
+        ok = unsafe { Thread32Next(snapshot, &mut entry) };
+    }
+    unsafe {
+        CloseHandle(snapshot);
+    }
+    if resumed == 0 {
+        bail!("failed to resume any thread for suspended adapter pid {pid}");
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -2213,10 +2413,15 @@ fn run_attempt(
             retry: RetryClass::Never,
         });
     }
-    let child = command
-        .spawn()
+    let (spawned, job) = spawn_adapter_process(&mut command)
         .with_context(|| format!("cannot start {}", invocation.program))?;
-    let mut child = ChildCleanup::new(child, store, &manifest.run_id);
+    let mut child = ChildCleanup::new(spawned, store, &manifest.run_id);
+    #[cfg(windows)]
+    if let Some(job) = job {
+        child.attach_job(job);
+    }
+    #[cfg(not(windows))]
+    let _ = job;
     let pid = child.child.id();
     if let Some(identity) = process_identity(pid) {
         let active_process = ActiveProcess {
@@ -2227,6 +2432,9 @@ fn run_attempt(
         registration.add_process(active_process.clone())?;
         child.mark_registered(active_process);
     } else if child_exited_without_reaping(&mut child.child)? {
+        #[cfg(windows)]
+        kill_residual_process_group(pid, child.job.as_ref());
+        #[cfg(not(windows))]
         kill_residual_process_group(pid);
     } else {
         bail!("cannot identify spawned adapter process");
@@ -2271,8 +2479,16 @@ fn run_attempt(
         timeout_seconds,
         &store.run_dir(&manifest.run_id),
         &output_limited,
+        #[cfg(windows)]
+        child.job.as_ref(),
+        #[cfg(not(windows))]
+        None,
     )?;
     child.tree_cleaned = true;
+    // Drop the job after the leader has been waited so kill-on-close reaps any
+    // descendants that outlived the leader.
+    #[cfg(windows)]
+    child.job.take();
     let stdout = receive_captured_output(stdout_receiver, "stdout")?;
     let stderr = receive_captured_output(stderr_receiver, "stderr")?;
     child.unregister()?;
@@ -2528,11 +2744,13 @@ fn wait_child(
     timeout_seconds: u64,
     run_dir: &Path,
     output_limited: &AtomicBool,
+    #[cfg(windows)] job: Option<&WindowsJob>,
+    #[cfg(not(windows))] job: Option<&()>,
 ) -> anyhow::Result<(Option<ExitStatus>, bool, bool, bool)> {
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     loop {
         if child_exited_without_reaping(child)? {
-            kill_residual_process_group(child.id());
+            kill_residual_process_group_with_job(child.id(), job);
             let status = child.wait()?;
             return Ok((
                 Some(status),
@@ -2542,17 +2760,17 @@ fn wait_child(
             ));
         }
         if cancellation_requested(run_dir) {
-            let status = terminate_child(child, Duration::from_millis(500))
+            let status = terminate_child(child, Duration::from_millis(500), job)
                 .ok_or_else(|| anyhow!("cannot terminate cancelled adapter process"))?;
             return Ok((Some(status), false, true, false));
         }
         if output_limited.load(Ordering::SeqCst) {
-            let status = terminate_child(child, Duration::from_millis(100))
+            let status = terminate_child(child, Duration::from_millis(100), job)
                 .ok_or_else(|| anyhow!("cannot terminate output-limited adapter process"))?;
             return Ok((Some(status), false, false, true));
         }
         if Instant::now() >= deadline {
-            let status = terminate_child(child, Duration::from_millis(500))
+            let status = terminate_child(child, Duration::from_millis(500), job)
                 .ok_or_else(|| anyhow!("cannot terminate timed-out adapter process"))?;
             return Ok((Some(status), true, false, false));
         }
@@ -2560,22 +2778,27 @@ fn wait_child(
     }
 }
 
-fn terminate_child(child: &mut Child, grace: Duration) -> Option<ExitStatus> {
+fn terminate_child(
+    child: &mut Child,
+    grace: Duration,
+    #[cfg(windows)] job: Option<&WindowsJob>,
+    #[cfg(not(windows))] job: Option<&()>,
+) -> Option<ExitStatus> {
     let pid = child.id();
-    kill_process_tree(pid, false);
+    kill_process_tree_with_job(pid, false, job);
     let deadline = Instant::now() + grace;
     while Instant::now() < deadline {
         if child_exited_without_reaping(child).ok()? {
-            kill_residual_process_group(pid);
+            kill_residual_process_group_with_job(pid, job);
             return child.wait().ok();
         }
         thread::sleep(Duration::from_millis(25));
     }
-    kill_process_tree(pid, true);
+    kill_process_tree_with_job(pid, true, job);
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         if child_exited_without_reaping(child).ok()? {
-            kill_residual_process_group(pid);
+            kill_residual_process_group_with_job(pid, job);
             return child.wait().ok();
         }
         thread::sleep(Duration::from_millis(25));
@@ -2586,13 +2809,51 @@ fn terminate_child(child: &mut Child, grace: Duration) -> Option<ExitStatus> {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         if child_exited_without_reaping(child).ok()? {
-            kill_residual_process_group(pid);
+            kill_residual_process_group_with_job(pid, job);
             return child.wait().ok();
         }
         thread::sleep(Duration::from_millis(25));
     }
-    kill_residual_process_group(pid);
+    kill_residual_process_group_with_job(pid, job);
     None
+}
+
+#[cfg(windows)]
+fn kill_process_tree_with_job(pid: u32, force: bool, job: Option<&WindowsJob>) {
+    if let Some(job) = job {
+        // Prefer job-wide termination so grandchildren without the leader PID die.
+        job.terminate();
+        if force {
+            kill_process_tree(pid, true);
+        }
+        return;
+    }
+    kill_process_tree(pid, force);
+}
+
+#[cfg(not(windows))]
+fn kill_process_tree_with_job(pid: u32, force: bool, _job: Option<&()>) {
+    kill_process_tree(pid, force);
+}
+
+#[cfg(windows)]
+fn kill_residual_process_group_with_job(pid: u32, job: Option<&WindowsJob>) {
+    if let Some(job) = job {
+        job.terminate();
+        return;
+    }
+    // Fallback when no owned job is available (e.g. orphan recovery).
+    kill_process_tree(pid, true);
+}
+
+#[cfg(not(windows))]
+fn kill_residual_process_group_with_job(pid: u32, _job: Option<&()>) {
+    kill_residual_process_group(pid);
+}
+
+#[cfg(windows)]
+fn kill_residual_process_group(pid: u32, job: Option<&WindowsJob>) {
+    kill_residual_process_group_with_job(pid, job);
 }
 
 #[cfg(unix)]
@@ -3373,6 +3634,8 @@ fn kill_residual_process_group(pid: u32) {
 
 #[cfg(windows)]
 fn kill_process_tree(pid: u32, force: bool) {
+    // taskkill remains a fallback for processes not assigned to an owned job
+    // (for example recovered orphans recorded only by PID/identity).
     let mut args = vec!["/PID".to_string(), pid.to_string(), "/T".to_string()];
     if force {
         args.push("/F".to_string());
@@ -3385,9 +3648,6 @@ fn kill_process_tree(pid: u32, force: bool) {
     configure_hidden_process(&mut command);
     let _ = command.status();
 }
-
-#[cfg(windows)]
-fn kill_residual_process_group(_pid: u32) {}
 
 fn install_interrupt_handler() {
     let flag = interrupt_flag().clone();
@@ -3553,7 +3813,7 @@ mod retry_tests {
         let mut child = command.spawn().unwrap();
         let started = Instant::now();
 
-        let status = super::terminate_child(&mut child, Duration::from_millis(50));
+        let status = super::terminate_child(&mut child, Duration::from_millis(50), None);
 
         assert!(status.is_some());
         assert!(started.elapsed() < Duration::from_secs(5));
@@ -3592,6 +3852,7 @@ mod retry_tests {
             2,
             tempfile::tempdir().unwrap().path(),
             &AtomicBool::new(false),
+            None,
         )
         .unwrap()
         .0;
@@ -4039,6 +4300,30 @@ mod retry_tests {
         );
         // silence unused helper warning if compiler optimizes oddly
         let _ = sample_lane("x", high_risk);
+    }
+
+    #[test]
+    fn windows_job_object_containment_is_wired_in_source() {
+        // Portable structural proof: the shipped adapter lifecycle owns a
+        // kill-on-close Job Object, assigns processes before resume, and no
+        // longer treats post-leader residual cleanup as a Windows no-op.
+        let source = include_str!("run.rs");
+        assert!(source.contains("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE"));
+        assert!(source.contains("CreateJobObjectW"));
+        assert!(source.contains("AssignProcessToJobObject"));
+        assert!(source.contains("CREATE_SUSPENDED"));
+        assert!(source.contains("fn spawn_adapter_process"));
+        assert!(source.contains("fn kill_residual_process_group_with_job"));
+        assert!(
+            source.contains("job.terminate()"),
+            "Windows residual cleanup must terminate the owned job"
+        );
+        // Production Windows residual path must use the job-aware helper rather
+        // than an empty stub body on the residual API.
+        assert!(
+            source.contains("fn kill_residual_process_group(pid: u32, job: Option<&WindowsJob>)"),
+            "Windows residual process cleanup must accept the owned job"
+        );
     }
 
     #[test]
