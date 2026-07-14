@@ -1,8 +1,14 @@
 mod common;
 
 use std::fs;
+use std::io::Read;
 use std::process::Command as StdCommand;
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::thread;
 use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use assert_cmd::Command;
 use quinte::model::{Policy, RunStatus, SandboxMode, TEXT_MODEL};
@@ -11,6 +17,108 @@ use quinte::store::Store;
 use quinte::util::read_json;
 use quinte::util::write_json;
 use serde_json::Value;
+
+struct FakeAdapterEnv {
+    previous: Option<std::ffi::OsString>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+struct ReleaseOnDrop(std::path::PathBuf);
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        let _ = fs::write(&self.0, b"release\n");
+    }
+}
+
+fn read_in_background<R>(mut reader: R) -> Receiver<std::io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = reader.read_to_end(&mut bytes).map(|_| bytes);
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+fn receive_pipe(
+    receiver: Receiver<std::io::Result<Vec<u8>>>,
+    release: &std::path::Path,
+) -> (Vec<u8>, bool) {
+    match receiver.recv_timeout(Duration::from_secs(10)) {
+        Ok(result) => (result.unwrap(), false),
+        Err(_) => {
+            fs::write(release, b"release\n").unwrap();
+            let bytes = receiver
+                .recv_timeout(Duration::from_secs(60))
+                .expect("worker did not close the inherited output pipe after release")
+                .unwrap();
+            (bytes, true)
+        }
+    }
+}
+
+impl FakeAdapterEnv {
+    fn enable() -> Self {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let lock = LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os("QUINTE_ALLOW_FAKE_ADAPTERS");
+        unsafe { std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", "1") };
+        Self {
+            previous,
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for FakeAdapterEnv {
+    fn drop(&mut self) {
+        unsafe {
+            if let Some(value) = self.previous.take() {
+                std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", value);
+            } else {
+                std::env::remove_var("QUINTE_ALLOW_FAKE_ADAPTERS");
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn wait_for_file(child: &mut std::process::Child, path: &std::path::Path, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while !path.is_file() {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("wait process exited before becoming ready: {status}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "wait process did not become ready"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::process::ExitStatus {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("wait process did not exit after SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
 
 fn fake_policy(executable: &std::path::Path) -> Policy {
     let parties = ["Party A", "Party B", "Party C", "Party D", "Party E"];
@@ -106,7 +214,12 @@ fn quinte(fixture: &Fixture) -> Command {
 
 #[test]
 fn run_returns_queued_immediately_and_worker_reaches_waiting_hm() {
-    let fixture = fixture(5_000);
+    let fixture = fixture(0);
+    let fixture_dir = fixture.executable.parent().unwrap();
+    let started = fixture_dir.join("fake-agent-started");
+    let release = fixture_dir.join("fake-agent-release");
+    let _release_on_drop = ReleaseOnDrop(release.clone());
+    fs::write(fixture_dir.join("fake-agent-controlled"), b"controlled\n").unwrap();
     let mut child = StdCommand::new(assert_cmd::cargo::cargo_bin!("quinte"))
         .env("QUINTE_HOME", &fixture.home)
         .env("QUINTE_ALLOW_FAKE_ADAPTERS", "1")
@@ -117,41 +230,50 @@ fn run_returns_queued_immediately_and_worker_reaches_waiting_hm() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        if child.try_wait().unwrap().is_some() {
-            break;
-        }
+    let stdout = read_in_background(child.stdout.take().unwrap());
+    let stderr = read_in_background(child.stderr.take().unwrap());
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let mut parent_exited = false;
+    while !parent_exited || !started.is_file() {
+        parent_exited |= child.try_wait().unwrap().is_some();
         assert!(
             std::time::Instant::now() < deadline,
-            "run CLI stayed attached to the worker"
+            "run CLI or its detached worker did not reach the handshake"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    let output = child.wait_with_output().unwrap();
+    let parent_status = child.wait().unwrap();
+    let store = Store::new(fixture.home.clone());
+    let manifests = store.list_manifests().unwrap();
+    assert_eq!(manifests.len(), 1);
+    let run_id = manifests[0].run_id.clone();
+    assert_eq!(
+        store.load_manifest(&run_id).unwrap().status,
+        RunStatus::R1Running,
+        "worker advanced while its first agent was blocked"
+    );
+
+    let (stdout, stdout_leaked) = receive_pipe(stdout, &release);
+    let (stderr, stderr_leaked) = receive_pipe(stderr, &release);
     assert!(
-        output.status.success(),
+        parent_status.success(),
         "{}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&stderr)
     );
-    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        !stdout_leaked && !stderr_leaked,
+        "detached worker inherited the run CLI output pipes"
+    );
+    let envelope: Value = serde_json::from_slice(&stdout).unwrap();
     assert_eq!(envelope["data"]["status"], "queued");
-    let run_id = run_id_from(&output.stdout);
-    assert_ne!(
-        Store::new(fixture.home.clone())
-            .load_manifest(&run_id)
-            .unwrap()
-            .status,
-        RunStatus::WaitingHm,
-        "run returned only after the delayed worker finished"
-    );
+    assert_eq!(run_id_from(&stdout), run_id);
+    fs::write(release, b"release\n").unwrap();
 
     let waited = quinte(&fixture)
         .args(["wait", &run_id, "--json"])
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(120))
         .output()
         .unwrap();
-    let store = Store::new(fixture.home.clone());
     let manifest = store.load_manifest(&run_id).unwrap();
     let run_dir = store.run_dir(&run_id);
     let events = fs::read_to_string(run_dir.join("events.jsonl")).unwrap_or_default();
@@ -180,37 +302,33 @@ fn sigint_interrupts_wait_without_cancelling_run() {
 
     let fixture = fixture(0);
     let store = Store::new(fixture.home.clone());
-    let previous_allow_fake = std::env::var_os("QUINTE_ALLOW_FAKE_ADAPTERS");
-    unsafe { std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", "1") };
+    let _fake_adapter_env = FakeAdapterEnv::enable();
+    let policy = fake_policy(&fixture.executable);
     let created = run::create(
         &store,
-        &fake_policy(&fixture.executable),
+        &policy,
         &RunOptions {
             brief_path: fixture.brief.clone(),
         },
     )
     .unwrap();
-    unsafe {
-        if let Some(value) = previous_allow_fake {
-            std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", value);
-        } else {
-            std::env::remove_var("QUINTE_ALLOW_FAKE_ADAPTERS");
-        }
-    }
-
     let mut waiter = StdCommand::new(assert_cmd::cargo::cargo_bin!("quinte"))
         .env("QUINTE_HOME", &fixture.home)
         .env("QUINTE_ALLOW_FAKE_ADAPTERS", "1")
+        .env("QUINTE_TEST_WAIT_READY", "1")
         .args(["wait", &created.run_id, "--json"])
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(250));
+    let ready = store
+        .run_dir(&created.run_id)
+        .join("diagnostics/wait-handler-ready");
+    wait_for_file(&mut waiter, &ready, Duration::from_secs(10));
     let signal = StdCommand::new("kill")
         .args(["-INT", &waiter.id().to_string()])
         .status()
         .unwrap();
     assert!(signal.success());
-    let status = waiter.wait().unwrap();
+    let status = wait_for_exit(&mut waiter, Duration::from_secs(10));
     assert_eq!(status.code(), Some(130));
 
     let manifest =
@@ -230,11 +348,11 @@ fn wait_reports_a_dead_background_worker() {
 
     let fixture = fixture(0);
     let store = Store::new(fixture.home.clone());
-    let previous_allow_fake = std::env::var_os("QUINTE_ALLOW_FAKE_ADAPTERS");
-    unsafe { std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", "1") };
+    let _fake_adapter_env = FakeAdapterEnv::enable();
+    let policy = fake_policy(&fixture.executable);
     let created = run::create(
         &store,
-        &fake_policy(&fixture.executable),
+        &policy,
         &RunOptions {
             brief_path: fixture.brief.clone(),
         },
@@ -247,17 +365,9 @@ fn wait_reports_a_dead_background_worker() {
         &serde_json::json!({"pid": 2_147_483_647_u32, "started_at": "2026-01-01T00:00:00Z"}),
     )
     .unwrap();
-    unsafe {
-        if let Some(value) = previous_allow_fake {
-            std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", value);
-        } else {
-            std::env::remove_var("QUINTE_ALLOW_FAKE_ADAPTERS");
-        }
-    }
-
     let output = quinte(&fixture)
         .args(["wait", &created.run_id, "--json"])
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(10))
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
@@ -274,11 +384,11 @@ fn wait_accepts_a_durable_waiting_hm_state_after_worker_exit() {
 
     let fixture = fixture(0);
     let store = Store::new(fixture.home.clone());
-    let previous_allow_fake = std::env::var_os("QUINTE_ALLOW_FAKE_ADAPTERS");
-    unsafe { std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", "1") };
+    let _fake_adapter_env = FakeAdapterEnv::enable();
+    let policy = fake_policy(&fixture.executable);
     let created = run::create(
         &store,
-        &fake_policy(&fixture.executable),
+        &policy,
         &RunOptions {
             brief_path: fixture.brief.clone(),
         },
@@ -295,17 +405,9 @@ fn wait_accepts_a_durable_waiting_hm_state_after_worker_exit() {
         &serde_json::json!({"pid": 2_147_483_647_u32, "started_at": "2026-01-01T00:00:00Z"}),
     )
     .unwrap();
-    unsafe {
-        if let Some(value) = previous_allow_fake {
-            std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", value);
-        } else {
-            std::env::remove_var("QUINTE_ALLOW_FAKE_ADAPTERS");
-        }
-    }
-
     let output = quinte(&fixture)
         .args(["wait", &created.run_id, "--json"])
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(10))
         .output()
         .unwrap();
     assert!(

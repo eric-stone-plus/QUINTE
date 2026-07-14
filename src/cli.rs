@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, error::ErrorKind};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -150,7 +150,21 @@ enum PolicyCommand {
 }
 
 pub fn entrypoint() -> Result<i32> {
-    let cli = Cli::try_parse().map_err(|error| QuinteError::Usage(error.to_string()))?;
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) =>
+        {
+            error
+                .print()
+                .map_err(|error| QuinteError::Internal(error.into()))?;
+            return Ok(0);
+        }
+        Err(error) => return Err(QuinteError::Usage(error.to_string())),
+    };
     execute(cli).map_err(map_error)
 }
 

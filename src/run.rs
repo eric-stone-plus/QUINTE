@@ -2791,9 +2791,7 @@ fn kill_process_tree(pid: u32, force: bool) {
 }
 
 fn install_interrupt_handler() {
-    let flag = INTERRUPTED
-        .get_or_init(|| Arc::new(AtomicBool::new(false)))
-        .clone();
+    let flag = interrupt_flag().clone();
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {
         ctrlc::set_handler(move || {
@@ -2803,11 +2801,23 @@ fn install_interrupt_handler() {
     });
 }
 
+fn interrupt_flag() -> &'static Arc<AtomicBool> {
+    INTERRUPTED.get_or_init(|| Arc::new(AtomicBool::new(false)))
+}
+
 pub fn wait(store: &Store, run_id: &str, poll_interval: Duration) -> anyhow::Result<RunStatus> {
+    let interrupted = interrupt_flag().clone();
+    interrupted.store(false, Ordering::SeqCst);
     install_interrupt_handler();
-    INTERRUPTED.get().unwrap().store(false, Ordering::SeqCst);
+    #[cfg(feature = "test-adapters")]
+    if std::env::var_os("QUINTE_TEST_WAIT_READY").is_some() {
+        atomic_write(
+            &store.run_dir(run_id).join("diagnostics/wait-handler-ready"),
+            b"ready\n",
+        )?;
+    }
     loop {
-        if INTERRUPTED.get().unwrap().load(Ordering::SeqCst) {
+        if interrupted.load(Ordering::SeqCst) {
             return Err(WaitInterrupted.into());
         }
         let status = store.load_manifest(run_id)?.status;
@@ -2856,8 +2866,11 @@ fn ensure_worker_liveness(store: &Store, run_id: &str) -> anyhow::Result<()> {
         .ok()
         .and_then(|modified| modified.elapsed().ok())
         .is_some_and(|elapsed| elapsed > Duration::from_secs(15));
-    let pid = worker.get("pid").and_then(serde_json::Value::as_u64);
-    if stale || pid.is_some_and(|pid| !process_alive(pid as u32)) {
+    let pid = worker
+        .get("pid")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok());
+    if stale || pid.is_none_or(|pid| !process_alive(pid)) {
         // The worker may publish a durable stop state between the waiter's
         // manifest read and this process check.
         let status = store.load_manifest(run_id)?.status;

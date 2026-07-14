@@ -55,12 +55,16 @@ fn main() {
         eprintln!("{sentinel}");
     }
 
+    let fixture_dir = std::env::current_exe().unwrap().parent().unwrap().to_owned();
     if args[0] == "R1" && args[1] == "Party A" {
-        let delay_path = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("fake-agent-delay-ms");
+        if fixture_dir.join("fake-agent-controlled").exists() {
+            fs::write(fixture_dir.join("fake-agent-started"), b"started\n").unwrap();
+            while !fixture_dir.join("fake-agent-release").exists() {
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        let delay_path = fixture_dir.join("fake-agent-delay-ms");
         if let Ok(delay) = fs::read_to_string(delay_path)
             && let Ok(delay) = delay.trim().parse::<u64>()
         {

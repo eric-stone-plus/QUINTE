@@ -138,3 +138,21 @@ plaintext credential propagation, and shell files without enforced LF endings.
   fake-agent tests before spending model calls on a full QUINTE round.
 - A full live round remains an integration check, not a substitute for the
   deterministic Windows tests above.
+
+## Release CI Follow-up
+
+Date: 2026-07-14
+
+- The Windows integration suite executes the real Node.js and Bun runtimes
+  resolved from validated npm shims. The release matrix now installs fixed
+  runtime versions instead of depending on the hosted image to provide Bun.
+- Branch pushes run the same five native test, build, and packaging jobs as a
+  release tag. Publishing remains tag-only, so a tag is created only after the
+  exact commit has passed the complete matrix.
+- Release tags must match the Cargo package version. Release workflow actions
+  are pinned to reviewed commits rather than floating major-version refs.
+- The Unix SIGINT test waits for an explicit, feature-gated readiness marker
+  after the signal handler is installed. Fake-adapter environment mutation is
+  serialized, removing architecture- and load-dependent test races.
+- The detached-worker regression uses a fake-agent start/release handshake
+  instead of treating a fixed wall-clock limit as proof of process detachment.
