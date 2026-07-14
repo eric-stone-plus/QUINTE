@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: &str = "1.0";
-pub const BRIEF_VERSION: &str = "1.0";
-pub const RESULT_VERSION: &str = "1.0";
-pub const POLICY_VERSION: &str = "1.0";
+pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const PROTOCOL_VERSION: &str = PACKAGE_VERSION;
+pub const BRIEF_VERSION: &str = PACKAGE_VERSION;
+pub const RESULT_VERSION: &str = PACKAGE_VERSION;
+pub const POLICY_VERSION: &str = PACKAGE_VERSION;
 pub const TEXT_MODEL: &str = "mimo-v2.5-pro";
 pub const MULTIMODAL_MODEL: &str = "mimo-v2.5";
 
@@ -379,7 +380,7 @@ pub struct CliEnvelope<T: Serialize> {
 impl<T: Serialize> CliEnvelope<T> {
     pub fn ok(data: T) -> Self {
         Self {
-            cli_envelope_version: "1.0",
+            cli_envelope_version: PACKAGE_VERSION,
             ok: true,
             data,
         }

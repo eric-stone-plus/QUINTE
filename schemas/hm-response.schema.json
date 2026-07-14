@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["hm_response_version", "run_id", "nonce", "policy_sha256", "evidence_packet_sha256", "input_receipt_sha256", "action_scope", "verdict"],
   "properties": {
-    "hm_response_version": { "const": "1.0" },
+    "hm_response_version": { "const": "0.1.4" },
     "run_id": { "type": "string", "minLength": 1 },
     "nonce": { "type": "string", "minLength": 32 },
     "policy_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
@@ -21,7 +21,7 @@
       "additionalProperties": false,
       "required": ["arbiter_verdict_version", "summary", "recommendation", "residuals"],
       "properties": {
-        "arbiter_verdict_version": { "const": "1.0" },
+        "arbiter_verdict_version": { "const": "0.1.4" },
         "summary": { "type": "string", "minLength": 1, "maxLength": 20000 },
         "recommendation": { "type": "string", "minLength": 1, "maxLength": 20000 },
         "residuals": { "type": "array", "maxItems": 100, "items": { "$ref": "lane-output.schema.json#/$defs/residual" } }

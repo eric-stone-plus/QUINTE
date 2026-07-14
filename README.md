@@ -96,7 +96,7 @@ Create a brief such as `brief.json`:
 
 ```json
 {
-  "brief_version": "1.0",
+  "brief_version": "0.1.4",
   "question": "Which material risks remain in this change?",
   "context": "Review the implementation, tests, and operational boundary.",
   "evidence_roots": ["/absolute/path/to/project"],
@@ -115,14 +115,14 @@ The default command returns immediately with a queued run while a supervised
 background worker advances R1, R2, and Auditor B:
 
 ```json
-{"cli_envelope_version":"1.0","ok":true,"data":{"run_id":"...","status":"queued","run_dir":"..."}}
+{"cli_envelope_version":"0.1.4","ok":true,"data":{"run_id":"...","status":"queued","run_dir":"..."}}
 ```
 
 Use `--wait` to keep the initiating terminal attached to state observation
 (not to the worker itself). It normally returns when Hermes input is required:
 
 ```json
-{"cli_envelope_version":"1.0","ok":true,"data":{"run_id":"...","status":"waiting_hm","run_dir":"..."}}
+{"cli_envelope_version":"0.1.4","ok":true,"data":{"run_id":"...","status":"waiting_hm","run_dir":"..."}}
 ```
 
 `waiting_hm` with exit code `0` is a successful handoff, not a completed

@@ -23,7 +23,7 @@
   "properties": {
     "dispatch_manifest_version": {
       "type": "string",
-      "const": "1.0"
+      "const": "0.1.4"
     },
     "run_id": {
       "type": "string",

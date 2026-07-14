@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["input_receipt_version", "run_id", "issued_at", "r1", "r2", "evidence_packet", "cc_response"],
   "properties": {
-    "input_receipt_version": { "const": "1.0" },
+    "input_receipt_version": { "const": "0.1.4" },
     "run_id": { "type": "string", "minLength": 1 },
     "issued_at": { "type": "string", "format": "date-time" },
     "r1": { "$ref": "#/$defs/phase" },

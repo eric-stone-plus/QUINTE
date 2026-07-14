@@ -1,4 +1,4 @@
-# QUINTE Protocol v1.0
+# QUINTE Protocol v0.1.4
 
 This document defines the product protocol enforced by the `quinte` CLI. The
 CLI scheduler is the canonical runtime authority. Hermes is a trigger and one

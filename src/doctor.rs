@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::adapters;
-use crate::model::{Policy, SandboxMode};
+use crate::model::{PACKAGE_VERSION, Policy, SandboxMode};
 use crate::util::command_exists;
 
 #[derive(Debug, Serialize)]
@@ -49,7 +49,7 @@ pub fn run(policy: &Policy) -> DoctorReport {
         }));
     }
     DoctorReport {
-        doctor_version: "1.0",
+        doctor_version: PACKAGE_VERSION,
         ok: required_ok && sandbox_ok,
         platform: std::env::consts::OS.to_string(),
         checks,

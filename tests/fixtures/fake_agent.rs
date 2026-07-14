@@ -5,7 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 const VALID_OUTPUT: &str = r#"{
-  "lane_output_version": "1.0",
+  "lane_output_version": "0.1.4",
   "task_restatement": "Review the supplied evidence packet.",
   "verdict": "The bounded review completed.",
   "confidence": 0.75,

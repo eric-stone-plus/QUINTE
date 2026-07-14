@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["brief_version", "question"],
   "properties": {
-    "brief_version": { "const": "1.0" },
+    "brief_version": { "const": "0.1.4" },
     "question": { "type": "string", "minLength": 1, "maxLength": 20000 },
     "context": { "type": ["string", "null"], "maxLength": 100000 },
     "evidence_roots": {

@@ -123,7 +123,7 @@ fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::pro
 fn fake_policy(executable: &std::path::Path) -> Policy {
     let parties = ["Party A", "Party B", "Party C", "Party D", "Party E"];
     Policy {
-        policy_version: "1.0".into(),
+        policy_version: "0.1.4".into(),
         roster: parties
             .iter()
             .enumerate()
@@ -183,7 +183,7 @@ fn fixture(delay_ms: u64) -> Fixture {
     write_json(
         &brief,
         &serde_json::json!({
-            "brief_version": "1.0",
+            "brief_version": "0.1.4",
             "question": "What remains unresolved?",
             "evidence_roots": [evidence],
             "attachments": [],

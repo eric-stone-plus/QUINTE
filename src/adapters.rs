@@ -1763,7 +1763,7 @@ mod tests {
     #[test]
     fn codewhale_parser_reassembles_chunked_content_and_ignores_terminal_controls() {
         let output = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "bounded task",
             "verdict": "no material ambiguity",
             "confidence": 0.9,
@@ -1804,7 +1804,7 @@ mod tests {
     #[test]
     fn codewhale_parser_prefers_latest_valid_complete_object() {
         let old = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "old result",
             "verdict": "old verdict",
             "confidence": 0.2,
@@ -1813,7 +1813,7 @@ mod tests {
             "uncertainties": []
         });
         let latest = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "latest {result}",
             "verdict": "latest verdict with an escaped quote: \"ok\"",
             "confidence": 0.9,
@@ -1838,7 +1838,7 @@ mod tests {
     fn codewhale_parser_rejects_truncated_only_json() {
         let content = r#"analysis first
 ```json
-{"lane_output_version":"1.0","task_restatement":"cut off""#;
+{"lane_output_version":"0.1.4","task_restatement":"cut off""#;
         let stream = serde_json::json!({"type": "content", "content": content}).to_string();
 
         let error = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap_err();
@@ -1848,7 +1848,7 @@ mod tests {
     #[test]
     fn codewhale_parser_never_falls_back_past_a_truncated_final_lane_output() {
         let old = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "stale draft",
             "verdict": "must not be accepted",
             "confidence": 0.2,
@@ -1857,7 +1857,7 @@ mod tests {
             "uncertainties": []
         });
         let content = format!(
-            "{old}\n```json\n{{\"lane_output_version\":\"1.0\",\"task_restatement\":\"final but truncated\""
+            "{old}\n```json\n{{\"lane_output_version\":\"0.1.4\",\"task_restatement\":\"final but truncated\""
         );
         let stream = serde_json::json!({"type": "content", "content": content}).to_string();
 
@@ -1868,7 +1868,7 @@ mod tests {
     #[test]
     fn codewhale_parser_never_falls_back_past_a_truncated_lane_output_key() {
         let old = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "stale draft",
             "verdict": "must not be accepted",
             "confidence": 0.2,
@@ -1896,7 +1896,7 @@ mod tests {
     #[test]
     fn codewhale_parser_rejects_a_new_truncated_candidate_with_reordered_keys() {
         let old = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "stale draft",
             "verdict": "must not be accepted",
             "confidence": 0.2,
@@ -1916,7 +1916,7 @@ mod tests {
     #[test]
     fn codewhale_parser_never_falls_back_past_an_unclosed_json_fence() {
         let old = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "stale draft",
             "verdict": "must not be accepted",
             "confidence": 0.2,
@@ -1934,7 +1934,7 @@ mod tests {
     #[test]
     fn codewhale_parser_does_not_fall_back_from_a_complete_invalid_final_candidate() {
         let old = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "stale draft",
             "verdict": "must not be accepted",
             "confidence": 0.2,
@@ -1956,7 +1956,7 @@ mod tests {
     #[test]
     fn codewhale_parser_ignores_later_prose_braces() {
         let output = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "current result",
             "verdict": "accepted despite later prose braces",
             "confidence": 0.9,
@@ -1974,7 +1974,7 @@ mod tests {
     #[test]
     fn codewhale_parser_ignores_inline_fence_examples_after_a_valid_output() {
         let output = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "current result",
             "verdict": "inline Markdown is prose",
             "confidence": 0.9,
@@ -1993,7 +1993,7 @@ mod tests {
     #[test]
     fn codewhale_parser_filters_large_numbers_of_non_lane_objects() {
         let output = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "bounded task",
             "verdict": "only the final candidate is schema validated",
             "confidence": 0.9,
@@ -2030,7 +2030,7 @@ mod tests {
     #[test]
     fn text_parser_accepts_a_fenced_lane_output_after_preamble() {
         let output = serde_json::json!({
-            "lane_output_version": "1.0",
+            "lane_output_version": "0.1.4",
             "task_restatement": "bounded task",
             "verdict": "material ambiguity remains",
             "confidence": 0.8,
@@ -2117,7 +2117,7 @@ mod tests {
             "{}\n{}\n{}\n",
             serde_json::json!({
                 "type": "content",
-                "content": "{\"lane_output_version\":\"1.0\",\"task_restatement\":\"missing fields\"}"
+                "content": "{\"lane_output_version\":\"0.1.4\",\"task_restatement\":\"missing fields\"}"
             }),
             serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
             serde_json::json!({"type": "done"})
@@ -2131,7 +2131,7 @@ mod tests {
             serde_json::json!({
                 "type": "content",
                 "content": concat!(
-                    "{\"lane_output_version\":\"1.0\",",
+                    "{\"lane_output_version\":\"0.1.4\",",
                     "\"task_restatement\":\"missing fields\"}\n",
                     "```json\n{}\n```"
                 )
@@ -2209,7 +2209,7 @@ mod tests {
             "{}\n{}\n{}\n",
             serde_json::json!({
                 "type": "content",
-                "content": "```json\n{\"lane_output_version\":\"1.0\",\"verdict\":\"cut off"
+                "content": "```json\n{\"lane_output_version\":\"0.1.4\",\"verdict\":\"cut off"
             }),
             serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
             serde_json::json!({"type": "done"})

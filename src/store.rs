@@ -6,7 +6,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::model::{Event, RunError, RunManifest, RunStatus};
+use crate::model::{Event, PACKAGE_VERSION, RunError, RunManifest, RunStatus};
 use crate::schema::{RUN_EVENT_SCHEMA, RUN_MANIFEST_SCHEMA, validate_value};
 use crate::util::{append_jsonl, atomic_write, read_json, utc_now, write_json};
 
@@ -296,7 +296,7 @@ impl Store {
         }
         let sequence = existing.last().map_or(1, |event| event.sequence + 1);
         let event = Event {
-            event_version: "1.0".to_string(),
+            event_version: PACKAGE_VERSION.to_string(),
             sequence,
             timestamp: timestamp.to_string(),
             run_id: run_id.to_string(),
@@ -495,7 +495,7 @@ impl Store {
         });
         if !already_recorded {
             let event = Event {
-                event_version: "1.0".into(),
+                event_version: PACKAGE_VERSION.into(),
                 sequence: events.last().map_or(1, |event| event.sequence + 1),
                 timestamp: pending.timestamp.clone(),
                 run_id: manifest.run_id.clone(),
@@ -623,7 +623,7 @@ mod tests {
 
     fn manifest(run_id: &str) -> RunManifest {
         RunManifest {
-            manifest_version: "1.0".into(),
+            manifest_version: "0.1.4".into(),
             run_id: run_id.into(),
             created_at: "2026-07-13T00:00:00.000Z".into(),
             updated_at: "2026-07-13T00:00:00.000Z".into(),
@@ -632,7 +632,7 @@ mod tests {
             policy_sha256: format!("sha256:{}", "b".repeat(64)),
             snapshot_sha256: format!("sha256:{}", "c".repeat(64)),
             runtime_sha256: format!("sha256:{}", "d".repeat(64)),
-            protocol_version: "1.0".into(),
+            protocol_version: "0.1.4".into(),
             effective_model: "mimo-v2.5-pro".into(),
             sandbox_mode: SandboxMode::Process,
             current_phase: None,

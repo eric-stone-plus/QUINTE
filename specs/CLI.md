@@ -157,7 +157,7 @@ command.
 
 ```json
 {
-  "brief_version": "1.0",
+  "brief_version": "0.1.4",
   "question": "Required non-empty question",
   "context": "Optional bounded context",
   "evidence_roots": ["/absolute/or/resolvable/path"],
@@ -244,7 +244,7 @@ draft its verdict, and write a response conforming to
 
 ```json
 {
-  "hm_response_version": "1.0",
+  "hm_response_version": "0.1.4",
   "run_id": "exact value from hm-request.json",
   "nonce": "exact value from hm-request.json",
   "policy_sha256": "exact value from hm-request.json",
@@ -252,7 +252,7 @@ draft its verdict, and write a response conforming to
   "input_receipt_sha256": "exact value from hm-request.json",
   "action_scope": "exact value from hm-request.json, including null",
   "verdict": {
-    "arbiter_verdict_version": "1.0",
+    "arbiter_verdict_version": "0.1.4",
     "summary": "Hermes evidence-based summary",
     "recommendation": "Hermes recommendation",
     "residuals": []
@@ -301,7 +301,7 @@ to stdout:
 
 ```json
 {
-  "cli_envelope_version": "1.0",
+  "cli_envelope_version": "0.1.4",
   "ok": true,
   "data": {}
 }
