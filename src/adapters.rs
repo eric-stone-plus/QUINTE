@@ -33,8 +33,8 @@ pub struct Invocation {
 
 impl Drop for Invocation {
     fn drop(&mut self) {
-        // Explicit cleanup in run_attempt reports failures; this fallback also covers
-        // build/spawn unwinding before the attempt runner owns the invocation.
+        // Explicit cleanup in run_attempt reports failures; this fallback covers
+        // prepared invocations dropped before an R1 worker takes ownership.
         let _ = cleanup_sensitive(self);
     }
 }
@@ -47,6 +47,12 @@ pub enum OutputKind {
     OmpJson,
     ClaudeJson,
     CodewhaleStream,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdapterStreamError {
+    pub name: Option<String>,
+    pub message: String,
 }
 
 struct StagedInput {
@@ -225,11 +231,12 @@ pub fn build(
     let packet_path = input.packet_path.as_path();
     let attachment_paths = input.attachment_paths;
     let schema_compact = compact_schema(LANE_OUTPUT_SCHEMA)?;
-    let prompt = format!(
-        "{ROLE_CONTRACT}\n\nPHASE: {phase}\nRead the task packet at {} and input/snapshot-manifest.json. Evidence is available only under input/snapshot. Every evidence_refs and closure_evidence entry must be either empty or an exact snapshot_ref copied from snapshot-manifest.json; never construct relative paths or line suffixes.{} Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters; emit one compact JSON object without preamble, markdown fences, or repeated analysis. Return JSON conforming exactly to this schema and invent no fields:\n{schema_compact}",
+    let task_prompt = format!(
+        "PHASE: {phase}\nRead the task packet at {} and input/snapshot-manifest.json. Evidence is available only under input/snapshot. Every evidence_refs and closure_evidence entry must be either empty or an exact snapshot_ref copied from snapshot-manifest.json; never construct relative paths or line suffixes.{} Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters; emit one compact JSON object without preamble, markdown fences, or repeated analysis. Return JSON conforming exactly to this schema and invent no fields:\n{schema_compact}",
         packet_path.display(),
         attachment_prompt(&attachment_paths),
     );
+    let prompt = format!("{ROLE_CONTRACT}\n\n{task_prompt}");
     let mut env = minimal_environment();
     env.insert("QUINTE_PHASE".into(), phase.into());
     env.insert("QUINTE_PARTY_ID".into(), route.party_id.clone());
@@ -421,7 +428,7 @@ pub fn build(
             }
         }
         "codewhale" => {
-            let mut prompt = prompt;
+            let mut prompt = task_prompt;
             for path in &attachment_paths {
                 prompt.push_str(&format!(
                     "\nAnalyze this staged image with image_analyze before answering: {}",
@@ -430,38 +437,7 @@ pub fn build(
             }
             Invocation {
                 program: program.clone(),
-                args: vec![
-                    "--workspace".into(),
-                    lane_root.display().to_string(),
-                    "--config".into(),
-                    lane_root
-                        .join("config/codewhale.toml")
-                        .display()
-                        .to_string(),
-                    "--fresh".into(),
-                    "--no-project-config".into(),
-                    "--disable".into(),
-                    "subagents".into(),
-                    "--disable".into(),
-                    "web_search".into(),
-                    "--disable".into(),
-                    "mcp".into(),
-                    "exec".into(),
-                    "--auto".into(),
-                    "--model".into(),
-                    model.into(),
-                    "--output-format".into(),
-                    "stream-json".into(),
-                    "--allowed-tools".into(),
-                    codewhale_allowed_tools(!attachment_paths.is_empty()).into(),
-                    "--disallowed-tools".into(),
-                    "write_file,exec_shell,apply_patch,web_search".into(),
-                    "--max-turns".into(),
-                    "12".into(),
-                    "--append-system-prompt".into(),
-                    ROLE_CONTRACT.into(),
-                    prompt,
-                ],
+                args: codewhale_args(lane_root, model, !attachment_paths.is_empty(), prompt),
                 env: {
                     write_codewhale_config(lane_root, model)?;
                     env.insert(
@@ -486,6 +462,32 @@ pub fn build(
             env,
             cwd: lane_root.to_path_buf(),
             output_kind: OutputKind::DirectJson,
+            sensitive_paths: Vec::new(),
+        },
+        #[cfg(any(test, feature = "test-adapters"))]
+        "fake_mimo" => Invocation {
+            program: program.clone(),
+            args: vec![
+                phase.into(),
+                route.party_id.clone(),
+                packet_path.display().to_string(),
+            ],
+            env,
+            cwd: lane_root.to_path_buf(),
+            output_kind: OutputKind::JsonEvents,
+            sensitive_paths: Vec::new(),
+        },
+        #[cfg(any(test, feature = "test-adapters"))]
+        "fake_codewhale" => Invocation {
+            program: program.clone(),
+            args: vec![
+                phase.into(),
+                route.party_id.clone(),
+                packet_path.display().to_string(),
+            ],
+            env,
+            cwd: lane_root.to_path_buf(),
+            output_kind: OutputKind::CodewhaleStream,
             sensitive_paths: Vec::new(),
         },
         #[cfg(any(test, feature = "test-adapters"))]
@@ -669,6 +671,46 @@ fn codewhale_allowed_tools(has_attachments: bool) -> &'static str {
     }
 }
 
+fn codewhale_args(
+    lane_root: &Path,
+    model: &str,
+    has_attachments: bool,
+    prompt: String,
+) -> Vec<String> {
+    vec![
+        "--workspace".into(),
+        lane_root.display().to_string(),
+        "--config".into(),
+        lane_root
+            .join("config/codewhale.toml")
+            .display()
+            .to_string(),
+        "--fresh".into(),
+        "--no-project-config".into(),
+        "--disable".into(),
+        "subagents".into(),
+        "--disable".into(),
+        "web_search".into(),
+        "--disable".into(),
+        "mcp".into(),
+        "exec".into(),
+        "--auto".into(),
+        "--model".into(),
+        model.into(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--allowed-tools".into(),
+        codewhale_allowed_tools(has_attachments).into(),
+        "--disallowed-tools".into(),
+        "write_file,exec_shell,apply_patch,web_search".into(),
+        "--max-turns".into(),
+        "12".into(),
+        "--append-system-prompt".into(),
+        ROLE_CONTRACT.into(),
+        prompt,
+    ]
+}
+
 fn append_file_attachments(args: &mut Vec<String>, paths: &[PathBuf]) {
     for path in paths {
         args.push("--file".into());
@@ -817,6 +859,61 @@ pub fn parse_output(kind: OutputKind, stdout: &[u8]) -> anyhow::Result<LaneOutpu
     }
 }
 
+pub fn structured_stream_error(kind: OutputKind, stdout: &[u8]) -> Option<AdapterStreamError> {
+    if kind != OutputKind::JsonEvents {
+        return None;
+    }
+    let text = std::str::from_utf8(stdout).ok()?;
+    text.lines().rev().find_map(|line| {
+        let value: Value = serde_json::from_str(line).ok()?;
+        if value.get("type").and_then(Value::as_str) != Some("error") {
+            return None;
+        }
+        let error = value.get("error")?;
+        let message = error.get("data")?.get("message")?.as_str()?.to_string();
+        let name = error
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        Some(AdapterStreamError { name, message })
+    })
+}
+
+pub fn codewhale_completed_without_json_candidate(stdout: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(stdout) else {
+        return false;
+    };
+    let mut completed = false;
+    let mut done = false;
+    let mut content = String::new();
+    for line in codewhale_event_lines(text) {
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            return false;
+        };
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            return false;
+        };
+        match event_type {
+            "content" => {
+                let Some(chunk) = value.get("content").and_then(Value::as_str) else {
+                    return false;
+                };
+                content.push_str(chunk);
+            }
+            "metadata" => {
+                completed = value
+                    .get("meta")
+                    .and_then(|meta| meta.get("status"))
+                    .and_then(Value::as_str)
+                    == Some("completed");
+            }
+            "done" => done = true,
+            _ => {}
+        }
+    }
+    completed && done && !contains_json_candidate(&content)
+}
+
 fn extract_json_from_text(stdout: &[u8]) -> anyhow::Result<LaneOutput> {
     let text = std::str::from_utf8(stdout).context("adapter output is not strict UTF-8")?;
     if let Some(output) = parse_candidate(text) {
@@ -871,23 +968,49 @@ fn candidates_validation_error(stdout: &[u8]) -> Option<String> {
 }
 
 fn extract_codewhale_stream(stdout: &[u8]) -> anyhow::Result<LaneOutput> {
-    let text =
-        strip_ansi(std::str::from_utf8(stdout).context("adapter stream is not strict UTF-8")?);
+    let text = std::str::from_utf8(stdout).context("adapter stream is not strict UTF-8")?;
     let mut content = String::new();
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        let Some(start) = line.find('{') else {
-            continue;
-        };
-        let value: Value = serde_json::from_str(&line[start..])
-            .context("CodeWhale stream has an invalid JSON event")?;
+    for line in codewhale_event_lines(text) {
+        let value: Value =
+            serde_json::from_str(&line).context("CodeWhale stream has an invalid JSON event")?;
         if value.get("type").and_then(Value::as_str) == Some("content")
             && let Some(chunk) = value.get("content").and_then(Value::as_str)
         {
             content.push_str(chunk);
         }
     }
-    parse_candidate(&content)
+    parse_last_complete_candidate(&content)
         .ok_or_else(|| anyhow::anyhow!("CodeWhale stream contains no valid LaneOutput"))
+}
+
+fn codewhale_event_lines(text: &str) -> Vec<String> {
+    strip_ansi(text)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn parse_last_complete_candidate(candidate: &str) -> Option<LaneOutput> {
+    if has_trailing_incomplete_lane_output(candidate) {
+        return None;
+    }
+    let block = lane_output_object_blocks(candidate).pop()?;
+    if block.required_key_mask != LANE_OUTPUT_REQUIRED_KEY_MASK {
+        return None;
+    }
+    parse_and_validate(block.text.as_bytes(), LANE_OUTPUT_SCHEMA).ok()
+}
+
+fn has_trailing_incomplete_lane_output(text: &str) -> bool {
+    let Some(marker) = text.rfind("\"lane_output") else {
+        return false;
+    };
+    let Some(start) = text[..marker].rfind('{') else {
+        return false;
+    };
+    !has_complete_object_at_start(&text[start..])
 }
 
 fn parse_candidate(candidate: &str) -> Option<LaneOutput> {
@@ -951,6 +1074,158 @@ fn json_object_block(text: &str) -> Option<&str> {
     let start = text.find('{')?;
     let end = text.rfind('}')?;
     (end >= start).then_some(&text[start..=end])
+}
+
+const LANE_OUTPUT_REQUIRED_KEY_MASK: u8 = (1 << 7) - 1;
+
+struct ObjectFrame {
+    start: usize,
+    required_key_mask: u8,
+    array_depth: usize,
+}
+
+struct LaneOutputObjectBlock<'a> {
+    text: &'a str,
+    required_key_mask: u8,
+}
+
+fn lane_output_object_blocks(text: &str) -> Vec<LaneOutputObjectBlock<'_>> {
+    let mut openings: Vec<ObjectFrame> = Vec::new();
+    let mut blocks = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut string_start = None;
+
+    for (index, character) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else {
+                match character {
+                    '\\' => escaped = true,
+                    '"' => {
+                        in_string = false;
+                        if let Some(start) = string_start.take()
+                            && let Some(frame) = openings.last_mut()
+                            && frame.array_depth == 0
+                            && follows_with_colon(text, index + character.len_utf8())
+                        {
+                            frame.required_key_mask |=
+                                lane_output_required_key(&text[start..=index]);
+                        }
+                    }
+                    // A raw newline makes the enclosing JSON candidate invalid. Resetting
+                    // string state lets a later complete object remain recoverable.
+                    '\n' | '\r' => {
+                        in_string = false;
+                        string_start = None;
+                    }
+                    _ => {}
+                }
+            }
+            continue;
+        }
+
+        match character {
+            '"' if !openings.is_empty() => {
+                in_string = true;
+                string_start = Some(index);
+            }
+            '{' => openings.push(ObjectFrame {
+                start: index,
+                required_key_mask: 0,
+                array_depth: 0,
+            }),
+            '}' => {
+                if let Some(frame) = openings.pop()
+                    && frame.required_key_mask & 1 != 0
+                {
+                    blocks.push(LaneOutputObjectBlock {
+                        text: &text[frame.start..index + character.len_utf8()],
+                        required_key_mask: frame.required_key_mask,
+                    });
+                }
+            }
+            '[' => {
+                if let Some(frame) = openings.last_mut() {
+                    frame.array_depth += 1;
+                }
+            }
+            ']' => {
+                if let Some(frame) = openings.last_mut() {
+                    frame.array_depth = frame.array_depth.saturating_sub(1);
+                }
+            }
+            _ => {}
+        }
+    }
+    blocks
+}
+
+fn follows_with_colon(text: &str, after_string: usize) -> bool {
+    text[after_string..]
+        .trim_start_matches(char::is_whitespace)
+        .starts_with(':')
+}
+
+fn lane_output_required_key(key: &str) -> u8 {
+    match key {
+        "\"lane_output_version\"" => 1 << 0,
+        "\"task_restatement\"" => 1 << 1,
+        "\"verdict\"" => 1 << 2,
+        "\"confidence\"" => 1 << 3,
+        "\"claims\"" => 1 << 4,
+        "\"residuals\"" => 1 << 5,
+        "\"uncertainties\"" => 1 << 6,
+        _ => 0,
+    }
+}
+
+fn has_complete_object_at_start(text: &str) -> bool {
+    if !text.starts_with('{') {
+        return false;
+    }
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for character in text.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else {
+                match character {
+                    '\\' => escaped = true,
+                    '"' => in_string = false,
+                    '\n' | '\r' => in_string = false,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        match character {
+            '"' if depth > 0 => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn contains_json_candidate(text: &str) -> bool {
+    if text.contains("```json") || text.contains("\"lane_output") {
+        return true;
+    }
+    text.match_indices('{').any(|(start, _)| {
+        text[start + 1..]
+            .trim_start_matches(char::is_whitespace)
+            .starts_with(['"', '}'])
+    })
 }
 
 fn fenced_json_blocks(text: &str) -> Vec<&str> {
@@ -1455,6 +1730,125 @@ mod tests {
     }
 
     #[test]
+    fn codewhale_exec_is_explicit_and_role_contract_is_not_repeated_in_prompt() {
+        let args = codewhale_args(Path::new("/lane"), "model", false, "task prompt".into());
+        let exec = args.iter().position(|arg| arg == "exec").unwrap();
+        let auto = args.iter().position(|arg| arg == "--auto").unwrap();
+        assert!(exec < auto);
+        assert_eq!(args.iter().filter(|arg| *arg == "exec").count(), 1);
+
+        let system = args
+            .iter()
+            .position(|arg| arg == "--append-system-prompt")
+            .map(|index| &args[index + 1])
+            .unwrap();
+        assert_eq!(system, ROLE_CONTRACT);
+        assert_eq!(args.last().unwrap(), "task prompt");
+        assert!(!args.last().unwrap().contains(ROLE_CONTRACT));
+    }
+
+    #[test]
+    fn codewhale_parser_prefers_latest_valid_complete_object() {
+        let old = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "old result",
+            "verdict": "old verdict",
+            "confidence": 0.2,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let latest = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "latest {result}",
+            "verdict": "latest verdict with an escaped quote: \"ok\"",
+            "confidence": 0.9,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let content = format!(
+            "analysis with an unmatched {{ brace\n{old}\n{{\"note\":\"not LaneOutput\"}}\n{latest}"
+        );
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+
+        let parsed = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap();
+        assert_eq!(parsed.task_restatement, "latest {result}");
+        assert_eq!(
+            parsed.verdict,
+            "latest verdict with an escaped quote: \"ok\""
+        );
+    }
+
+    #[test]
+    fn codewhale_parser_rejects_truncated_only_json() {
+        let content = r#"analysis first
+```json
+{"lane_output_version":"1.0","task_restatement":"cut off""#;
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+
+        let error = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("contains no valid LaneOutput"));
+    }
+
+    #[test]
+    fn codewhale_parser_never_falls_back_past_a_truncated_final_lane_output() {
+        let old = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "stale draft",
+            "verdict": "must not be accepted",
+            "confidence": 0.2,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let content = format!(
+            "{old}\n```json\n{{\"lane_output_version\":\"1.0\",\"task_restatement\":\"final but truncated\""
+        );
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+
+        let error = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("contains no valid LaneOutput"));
+    }
+
+    #[test]
+    fn codewhale_parser_filters_large_numbers_of_non_lane_objects() {
+        let output = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "bounded task",
+            "verdict": "only the final candidate is schema validated",
+            "confidence": 0.9,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let mut content = String::with_capacity(1_000_000);
+        for _ in 0..2_048 {
+            content.push_str("{\"noise\":");
+        }
+        content.push_str("{}");
+        for _ in 0..2_048 {
+            content.push('}');
+        }
+        content.push('\n');
+        for _ in 0..20_000 {
+            content.push_str("{\"note\":{\"nested\":true}}\n");
+        }
+        content.push_str(&output.to_string());
+
+        let blocks = lane_output_object_blocks(&content);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].required_key_mask, LANE_OUTPUT_REQUIRED_KEY_MASK);
+
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+        let parsed = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap();
+        assert_eq!(
+            parsed.verdict,
+            "only the final candidate is schema validated"
+        );
+    }
+
+    #[test]
     fn text_parser_accepts_a_fenced_lane_output_after_preamble() {
         let output = serde_json::json!({
             "lane_output_version": "1.0",
@@ -1468,6 +1862,94 @@ mod tests {
         let text = format!("analysis preamble\n```json\n{output}\n```\n");
         let parsed = parse_output(OutputKind::TextJson, text.as_bytes()).unwrap();
         assert_eq!(parsed.confidence, 0.8);
+    }
+
+    #[test]
+    fn json_event_error_extraction_requires_the_typed_error_envelope() {
+        let canonical = "Text repetition detected: repeated n-grams after 2 recovery attempts. Session terminated.";
+        let stream = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "content", "part": {"text": canonical}}),
+            serde_json::json!({
+                "type": "error",
+                "error": {"name": "UnknownError", "data": {"message": canonical}}
+            })
+        );
+        let error = structured_stream_error(OutputKind::JsonEvents, stream.as_bytes()).unwrap();
+        assert_eq!(error.name.as_deref(), Some("UnknownError"));
+        assert_eq!(error.message, canonical);
+
+        let prose_only = serde_json::json!({"type": "content", "part": {"text": canonical}});
+        assert_eq!(
+            structured_stream_error(
+                OutputKind::JsonEvents,
+                serde_json::to_string(&prose_only).unwrap().as_bytes()
+            ),
+            None
+        );
+        assert_eq!(
+            structured_stream_error(OutputKind::TextJson, stream.as_bytes()),
+            None
+        );
+    }
+
+    #[test]
+    fn codewhale_retry_completion_requires_valid_events_and_no_json_candidate() {
+        let stream = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({"type": "content", "content": "analysis without final JSON"}),
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        assert!(codewhale_completed_without_json_candidate(
+            stream.as_bytes()
+        ));
+
+        let incomplete = serde_json::json!({
+            "type": "metadata",
+            "meta": {"status": "completed"}
+        });
+        assert!(!codewhale_completed_without_json_candidate(
+            incomplete.to_string().as_bytes()
+        ));
+        assert!(!codewhale_completed_without_json_candidate(
+            b"model prose mentioning completed and done"
+        ));
+
+        let malformed = format!(
+            "not-json\n{}\n{}\n",
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        assert!(!codewhale_completed_without_json_candidate(
+            malformed.as_bytes()
+        ));
+
+        let schema_invalid = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({
+                "type": "content",
+                "content": "{\"lane_output_version\":\"1.0\",\"task_restatement\":\"missing fields\"}"
+            }),
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        assert!(!codewhale_completed_without_json_candidate(
+            schema_invalid.as_bytes()
+        ));
+
+        let truncated = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({
+                "type": "content",
+                "content": "```json\n{\"lane_output_version\":\"1.0\",\"verdict\":\"cut off"
+            }),
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        assert!(!codewhale_completed_without_json_candidate(
+            truncated.as_bytes()
+        ));
     }
 
     #[test]

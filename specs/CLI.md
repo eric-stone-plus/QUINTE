@@ -114,7 +114,10 @@ blocks continuation rather than silently creating a different trial.
 
 `resume` first reconciles scheduler-owned child records using PID plus process
 start identity. A verified orphan from a dead worker is terminated before the
-lane can be retried; a reused bare PID is never signalled.
+lane can be retried; a reused bare PID is never signalled. Every existing
+`attempt-<n>` directory counts against the fixed attempt budget, including one
+left by a crash before output capture, so restart cannot reset or bypass the
+budget.
 
 Use a new run for a changed question, policy, or evidence snapshot.
 
@@ -361,7 +364,7 @@ appropriate. Do not edit them to advance a run.
       R2/<route-id>/
         accepted.json
         attempt-<n>/...
-      R3/cc/attempt-1/...
+      R3/cc/attempt-<n>/...
     r3/
       evidence-packet.json
       cc-response.json

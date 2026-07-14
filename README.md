@@ -49,11 +49,19 @@ must produce closed-schema JSON on its assigned route or the phase does not
 pass.
 
 R2 is scheduler-serialized and paced: the default policy leaves at least ten
-seconds between R2 transport starts. A trusted adapter transport error with an
-exact rate-limit code or nonzero-exit 429 marker stays on the same route and is
-retried with bounded exponential backoff and deterministic jitter. The cooldown
-deadline is persisted, so `resume` cannot bypass it. A valid model answer that
-mentions `429` is ordinary review content and never controls retry behavior.
+seconds between R2 transport starts. Trusted retry signals stay on the same
+route and use a bounded attempt budget: host-observed timeouts, exact
+rate-limit errors, MiMo's structured repetition-detector terminal error, and a
+CodeWhale stream that reports both `completed` and `done` but contains no JSON
+candidate. Backoff is bounded and deterministically jittered, and persisted
+cooldowns prevent `resume` from bypassing a wait.
+
+Untrusted output text never controls retry behavior. Outside those exact
+terminal signals, invalid UTF-8, JSON, or schema output is non-retryable; a
+model merely mentioning `429`, timeout, or repetition is ordinary review
+content. Output captured at a host timeout is accepted only when it is a
+complete, strict LaneOutput whose `evidence_refs` and `closure_evidence` entries
+are empty or exactly match snapshot refs in the run's snapshot manifest.
 
 ## Quick Start
 

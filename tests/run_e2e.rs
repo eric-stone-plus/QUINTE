@@ -592,6 +592,507 @@ fn r2_rate_limit_retries_same_route_with_persisted_scheduler_events() {
 }
 
 #[test]
+fn typed_mimo_repetition_error_retries_and_preserves_the_real_error() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(
+        temporary.path().join("fake-agent-repetition-party"),
+        "Party D\n",
+    )
+    .unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.roster[3].adapter = "fake_mimo".into();
+    policy.max_attempts = 2;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Does a typed MiMo repetition failure recover?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::WaitingHm
+    );
+    assert!(
+        store
+            .run_dir(&created.run_id)
+            .join("lanes/R1/fake-3/attempt-2/stdout.bin")
+            .is_file()
+    );
+    assert!(
+        store
+            .run_dir(&created.run_id)
+            .join("lanes/R1/fake-3/accepted.json")
+            .is_file()
+    );
+    let events = store.events(&created.run_id).unwrap();
+    let failed = events
+        .iter()
+        .find(|event| {
+            event.event_type == "lane.finished"
+                && event.phase.as_deref() == Some("R1")
+                && event.party_id.as_deref() == Some("Party D")
+                && event.attempt == Some(1)
+        })
+        .unwrap();
+    assert_eq!(failed.data["accepted"], false);
+    assert_eq!(failed.data["retryable"], true);
+    assert_eq!(failed.data["failure_class"], "transient_adapter");
+    assert_eq!(
+        failed.data["error"],
+        "Text repetition detected: repeated n-grams after 2 recovery attempts. Session terminated."
+    );
+    assert!(events.iter().any(|event| {
+        event.event_type == "lane.retry_scheduled"
+            && event.party_id.as_deref() == Some("Party D")
+            && event.attempt == Some(1)
+            && event.data["source"] == "adapter_structured_error"
+    }));
+    assert!(events.iter().any(|event| {
+        event.event_type == "lane.finished"
+            && event.party_id.as_deref() == Some("Party D")
+            && event.attempt == Some(2)
+            && event.data["accepted"] == true
+    }));
+}
+
+#[test]
+fn typed_mimo_repetition_stops_after_the_bounded_attempts() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(
+        temporary.path().join("fake-agent-repetition-party"),
+        "Party D\n",
+    )
+    .unwrap();
+    fs::write(
+        temporary.path().join("fake-agent-repetition-always"),
+        "true\n",
+    )
+    .unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.roster[3].adapter = "fake_mimo".into();
+    policy.max_attempts = 2;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Does bounded retry stop?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::Failed
+    );
+    assert!(
+        store
+            .run_dir(&created.run_id)
+            .join("lanes/R1/fake-3/attempt-2/stdout.bin")
+            .is_file()
+    );
+    assert!(
+        !store
+            .run_dir(&created.run_id)
+            .join("lanes/R1/fake-3/attempt-3")
+            .exists()
+    );
+    let events = store.events(&created.run_id).unwrap();
+    let exhausted = events
+        .iter()
+        .find(|event| {
+            event.event_type == "lane.finished"
+                && event.party_id.as_deref() == Some("Party D")
+                && event.attempt == Some(2)
+        })
+        .unwrap();
+    assert_eq!(exhausted.data["failure_class"], "transient_adapter");
+    assert_eq!(exhausted.data["retryable"], false);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| {
+                event.event_type == "lane.retry_scheduled"
+                    && event.party_id.as_deref() == Some("Party D")
+            })
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn timeout_recovers_a_flushed_valid_output_without_retrying() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(
+        temporary.path().join("fake-agent-timeout-output-party"),
+        "Party A\n",
+    )
+    .unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.max_attempts = 2;
+    policy.timeout_seconds = 5;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Can a complete output be recovered at timeout?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::WaitingHm
+    );
+    let lane_dir = store.run_dir(&created.run_id).join("lanes/R1/fake-0");
+    assert!(lane_dir.join("accepted.json").is_file());
+    assert!(!lane_dir.join("attempt-2").exists());
+    let events = store.events(&created.run_id).unwrap();
+    let recovered = events
+        .iter()
+        .find(|event| {
+            event.event_type == "lane.finished"
+                && event.phase.as_deref() == Some("R1")
+                && event.party_id.as_deref() == Some("Party A")
+                && event.attempt == Some(1)
+        })
+        .unwrap();
+    assert_eq!(recovered.data["timed_out"], true);
+    assert_eq!(recovered.data["accepted"], true);
+    assert_eq!(recovered.data["output_recovered_after_timeout"], true);
+    assert!(recovered.data["error"].is_null());
+    assert!(recovered.data["failure_class"].is_null());
+    assert_eq!(recovered.data["retryable"], false);
+}
+
+#[test]
+fn invalid_evidence_is_rejected_before_lane_finished_is_recorded_as_accepted() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(
+        temporary.path().join("fake-agent-invalid-evidence-party"),
+        "Party A\n",
+    )
+    .unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let policy = fake_policy(&executable);
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Can invalid evidence be marked accepted?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::Failed
+    );
+    let events = store.events(&created.run_id).unwrap();
+    let rejected = events
+        .iter()
+        .find(|event| {
+            event.event_type == "lane.finished"
+                && event.phase.as_deref() == Some("R1")
+                && event.party_id.as_deref() == Some("Party A")
+        })
+        .unwrap();
+    assert_eq!(rejected.data["accepted"], false);
+    assert_eq!(rejected.data["retryable"], false);
+    assert_eq!(rejected.data["failure_class"], "non_retryable");
+    assert!(
+        rejected.data["error"]
+            .as_str()
+            .unwrap()
+            .contains("unresolvable evidence reference")
+    );
+}
+
+#[test]
+fn completed_codewhale_without_lane_output_retries_on_the_same_route() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(
+        temporary.path().join("fake-agent-codewhale-invalid-party"),
+        "Party A\n",
+    )
+    .unwrap();
+    fs::write(
+        temporary.path().join("fake-agent-codewhale-party"),
+        "Party A\n",
+    )
+    .unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.roster[0].adapter = "fake_codewhale".into();
+    policy.max_attempts = 2;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Does a completed CodeWhale stream retry without LaneOutput?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::WaitingHm
+    );
+    let events = store.events(&created.run_id).unwrap();
+    let first = events
+        .iter()
+        .find(|event| {
+            event.event_type == "lane.finished"
+                && event.phase.as_deref() == Some("R1")
+                && event.party_id.as_deref() == Some("Party A")
+                && event.attempt == Some(1)
+        })
+        .unwrap();
+    assert_eq!(first.data["accepted"], false);
+    assert_eq!(first.data["failure_class"], "transient_adapter");
+    assert_eq!(first.data["retryable"], true);
+    assert!(events.iter().any(|event| {
+        event.event_type == "lane.finished"
+            && event.phase.as_deref() == Some("R1")
+            && event.party_id.as_deref() == Some("Party A")
+            && event.attempt == Some(2)
+            && event.data["accepted"] == true
+    }));
+}
+
+#[test]
+fn r3_auditor_timeout_uses_the_same_bounded_retry_policy() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(
+        temporary.path().join("fake-agent-timeout-once-party"),
+        "Auditor B\n",
+    )
+    .unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.max_attempts = 2;
+    policy.timeout_seconds = 5;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Does the R3 auditor recover from a transient timeout?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::WaitingHm
+    );
+    let events = store.events(&created.run_id).unwrap();
+    assert!(events.iter().any(|event| {
+        event.event_type == "lane.finished"
+            && event.phase.as_deref() == Some("R3")
+            && event.party_id.as_deref() == Some("Auditor B")
+            && event.attempt == Some(1)
+            && event.data["failure_class"] == "timeout"
+            && event.data["retryable"] == true
+    }));
+    assert!(events.iter().any(|event| {
+        event.event_type == "lane.finished"
+            && event.phase.as_deref() == Some("R3")
+            && event.party_id.as_deref() == Some("Auditor B")
+            && event.attempt == Some(2)
+            && event.data["accepted"] == true
+    }));
+    assert!(
+        store
+            .run_dir(&created.run_id)
+            .join("r3/cc-response.json")
+            .is_file()
+    );
+}
+
+#[test]
+fn resume_consumes_existing_attempt_directories_in_r1_and_r3() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.max_attempts = 2;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Does resume preserve the attempt budget?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+    let run_dir = store.run_dir(&created.run_id);
+
+    // A crash after creating an attempt directory still consumes that attempt.
+    fs::create_dir_all(run_dir.join("lanes/R1/fake-0/attempt-1")).unwrap();
+    fs::create_dir_all(run_dir.join("lanes/R3/cc/attempt-1")).unwrap();
+
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::WaitingHm
+    );
+    assert!(
+        run_dir
+            .join("lanes/R1/fake-0/attempt-2/stdout.bin")
+            .is_file()
+    );
+    assert!(run_dir.join("lanes/R3/cc/attempt-2/stdout.bin").is_file());
+    let events = store.events(&created.run_id).unwrap();
+    assert!(events.iter().any(|event| {
+        event.event_type == "lane.finished"
+            && event.phase.as_deref() == Some("R1")
+            && event.party_id.as_deref() == Some("Party A")
+            && event.attempt == Some(2)
+            && event.data["accepted"] == true
+    }));
+    assert!(events.iter().any(|event| {
+        event.event_type == "lane.finished"
+            && event.phase.as_deref() == Some("R3")
+            && event.party_id.as_deref() == Some("Auditor B")
+            && event.attempt == Some(2)
+            && event.data["accepted"] == true
+    }));
+}
+
+#[test]
+fn resume_fails_closed_when_an_existing_attempt_consumed_the_budget() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let policy = fake_policy(&executable);
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Can resume bypass an exhausted attempt budget?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+    let lane_dir = store.run_dir(&created.run_id).join("lanes/R1/fake-0");
+    fs::create_dir_all(lane_dir.join("attempt-1")).unwrap();
+
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::Failed
+    );
+    assert!(!lane_dir.join("attempt-2").exists());
+    let manifest = store.load_manifest(&created.run_id).unwrap();
+    let error = manifest.error.unwrap();
+    assert_eq!(error.code, "r1_failed");
+    assert!(error.message.contains("attempt budget exhausted"));
+}
+
+#[test]
 fn valid_model_prose_containing_429_never_triggers_retry() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();

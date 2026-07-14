@@ -86,7 +86,13 @@ fn validate_with_options(policy: &Policy, allow_fake: bool) -> anyhow::Result<()
             bail!("{} has an empty executable or adapter", route.party_id);
         }
         let expected_adapters = ["codewhale", "opencode", "kilo", "mimo", "omp"];
-        if route.adapter != expected_adapters[index] && !(allow_fake && route.adapter == "fake") {
+        if route.adapter != expected_adapters[index]
+            && !(allow_fake
+                && matches!(
+                    route.adapter.as_str(),
+                    "fake" | "fake_mimo" | "fake_codewhale"
+                ))
+        {
             bail!(
                 "{} must use the fixed {} adapter",
                 route.party_id,

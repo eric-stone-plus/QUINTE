@@ -66,6 +66,7 @@ struct LaneAccepted {
 
 struct LaneJob {
     route: crate::model::RoutePolicy,
+    attempt: usize,
     handle: thread::JoinHandle<anyhow::Result<AttemptOutcome>>,
 }
 
@@ -126,18 +127,23 @@ struct AttemptOutcome {
 enum RetryClass {
     Never,
     TransientTimeout,
+    TransientAdapter,
     RateLimited(RateLimitSignal),
 }
 
 impl RetryClass {
     fn is_retryable(self) -> bool {
-        matches!(self, Self::TransientTimeout | Self::RateLimited(_))
+        matches!(
+            self,
+            Self::TransientTimeout | Self::TransientAdapter | Self::RateLimited(_)
+        )
     }
 
     fn failure_class(self) -> &'static str {
         match self {
             Self::Never => "non_retryable",
             Self::TransientTimeout => "timeout",
+            Self::TransientAdapter => "transient_adapter",
             Self::RateLimited(_) => "rate_limit",
         }
     }
@@ -183,6 +189,7 @@ fn retry_schedule(
     let (source, retry_after_seconds) = match retry {
         RetryClass::Never => bail!("non-retryable failure has no retry schedule"),
         RetryClass::TransientTimeout => ("host_timeout", None),
+        RetryClass::TransientAdapter => ("adapter_structured_error", None),
         RetryClass::RateLimited(signal) => (signal.source, signal.retry_after_seconds),
     };
     if retry_after_seconds.is_some_and(|delay| delay > policy.retry_backoff_max_seconds) {
@@ -981,37 +988,69 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
         {
             return Ok(RunStatus::Cancelled);
         }
-        let lane_root = run_dir.join("lanes/R3/cc/attempt-1");
-        let invocation = adapters::build(
-            &policy.auditor,
-            "R3",
-            &manifest.effective_model,
-            &evidence_packet_path,
-            &lane_root,
-            policy.timeout_seconds,
-        )?;
-        let outcome = run_attempt(
-            store,
-            &manifest,
-            &policy.auditor.party_id,
-            &policy.auditor.adapter,
-            "R3",
-            1,
-            invocation,
-            policy.timeout_seconds,
-            policy.max_output_bytes,
-        )?;
-        if outcome.cancelled {
-            return cancel_run(store, &mut manifest);
-        }
-        let lane = outcome.output.ok_or_else(|| {
-            anyhow!(
-                "Auditor B failed: {}",
-                outcome.error.unwrap_or_else(|| "invalid output".into())
+        let lane_result = (|| {
+            let attempt = next_attempt(&run_dir, "R3", "cc", policy.max_attempts)?;
+            let lane_root = run_dir.join(format!("lanes/R3/cc/attempt-{attempt}"));
+            let invocation = adapters::build(
+                &policy.auditor,
+                "R3",
+                &manifest.effective_model,
+                &evidence_packet_path,
+                &lane_root,
+                policy.timeout_seconds,
+            )?;
+            let outcome = run_attempt(
+                store,
+                &manifest,
+                &policy.auditor.party_id,
+                &policy.auditor.adapter,
+                "R3",
+                attempt,
+                invocation,
+                policy.timeout_seconds,
+                policy.max_output_bytes,
+                policy.max_attempts,
+            )?;
+            await_lane_output(
+                store,
+                &mut manifest,
+                &policy,
+                "R3",
+                &evidence_packet_path,
+                &run_dir,
+                &policy.auditor,
+                attempt,
+                outcome,
             )
-        })?;
+        })();
+        let lane = match lane_result {
+            Err(error) => {
+                if manifest.status == RunStatus::Cancelled {
+                    return Ok(RunStatus::Cancelled);
+                }
+                return fail_run(
+                    store,
+                    &mut manifest,
+                    RunStatus::Failed,
+                    "r3_cc_failed",
+                    &error.to_string(),
+                    false,
+                );
+            }
+            Ok(Some(lane)) => lane,
+            Ok(None) => return cancel_run(store, &mut manifest),
+        };
         let verdict = arbiter_from_lane(lane);
-        write_json(&cc_path, &verdict)?;
+        if let Err(error) = write_json(&cc_path, &verdict) {
+            return fail_run(
+                store,
+                &mut manifest,
+                RunStatus::Failed,
+                "r3_cc_failed",
+                &format!("cannot persist Auditor B verdict: {error:#}"),
+                false,
+            );
+        }
     }
 
     if let Err(error) = ensure_r3_input_receipt(
@@ -1526,6 +1565,58 @@ fn phase_complete(run_dir: &Path, phase: &str, policy: &Policy) -> bool {
     })
 }
 
+fn next_attempt(
+    run_dir: &Path,
+    phase: &str,
+    route_id: &str,
+    max_attempts: usize,
+) -> anyhow::Result<usize> {
+    if max_attempts == 0 {
+        bail!("attempt budget exhausted for {phase}/{route_id}: maximum is zero");
+    }
+    let route_dir = run_dir.join("lanes").join(phase).join(route_id);
+    let mut highest = 0_usize;
+    match fs::read_dir(&route_dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.with_context(|| {
+                    format!("cannot inspect attempt history entry for {phase}/{route_id}")
+                })?;
+                if !entry.file_type()?.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else {
+                    continue;
+                };
+                let Some(number) = name.strip_prefix("attempt-") else {
+                    continue;
+                };
+                let Ok(number) = number.parse::<usize>() else {
+                    continue;
+                };
+                if number > 0 {
+                    highest = highest.max(number);
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("cannot inspect attempt history for {phase}/{route_id}"));
+        }
+    }
+    let attempt = highest
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("attempt history overflow for {phase}/{route_id}"))?;
+    if attempt > max_attempts {
+        bail!(
+            "attempt budget exhausted for {phase}/{route_id}: {highest} of {max_attempts} attempts already consumed"
+        );
+    }
+    Ok(attempt)
+}
+
 fn load_phase(run_dir: &Path, phase: &str, policy: &Policy) -> anyhow::Result<Vec<LaneAccepted>> {
     policy
         .roster
@@ -1580,9 +1671,19 @@ fn run_phase(
     if phase == "R1" {
         // Build every invocation before spawning any lane. A later build failure can
         // therefore never detach already-running children from scheduler ownership.
+        let pending = missing
+            .into_iter()
+            .map(|route| {
+                let attempt = next_attempt(&run_dir, phase, &route.route_id, policy.max_attempts)?;
+                Ok((route, attempt))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let mut prepared = Vec::new();
-        for route in missing {
-            let lane_root = run_dir.join(format!("lanes/{phase}/{}/attempt-1", route.route_id));
+        for (route, attempt) in pending {
+            let lane_root = run_dir.join(format!(
+                "lanes/{phase}/{}/attempt-{attempt}",
+                route.route_id
+            ));
             let invocation = adapters::build(
                 &route,
                 phase,
@@ -1591,11 +1692,11 @@ fn run_phase(
                 &lane_root,
                 policy.timeout_seconds,
             )?;
-            prepared.push((route, invocation));
+            prepared.push((route, attempt, invocation));
         }
 
         let mut jobs = Vec::new();
-        for (route, invocation) in prepared {
+        for (route, attempt, invocation) in prepared {
             let job_store = Store::new(store.home().to_path_buf());
             let job_manifest = manifest.clone();
             let party_id = route.party_id.clone();
@@ -1603,8 +1704,10 @@ fn run_phase(
             let phase_owned = phase.to_string();
             let timeout = policy.timeout_seconds;
             let max_output_bytes = policy.max_output_bytes;
+            let max_attempts = policy.max_attempts;
             jobs.push(LaneJob {
                 route,
+                attempt,
                 handle: thread::spawn(move || {
                     run_attempt(
                         &job_store,
@@ -1612,10 +1715,11 @@ fn run_phase(
                         &party_id,
                         &adapter,
                         &phase_owned,
-                        1,
+                        attempt,
                         invocation,
                         timeout,
                         max_output_bytes,
+                        max_attempts,
                     )
                 }),
             });
@@ -1627,7 +1731,7 @@ fn run_phase(
         let mut join_errors = Vec::new();
         for job in jobs {
             match job.handle.join() {
-                Ok(Ok(outcome)) => finished.push((job.route, outcome)),
+                Ok(Ok(outcome)) => finished.push((job.route, job.attempt, outcome)),
                 Ok(Err(error)) => join_errors.push(format!("{}: {error:#}", job.route.party_id)),
                 Err(_) => join_errors.push(format!("{}: lane worker panicked", job.route.party_id)),
             }
@@ -1637,7 +1741,7 @@ fn run_phase(
         }
 
         let mut acceptance_errors = Vec::new();
-        for (route, outcome) in finished {
+        for (route, attempt, outcome) in finished {
             if let Err(error) = accept_or_retry_lane(
                 store,
                 manifest,
@@ -1646,7 +1750,7 @@ fn run_phase(
                 &packet_path,
                 &run_dir,
                 &route,
-                1,
+                attempt,
                 outcome,
                 &mut accepted,
             ) {
@@ -1658,8 +1762,12 @@ fn run_phase(
         }
     } else {
         for route in missing {
-            wait_for_r2_pacing(store, manifest, &route, 1)?;
-            let lane_root = run_dir.join(format!("lanes/{phase}/{}/attempt-1", route.route_id));
+            let attempt = next_attempt(&run_dir, phase, &route.route_id, policy.max_attempts)?;
+            wait_for_r2_pacing(store, manifest, &route, attempt)?;
+            let lane_root = run_dir.join(format!(
+                "lanes/{phase}/{}/attempt-{attempt}",
+                route.route_id
+            ));
             let invocation = adapters::build(
                 &route,
                 phase,
@@ -1674,16 +1782,17 @@ fn run_phase(
                 &route.party_id,
                 &route.adapter,
                 phase,
-                1,
+                attempt,
                 invocation,
                 policy.timeout_seconds,
                 policy.max_output_bytes,
+                policy.max_attempts,
             )?;
             persist_r2_pacing(
                 store,
                 manifest,
                 &route,
-                1,
+                attempt,
                 policy.r2_min_interval_seconds,
                 "inter_call_pacing",
             )?;
@@ -1695,7 +1804,7 @@ fn run_phase(
                 &packet_path,
                 &run_dir,
                 &route,
-                1,
+                attempt,
                 outcome,
                 &mut accepted,
             )?;
@@ -1768,96 +1877,163 @@ fn accept_or_retry_lane(
         }
         let error = outcome
             .error
+            .take()
             .unwrap_or_else(|| "invalid adapter output".to_string());
         if !retry_allowed(outcome.retry, attempt, policy.max_attempts) {
             bail!("{} failed in {phase}: {error}", route.party_id);
         }
-        let schedule = retry_schedule(
-            outcome.retry,
-            policy,
-            &manifest.run_id,
-            phase,
-            &route.route_id,
-            attempt,
-        )?;
-        let due_at = Utc::now()
-            + ChronoDuration::from_std(schedule.delay)
-                .context("retry delay exceeds supported duration")?;
-        if phase == "R2" {
-            let reason = if matches!(outcome.retry, RetryClass::RateLimited(_)) {
-                "rate_limit_backoff"
-            } else {
-                "retry_backoff"
-            };
-            persist_r2_pacing_until(store, manifest, route, attempt, due_at, reason)?;
-        }
-        store.event(
-            &manifest.run_id,
-            "lane.retry_scheduled",
-            Some(phase),
-            Some(&route.party_id),
-            Some(attempt),
-            json!({
-                "route_id": route.route_id,
-                "failure_class": outcome.retry.failure_class(),
-                "source": schedule.source,
-                "base_backoff_seconds": policy.retry_backoff_seconds,
-                "exponential_backoff_seconds": schedule.backoff_seconds,
-                "jitter_milliseconds": schedule.jitter.as_millis(),
-                "retry_after_seconds": schedule.retry_after_seconds,
-                "delay_milliseconds": schedule.delay.as_millis(),
-                "due_at": due_at.to_rfc3339()
-            }),
-        )?;
-        if phase == "R2" {
-            wait_for_r2_pacing(store, manifest, route, attempt + 1)?;
-        } else if wait_cancellable(run_dir, schedule.delay) {
-            cancel_run(store, manifest)?;
-            bail!("run cancelled");
-        }
-        attempt += 1;
-        store.event(
-            &manifest.run_id,
-            "lane.retry_started",
-            Some(phase),
-            Some(&route.party_id),
-            Some(attempt),
-            json!({"route_id": route.route_id}),
-        )?;
-        let lane_root = run_dir.join(format!(
-            "lanes/{phase}/{}/attempt-{attempt}",
-            route.route_id
-        ));
-        let invocation = adapters::build(
-            route,
-            phase,
-            &manifest.effective_model,
-            packet_path,
-            &lane_root,
-            policy.timeout_seconds,
-        )?;
-        outcome = run_attempt(
+        (attempt, outcome) = run_retry_attempt(
             store,
             manifest,
-            &route.party_id,
-            &route.adapter,
+            policy,
             phase,
+            packet_path,
+            run_dir,
+            route,
             attempt,
-            invocation,
-            policy.timeout_seconds,
-            policy.max_output_bytes,
+            outcome.retry,
         )?;
-        if phase == "R2" {
-            persist_r2_pacing(
-                store,
-                manifest,
-                route,
-                attempt,
-                policy.r2_min_interval_seconds,
-                "inter_call_pacing",
-            )?;
-        }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn await_lane_output(
+    store: &Store,
+    manifest: &mut RunManifest,
+    policy: &Policy,
+    phase: &str,
+    packet_path: &Path,
+    run_dir: &Path,
+    route: &crate::model::RoutePolicy,
+    mut attempt: usize,
+    mut outcome: AttemptOutcome,
+) -> anyhow::Result<Option<LaneOutput>> {
+    loop {
+        if outcome.cancelled || cancellation_requested(run_dir) {
+            return Ok(None);
+        }
+        if let Some(output) = outcome.output {
+            validate_evidence_refs(&output, run_dir)?;
+            return Ok(Some(output));
+        }
+        let error = outcome
+            .error
+            .take()
+            .unwrap_or_else(|| "invalid adapter output".to_string());
+        if !retry_allowed(outcome.retry, attempt, policy.max_attempts) {
+            bail!("{} failed in {phase}: {error}", route.party_id);
+        }
+        (attempt, outcome) = run_retry_attempt(
+            store,
+            manifest,
+            policy,
+            phase,
+            packet_path,
+            run_dir,
+            route,
+            attempt,
+            outcome.retry,
+        )?;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_retry_attempt(
+    store: &Store,
+    manifest: &mut RunManifest,
+    policy: &Policy,
+    phase: &str,
+    packet_path: &Path,
+    run_dir: &Path,
+    route: &crate::model::RoutePolicy,
+    attempt: usize,
+    retry: RetryClass,
+) -> anyhow::Result<(usize, AttemptOutcome)> {
+    let schedule = retry_schedule(
+        retry,
+        policy,
+        &manifest.run_id,
+        phase,
+        &route.route_id,
+        attempt,
+    )?;
+    let due_at = Utc::now()
+        + ChronoDuration::from_std(schedule.delay)
+            .context("retry delay exceeds supported duration")?;
+    if phase == "R2" {
+        let reason = if matches!(retry, RetryClass::RateLimited(_)) {
+            "rate_limit_backoff"
+        } else {
+            "retry_backoff"
+        };
+        persist_r2_pacing_until(store, manifest, route, attempt, due_at, reason)?;
+    }
+    store.event(
+        &manifest.run_id,
+        "lane.retry_scheduled",
+        Some(phase),
+        Some(&route.party_id),
+        Some(attempt),
+        json!({
+            "route_id": route.route_id,
+            "failure_class": retry.failure_class(),
+            "source": schedule.source,
+            "base_backoff_seconds": policy.retry_backoff_seconds,
+            "exponential_backoff_seconds": schedule.backoff_seconds,
+            "jitter_milliseconds": schedule.jitter.as_millis(),
+            "retry_after_seconds": schedule.retry_after_seconds,
+            "delay_milliseconds": schedule.delay.as_millis(),
+            "due_at": due_at.to_rfc3339()
+        }),
+    )?;
+    if phase == "R2" {
+        wait_for_r2_pacing(store, manifest, route, attempt + 1)?;
+    } else if wait_cancellable(run_dir, schedule.delay) {
+        cancel_run(store, manifest)?;
+        bail!("run cancelled");
+    }
+    let attempt = attempt + 1;
+    store.event(
+        &manifest.run_id,
+        "lane.retry_started",
+        Some(phase),
+        Some(&route.party_id),
+        Some(attempt),
+        json!({"route_id": route.route_id}),
+    )?;
+    let lane_route_id = if phase == "R3" { "cc" } else { &route.route_id };
+    let lane_root = run_dir.join(format!("lanes/{phase}/{lane_route_id}/attempt-{attempt}"));
+    let invocation = adapters::build(
+        route,
+        phase,
+        &manifest.effective_model,
+        packet_path,
+        &lane_root,
+        policy.timeout_seconds,
+    )?;
+    let outcome = run_attempt(
+        store,
+        manifest,
+        &route.party_id,
+        &route.adapter,
+        phase,
+        attempt,
+        invocation,
+        policy.timeout_seconds,
+        policy.max_output_bytes,
+        policy.max_attempts,
+    )?;
+    if phase == "R2" {
+        persist_r2_pacing(
+            store,
+            manifest,
+            route,
+            attempt,
+            policy.r2_min_interval_seconds,
+            "inter_call_pacing",
+        )?;
+    }
+    Ok((attempt, outcome))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1871,6 +2047,7 @@ fn run_attempt(
     invocation: Invocation,
     timeout_seconds: u64,
     max_output_bytes: usize,
+    max_attempts: usize,
 ) -> anyhow::Result<AttemptOutcome> {
     let sensitive_cleanup = adapters::SensitiveCleanup::new(&invocation);
     if cancellation_requested(&store.run_dir(&manifest.run_id)) {
@@ -1978,40 +2155,36 @@ fn run_attempt(
     atomic_write(&lane_root.join("stdout.bin"), &stdout)?;
     atomic_write(&lane_root.join("stderr.bin"), &stderr)?;
     let exit_code = status.and_then(|status| status.code());
-    let mut error = None;
-    let mut retry = RetryClass::Never;
-    let mut output = if cancelled {
-        error = Some("cancelled".into());
-        None
-    } else if timed_out {
-        error = Some("timeout".into());
-        retry = RetryClass::TransientTimeout;
-        None
-    } else if output_limit_exceeded {
-        error = Some(format!(
-            "adapter output exceeds policy limit of {max_output_bytes} bytes"
-        ));
-        None
-    } else if exit_code != Some(0) {
-        if let Some(signal) = classify_rate_limit(adapter, &stdout, &stderr) {
+    let (mut output, mut error, mut retry) = evaluate_attempt_output(
+        adapter,
+        invocation.output_kind,
+        &stdout,
+        &stderr,
+        exit_code,
+        timed_out,
+        cancelled,
+        output_limit_exceeded,
+        max_output_bytes,
+    );
+    let mut output_recovered_after_timeout = timed_out && output.is_some();
+    if let Some(candidate) = output.as_ref()
+        && let Err(validation_error) =
+            validate_evidence_refs(candidate, &store.run_dir(&manifest.run_id))
+    {
+        output = None;
+        if timed_out {
             error = Some(format!(
-                "adapter transport was rate limited ({})",
-                signal.source
+                "timeout; captured LaneOutput failed evidence validation: {validation_error}"
             ));
-            retry = RetryClass::RateLimited(signal);
+            retry = RetryClass::TransientTimeout;
         } else {
-            error = Some(format!("adapter exited {:?}", exit_code));
+            error = Some(format!(
+                "LaneOutput failed evidence validation: {validation_error}"
+            ));
+            retry = RetryClass::Never;
         }
-        None
-    } else {
-        match adapters::parse_output_with_limit(invocation.output_kind, &stdout, max_output_bytes) {
-            Ok(output) => Some(output),
-            Err(parse_error) => {
-                error = Some(parse_error.to_string());
-                None
-            }
-        }
-    };
+        output_recovered_after_timeout = false;
+    }
     let cleanup_error = sensitive_cleanup.finish().err();
     if let Some(cleanup_error) = cleanup_error {
         output = None;
@@ -2019,6 +2192,7 @@ fn run_attempt(
             "temporary credential cleanup failed: {cleanup_error:#}"
         ));
         retry = RetryClass::Never;
+        output_recovered_after_timeout = false;
     }
     store.event(
         &manifest.run_id,
@@ -2029,8 +2203,9 @@ fn run_attempt(
         json!({
             "exit_code": exit_code, "timed_out": timed_out, "cancelled": cancelled,
             "accepted": output.is_some(), "error": error,
+            "output_recovered_after_timeout": output_recovered_after_timeout,
             "failure_class": output.is_none().then(|| retry.failure_class()),
-            "retryable": output.is_none() && retry.is_retryable(),
+            "retryable": output.is_none() && retry_allowed(retry, attempt, max_attempts),
             "stdout_bytes": stdout.len(), "stderr_bytes": stderr.len(),
             "duration_ms": started.elapsed().as_millis()
         }),
@@ -2041,6 +2216,102 @@ fn run_attempt(
         cancelled,
         retry,
     })
+}
+
+#[cfg(test)]
+const MIMO_REPETITION_ERROR: &str =
+    "Text repetition detected: repeated n-grams after 2 recovery attempts. Session terminated.";
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_attempt_output(
+    adapter: &str,
+    output_kind: adapters::OutputKind,
+    stdout: &[u8],
+    stderr: &[u8],
+    exit_code: Option<i32>,
+    timed_out: bool,
+    cancelled: bool,
+    output_limit_exceeded: bool,
+    max_output_bytes: usize,
+) -> (Option<LaneOutput>, Option<String>, RetryClass) {
+    if cancelled {
+        return (None, Some("cancelled".into()), RetryClass::Never);
+    }
+    if output_limit_exceeded {
+        return (
+            None,
+            Some(format!(
+                "adapter output exceeds policy limit of {max_output_bytes} bytes"
+            )),
+            RetryClass::Never,
+        );
+    }
+    if matches!(adapter, "mimo" | "fake_mimo")
+        && let Some(adapter_error) = adapters::structured_stream_error(output_kind, stdout)
+    {
+        if is_mimo_repetition_error(&adapter_error.message) {
+            return (
+                None,
+                Some(adapter_error.message),
+                RetryClass::TransientAdapter,
+            );
+        }
+        if exit_code != Some(0)
+            && let Some(signal) = classify_rate_limit(adapter, stdout, stderr)
+        {
+            return (
+                None,
+                Some(format!(
+                    "adapter transport was rate limited ({})",
+                    signal.source
+                )),
+                RetryClass::RateLimited(signal),
+            );
+        }
+        return (None, Some(adapter_error.message), RetryClass::Never);
+    }
+    if timed_out {
+        return match adapters::parse_output_with_limit(output_kind, stdout, max_output_bytes) {
+            Ok(output) => (Some(output), None, RetryClass::Never),
+            Err(_) => (None, Some("timeout".into()), RetryClass::TransientTimeout),
+        };
+    }
+    if exit_code != Some(0) {
+        return if let Some(signal) = classify_rate_limit(adapter, stdout, stderr) {
+            (
+                None,
+                Some(format!(
+                    "adapter transport was rate limited ({})",
+                    signal.source
+                )),
+                RetryClass::RateLimited(signal),
+            )
+        } else {
+            (
+                None,
+                Some(format!("adapter exited {:?}", exit_code)),
+                RetryClass::Never,
+            )
+        };
+    }
+    match adapters::parse_output_with_limit(output_kind, stdout, max_output_bytes) {
+        Ok(output) => (Some(output), None, RetryClass::Never),
+        Err(parse_error) => {
+            let retry = if matches!(adapter, "codewhale" | "fake_codewhale")
+                && adapters::codewhale_completed_without_json_candidate(stdout)
+            {
+                RetryClass::TransientAdapter
+            } else {
+                RetryClass::Never
+            };
+            (None, Some(parse_error.to_string()), retry)
+        }
+    }
+}
+
+fn is_mimo_repetition_error(message: &str) -> bool {
+    message.starts_with("Text repetition detected: repeated n-grams after ")
+        && message.contains(" recovery attempts")
 }
 
 fn classify_rate_limit(adapter: &str, stdout: &[u8], stderr: &[u8]) -> Option<RateLimitSignal> {
@@ -2635,12 +2906,17 @@ fn validate_evidence_refs(output: &LaneOutput, run_dir: &Path) -> anyhow::Result
                 .iter()
                 .flat_map(|residual| residual.evidence_refs.iter()),
         )
+        .chain(
+            output
+                .residuals
+                .iter()
+                .flat_map(|residual| residual.closure_evidence.iter()),
+        )
     {
         if reference.is_empty() {
             continue;
         }
-        let base = reference.split('#').next().unwrap_or(reference);
-        if !base.starts_with("snapshot://") || !valid.contains(&base) {
+        if !reference.starts_with("snapshot://") || !valid.contains(&reference.as_str()) {
             bail!("unresolvable evidence reference: {reference}");
         }
     }
@@ -2913,14 +3189,393 @@ fn process_alive(pid: u32) -> bool {
 
 #[cfg(test)]
 mod retry_tests {
-    use super::{RateLimitSignal, RetryClass, classify_rate_limit, retry_allowed, retry_schedule};
+    use super::{
+        MIMO_REPETITION_ERROR, RateLimitSignal, RetryClass, classify_rate_limit,
+        evaluate_attempt_output, next_attempt, retry_allowed, retry_schedule,
+        validate_evidence_refs,
+    };
+    use crate::adapters::OutputKind;
+    use crate::model::{LaneOutput, SnapshotEntry, SnapshotManifest};
     use crate::policy::default_policy;
+
+    const VALID_SNAPSHOT_REF: &str = "snapshot://evidence.txt";
+
+    #[test]
+    fn next_attempt_uses_persisted_directories_and_ignores_malformed_entries() {
+        let temporary = tempfile::tempdir().unwrap();
+        let route_dir = temporary.path().join("lanes/R1/party-a");
+        std::fs::create_dir_all(route_dir.join("attempt-1")).unwrap();
+        std::fs::create_dir_all(route_dir.join("attempt-not-a-number")).unwrap();
+        std::fs::create_dir_all(route_dir.join("attempt-0")).unwrap();
+        std::fs::create_dir_all(route_dir.join("unrelated")).unwrap();
+        std::fs::write(route_dir.join("attempt-99"), b"not a directory").unwrap();
+
+        assert_eq!(
+            next_attempt(temporary.path(), "R1", "party-a", 3).unwrap(),
+            2
+        );
+        assert_eq!(
+            next_attempt(temporary.path(), "R2", "party-a", 3).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn next_attempt_fails_closed_after_budget_is_consumed() {
+        let temporary = tempfile::tempdir().unwrap();
+        let route_dir = temporary.path().join("lanes/R3/cc");
+        for attempt in 1..=3 {
+            std::fs::create_dir_all(route_dir.join(format!("attempt-{attempt}"))).unwrap();
+        }
+
+        let error = next_attempt(temporary.path(), "R3", "cc", 3).unwrap_err();
+        assert!(error.to_string().contains("attempt budget exhausted"));
+        assert!(!route_dir.join("attempt-4").exists());
+    }
+
+    fn evidence_test_run_dir() -> tempfile::TempDir {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temporary.path().join("input")).unwrap();
+        let manifest = SnapshotManifest {
+            snapshot_version: "1.0".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            entries: vec![SnapshotEntry {
+                snapshot_ref: VALID_SNAPSHOT_REF.into(),
+                source_name: "evidence.txt".into(),
+                sha256: "sha256:test".into(),
+                bytes: 1,
+                media_type: "text/plain".into(),
+            }],
+            attachments: Vec::new(),
+            total_bytes: 1,
+        };
+        std::fs::write(
+            temporary.path().join("input/snapshot-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        temporary
+    }
+
+    fn lane_output_with_evidence(claim_ref: &str, closure_ref: &str) -> LaneOutput {
+        serde_json::from_value(serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "test evidence references",
+            "verdict": "test verdict",
+            "confidence": 0.9,
+            "claims": [{
+                "id": "claim-1",
+                "statement": "test claim",
+                "evidence_refs": if claim_ref.is_empty() { vec![] } else { vec![claim_ref] },
+                "confidence": 0.9,
+                "category": "test"
+            }],
+            "residuals": [{
+                "id": "residual-1",
+                "severity": "MEDIUM",
+                "residual_type": "test",
+                "source": "test",
+                "finding": "test residual",
+                "evidence_refs": [],
+                "disposition": "unresolved",
+                "required_closure": "provide evidence",
+                "closure_state": "open",
+                "closure_evidence": if closure_ref.is_empty() {
+                    vec![]
+                } else {
+                    vec![closure_ref]
+                },
+                "scope": "test"
+            }],
+            "uncertainties": []
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn exact_snapshot_evidence_reference_is_accepted() {
+        let temporary = evidence_test_run_dir();
+        let output = lane_output_with_evidence(VALID_SNAPSHOT_REF, VALID_SNAPSHOT_REF);
+
+        validate_evidence_refs(&output, temporary.path()).unwrap();
+    }
+
+    #[test]
+    fn snapshot_reference_with_arbitrary_fragment_is_rejected() {
+        let temporary = evidence_test_run_dir();
+        let output = lane_output_with_evidence(
+            &format!("{VALID_SNAPSHOT_REF}#arbitrary"),
+            VALID_SNAPSHOT_REF,
+        );
+
+        let error = validate_evidence_refs(&output, temporary.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unresolvable evidence reference")
+        );
+    }
+
+    #[test]
+    fn invalid_closure_evidence_reference_is_rejected() {
+        let temporary = evidence_test_run_dir();
+        let output = lane_output_with_evidence(VALID_SNAPSHOT_REF, "snapshot://missing.txt");
+
+        let error = validate_evidence_refs(&output, temporary.path()).unwrap_err();
+        assert!(error.to_string().contains("snapshot://missing.txt"));
+    }
 
     #[test]
     fn only_host_observed_timeout_is_retryable() {
         assert!(retry_allowed(RetryClass::TransientTimeout, 1, 2));
         assert!(!retry_allowed(RetryClass::TransientTimeout, 2, 2));
         assert!(!retry_allowed(RetryClass::Never, 1, 2));
+    }
+
+    #[test]
+    fn timeout_accepts_only_a_complete_schema_valid_lane_output() {
+        let valid = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "bounded task",
+            "verdict": "complete before timeout",
+            "confidence": 0.9,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let bytes = serde_json::to_vec(&valid).unwrap();
+        let (output, error, retry) = evaluate_attempt_output(
+            "fake",
+            OutputKind::DirectJson,
+            &bytes,
+            b"",
+            None,
+            true,
+            false,
+            false,
+            bytes.len(),
+        );
+        assert_eq!(output.unwrap().verdict, "complete before timeout");
+        assert_eq!(error, None);
+        assert_eq!(retry, RetryClass::Never);
+
+        let (output, error, retry) = evaluate_attempt_output(
+            "fake",
+            OutputKind::DirectJson,
+            br#"{"lane_output_version":"1.0""#,
+            b"",
+            None,
+            true,
+            false,
+            false,
+            1024,
+        );
+        assert!(output.is_none());
+        assert_eq!(error.as_deref(), Some("timeout"));
+        assert_eq!(retry, RetryClass::TransientTimeout);
+    }
+
+    #[test]
+    fn mimo_repetition_event_is_retryable_without_matching_model_prose() {
+        let event = serde_json::json!({
+            "type": "error",
+            "error": {"name": "UnknownError", "data": {"message": MIMO_REPETITION_ERROR}}
+        });
+        let bytes = serde_json::to_vec(&event).unwrap();
+        let (output, error, retry) = evaluate_attempt_output(
+            "mimo",
+            OutputKind::JsonEvents,
+            &bytes,
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert_eq!(error.as_deref(), Some(MIMO_REPETITION_ERROR));
+        assert_eq!(retry, RetryClass::TransientAdapter);
+
+        let prose = serde_json::json!({"type": "content", "part": {"text": MIMO_REPETITION_ERROR}});
+        let bytes = serde_json::to_vec(&prose).unwrap();
+        let (_, error, retry) = evaluate_attempt_output(
+            "mimo",
+            OutputKind::JsonEvents,
+            &bytes,
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(error.unwrap().contains("no valid LaneOutput"));
+        assert_eq!(retry, RetryClass::Never);
+    }
+
+    #[test]
+    fn noncanonical_mimo_error_preserves_message_without_retrying() {
+        let event = serde_json::json!({
+            "type": "error",
+            "error": {"name": "UnknownError", "data": {"message": "permanent model failure"}}
+        });
+        let bytes = serde_json::to_vec(&event).unwrap();
+        let (_, error, retry) = evaluate_attempt_output(
+            "mimo",
+            OutputKind::JsonEvents,
+            &bytes,
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert_eq!(error.as_deref(), Some("permanent model failure"));
+        assert_eq!(retry, RetryClass::Never);
+    }
+
+    #[test]
+    fn completed_codewhale_without_lane_output_is_bounded_retryable() {
+        let stdout = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({"type": "content", "content": "analysis without final JSON"}),
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        let (output, error, retry) = evaluate_attempt_output(
+            "codewhale",
+            OutputKind::CodewhaleStream,
+            stdout.as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert!(error.unwrap().contains("no valid LaneOutput"));
+        assert_eq!(retry, RetryClass::TransientAdapter);
+
+        let truncated = serde_json::json!({
+            "type": "content",
+            "content": "analysis without final JSON"
+        });
+        let (_, _, retry) = evaluate_attempt_output(
+            "codewhale",
+            OutputKind::CodewhaleStream,
+            truncated.to_string().as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert_eq!(retry, RetryClass::Never);
+    }
+
+    #[test]
+    fn typed_mimo_error_wins_over_an_earlier_valid_candidate() {
+        let valid = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "bounded task",
+            "verdict": "partial output",
+            "confidence": 0.9,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let content = serde_json::json!({"type": "content", "part": {"text": valid.to_string()}});
+        let error_event = serde_json::json!({
+            "type": "error",
+            "error": {"name": "UnknownError", "data": {"message": MIMO_REPETITION_ERROR}}
+        });
+        let bytes = format!("{content}\n{error_event}\n").into_bytes();
+        let (output, error, retry) = evaluate_attempt_output(
+            "mimo",
+            OutputKind::JsonEvents,
+            &bytes,
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert_eq!(error.as_deref(), Some(MIMO_REPETITION_ERROR));
+        assert_eq!(retry, RetryClass::TransientAdapter);
+    }
+
+    #[test]
+    fn typed_mimo_error_wins_when_transport_times_out_or_exits_nonzero() {
+        let error_event = serde_json::json!({
+            "type": "error",
+            "error": {
+                "name": "UnknownError",
+                "data": {
+                    "message": "Text repetition detected: repeated n-grams after 2 recovery attempts; session terminated by detector."
+                }
+            }
+        });
+        for (exit_code, timed_out) in [(None, true), (Some(1), false)] {
+            let (output, error, retry) = evaluate_attempt_output(
+                "mimo",
+                OutputKind::JsonEvents,
+                error_event.to_string().as_bytes(),
+                b"",
+                exit_code,
+                timed_out,
+                false,
+                false,
+                4096,
+            );
+            assert!(output.is_none());
+            assert!(error.unwrap().starts_with("Text repetition detected"));
+            assert_eq!(retry, RetryClass::TransientAdapter);
+        }
+    }
+
+    #[test]
+    fn typed_mimo_rate_limit_keeps_rate_limit_retry_precedence() {
+        let event = serde_json::json!({
+            "type": "error",
+            "error": {
+                "name": "RateLimitError",
+                "data": {
+                    "message": "Too Many Requests",
+                    "status": 429,
+                    "retry_after": 7
+                }
+            }
+        });
+        let (output, error, retry) = evaluate_attempt_output(
+            "mimo",
+            OutputKind::JsonEvents,
+            event.to_string().as_bytes(),
+            b"",
+            Some(1),
+            false,
+            false,
+            false,
+            4096,
+        );
+
+        assert!(output.is_none());
+        assert_eq!(
+            error.as_deref(),
+            Some("adapter transport was rate limited (adapter_structured_error)")
+        );
+        assert_eq!(
+            retry,
+            RetryClass::RateLimited(RateLimitSignal {
+                source: "adapter_structured_error",
+                retry_after_seconds: Some(7),
+            })
+        );
     }
 
     #[test]

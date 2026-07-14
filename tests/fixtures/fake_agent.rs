@@ -85,6 +85,118 @@ fn main() {
         }
     }
 
+    let repetition_party = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fake-agent-repetition-party");
+    if fs::read_to_string(repetition_party).is_ok_and(|party| party.trim() == args[1]) {
+        let counter = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fake-agent-repetition-count");
+        let attempts = fs::read_to_string(&counter)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        fs::write(counter, (attempts + 1).to_string()).unwrap();
+        let always = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fake-agent-repetition-always")
+            .exists();
+        if attempts == 0 || always {
+            print!(
+                r#"{{"type":"error","error":{{"name":"UnknownError","data":{{"message":"Text repetition detected: repeated n-grams after 2 recovery attempts. Session terminated."}}}}}}"#
+            );
+            return;
+        }
+        print!("{}", serde_json_string(VALID_OUTPUT));
+        return;
+    }
+
+    let timeout_output_party = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fake-agent-timeout-output-party");
+    if args[0] == "R1"
+        && fs::read_to_string(timeout_output_party).is_ok_and(|party| party.trim() == args[1])
+    {
+        print!("{VALID_OUTPUT}");
+        io::stdout().flush().unwrap();
+        thread::sleep(Duration::from_secs(10));
+        return;
+    }
+
+    let timeout_once_party = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fake-agent-timeout-once-party");
+    if fs::read_to_string(timeout_once_party).is_ok_and(|party| party.trim() == args[1]) {
+        let counter = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fake-agent-timeout-once-count");
+        let attempts = fs::read_to_string(&counter)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        fs::write(counter, (attempts + 1).to_string()).unwrap();
+        if attempts == 0 {
+            thread::sleep(Duration::from_secs(10));
+        }
+    }
+
+    let codewhale_invalid_party = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fake-agent-codewhale-invalid-party");
+    if args[0] == "R1"
+        && fs::read_to_string(codewhale_invalid_party)
+            .is_ok_and(|party| party.trim() == args[1])
+    {
+        let counter = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fake-agent-codewhale-invalid-count");
+        let attempts = fs::read_to_string(&counter)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        fs::write(counter, (attempts + 1).to_string()).unwrap();
+        let content = if attempts == 0 {
+            "analysis completed without a LaneOutput".to_string()
+        } else {
+            VALID_OUTPUT.to_string()
+        };
+        println!(r#"{{"type":"content","content":{}}}"#, json_string(&content));
+        println!(r#"{{"type":"metadata","meta":{{"status":"completed"}}}}"#);
+        println!(r#"{{"type":"done"}}"#);
+        return;
+    }
+
+    let codewhale_party = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fake-agent-codewhale-party");
+    if fs::read_to_string(codewhale_party).is_ok_and(|party| party.trim() == args[1]) {
+        println!(
+            r#"{{"type":"content","content":{}}}"#,
+            json_string(VALID_OUTPUT)
+        );
+        println!(r#"{{"type":"metadata","meta":{{"status":"completed"}}}}"#);
+        println!(r#"{{"type":"done"}}"#);
+        return;
+    }
+
     let invalid_party = std::env::current_exe()
         .unwrap()
         .parent()
@@ -110,6 +222,22 @@ fn main() {
                 break;
             }
         }
+        return;
+    }
+
+    let invalid_evidence_party = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fake-agent-invalid-evidence-party");
+    if fs::read_to_string(invalid_evidence_party).is_ok_and(|party| party.trim() == args[1]) {
+        print!(
+            "{}",
+            VALID_OUTPUT.replace(
+                "\"claims\": []",
+                r#""claims": [{"id":"claim-1","statement":"invalid evidence","evidence_refs":["snapshot://missing.txt"],"confidence":0.5,"category":"test"}]"#,
+            )
+        );
         return;
     }
 
@@ -156,4 +284,28 @@ fn main() {
         }
         _ => print!("{VALID_OUTPUT}"),
     }
+}
+
+fn json_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            other => escaped.push(other),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn serde_json_string(value: &str) -> String {
+    format!(
+        r#"{{"type":"content","part":{{"text":{}}}}}"#,
+        json_string(value)
+    )
 }

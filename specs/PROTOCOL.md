@@ -166,23 +166,43 @@ kernel-enforced backend is available.
 
 ## Failure and Retry Semantics
 
-Retries remain on the same route. The scheduler retries only trusted transport
-failures identified from process supervision. These are a host-observed timeout
-or, on a failed transport, an adapter-appropriate structured error with exact
-status `429`/canonical rate-limit code or an explicit nonzero-exit stderr 429
-marker. Free-form quota language is not sufficient. Valid model prose never
-controls retry policy; text containing `429`, `timeout`, `auth`, or similar
-words is ordinary untrusted output.
+Retries remain on the same route and are limited by the policy attempt budget.
+The scheduler recognizes only these trusted transient conditions:
 
-The retry delay is the greater of a trusted numeric `Retry-After` and bounded
-exponential backoff, with deterministic per-run jitter. Retry-After values over
-the policy ceiling fail rather than causing an unbounded wait. Scheduling,
-waiting, and retry start decisions are written to the ordered run event ledger,
-and waits remain responsive to explicit cancellation.
+- a host-observed timeout;
+- on a failed transport, an adapter-appropriate structured error with exact
+  status `429`/canonical rate-limit code or an explicit nonzero-exit stderr 429
+  marker;
+- MiMo's structured terminal error from its repetition detector; or
+- a CodeWhale stream whose control events report both `completed` and `done`
+  but whose content contains no JSON candidate.
+
+The MiMo condition must come from its structured error event, and the CodeWhale
+condition must come from its terminal control events with otherwise valid
+stream framing. Similar free-form model text is not trusted. A malformed event,
+truncated JSON candidate, or schema-invalid candidate is non-retryable even if
+CodeWhale later reports `completed` and `done`. Outside these exact terminal
+conditions, invalid UTF-8, JSON, or schema output is non-retryable. Valid model
+prose containing `429`, `timeout`, `auth`, `repetition`, or similar words is
+ordinary untrusted output and never controls retry policy.
+
+A host timeout does not automatically discard a complete output that was
+already captured. The scheduler may recover that output only if it validates
+against the strict LaneOutput schema and every non-empty `evidence_refs` and
+`closure_evidence` value exactly matches a `snapshot_ref` in the run's snapshot
+manifest. Constructed suffixes such as `#fragment` do not match. Otherwise the
+attempt remains a timeout and follows the same bounded retry policy.
+
+The retry delay is bounded exponential backoff with deterministic per-run
+jitter. For rate limits it is the greater of that delay and a trusted numeric
+`Retry-After`; Retry-After values over the policy ceiling fail rather than
+causing an unbounded wait. Scheduling, waiting, and retry start decisions are
+written to the ordered run event ledger, and waits remain responsive to
+explicit cancellation.
 
 The following failures are non-retryable and block the phase:
 
-- invalid UTF-8, JSON, or schema;
+- invalid UTF-8, JSON, or schema outside the exact terminal conditions above;
 - unknown output fields or identity/route claims;
 - invalid or outside-snapshot evidence references;
 - policy, model, roster, digest, or hm challenge mismatch;
