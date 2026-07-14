@@ -864,19 +864,18 @@ pub fn structured_stream_error(kind: OutputKind, stdout: &[u8]) -> Option<Adapte
         return None;
     }
     let text = std::str::from_utf8(stdout).ok()?;
-    text.lines().rev().find_map(|line| {
-        let value: Value = serde_json::from_str(line).ok()?;
-        if value.get("type").and_then(Value::as_str) != Some("error") {
-            return None;
-        }
-        let error = value.get("error")?;
-        let message = error.get("data")?.get("message")?.as_str()?.to_string();
-        let name = error
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        Some(AdapterStreamError { name, message })
-    })
+    let terminal = text.lines().rev().find(|line| !line.trim().is_empty())?;
+    let value: Value = serde_json::from_str(terminal).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("error") {
+        return None;
+    }
+    let error = value.get("error")?;
+    let message = error.get("data")?.get("message")?.as_str()?.to_string();
+    let name = error
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(AdapterStreamError { name, message })
 }
 
 pub fn codewhale_completed_without_json_candidate(stdout: &[u8]) -> bool {
@@ -993,24 +992,16 @@ fn codewhale_event_lines(text: &str) -> Vec<String> {
 }
 
 fn parse_last_complete_candidate(candidate: &str) -> Option<LaneOutput> {
-    if has_trailing_incomplete_lane_output(candidate) {
+    let blocks = lane_output_object_blocks(candidate);
+    let block = blocks.last()?;
+    let end = block.end?;
+    if candidate[end..].contains("```json") {
         return None;
     }
-    let block = lane_output_object_blocks(candidate).pop()?;
     if block.required_key_mask != LANE_OUTPUT_REQUIRED_KEY_MASK {
         return None;
     }
-    parse_and_validate(block.text.as_bytes(), LANE_OUTPUT_SCHEMA).ok()
-}
-
-fn has_trailing_incomplete_lane_output(text: &str) -> bool {
-    let Some(marker) = text.rfind("\"lane_output") else {
-        return false;
-    };
-    let Some(start) = text[..marker].rfind('{') else {
-        return false;
-    };
-    !has_complete_object_at_start(&text[start..])
+    parse_and_validate(&candidate.as_bytes()[block.start..end], LANE_OUTPUT_SCHEMA).ok()
 }
 
 fn parse_candidate(candidate: &str) -> Option<LaneOutput> {
@@ -1084,12 +1075,13 @@ struct ObjectFrame {
     array_depth: usize,
 }
 
-struct LaneOutputObjectBlock<'a> {
-    text: &'a str,
+struct LaneOutputObjectBlock {
+    start: usize,
+    end: Option<usize>,
     required_key_mask: u8,
 }
 
-fn lane_output_object_blocks(text: &str) -> Vec<LaneOutputObjectBlock<'_>> {
+fn lane_output_object_blocks(text: &str) -> Vec<LaneOutputObjectBlock> {
     let mut openings: Vec<ObjectFrame> = Vec::new();
     let mut blocks = Vec::new();
     let mut in_string = false;
@@ -1138,10 +1130,11 @@ fn lane_output_object_blocks(text: &str) -> Vec<LaneOutputObjectBlock<'_>> {
             }),
             '}' => {
                 if let Some(frame) = openings.pop()
-                    && frame.required_key_mask & 1 != 0
+                    && frame.required_key_mask != 0
                 {
                     blocks.push(LaneOutputObjectBlock {
-                        text: &text[frame.start..index + character.len_utf8()],
+                        start: frame.start,
+                        end: Some(index + character.len_utf8()),
                         required_key_mask: frame.required_key_mask,
                     });
                 }
@@ -1159,7 +1152,31 @@ fn lane_output_object_blocks(text: &str) -> Vec<LaneOutputObjectBlock<'_>> {
             _ => {}
         }
     }
-    blocks
+    blocks.extend(
+        openings
+            .into_iter()
+            .filter(|frame| frame.required_key_mask != 0)
+            .map(|frame| LaneOutputObjectBlock {
+                start: frame.start,
+                end: None,
+                required_key_mask: frame.required_key_mask,
+            }),
+    );
+    blocks.sort_by_key(|block| block.start);
+
+    // Nested claim/residual objects share keys such as `confidence`; only the
+    // outermost LaneOutput-like object is a top-level candidate.
+    let mut top_level: Vec<LaneOutputObjectBlock> = Vec::new();
+    for block in blocks {
+        if top_level
+            .last()
+            .is_some_and(|outer| outer.end.is_none_or(|end| block.start < end))
+        {
+            continue;
+        }
+        top_level.push(block);
+    }
+    top_level
 }
 
 fn follows_with_colon(text: &str, after_string: usize) -> bool {
@@ -1179,42 +1196,6 @@ fn lane_output_required_key(key: &str) -> u8 {
         "\"uncertainties\"" => 1 << 6,
         _ => 0,
     }
-}
-
-fn has_complete_object_at_start(text: &str) -> bool {
-    if !text.starts_with('{') {
-        return false;
-    }
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for character in text.chars() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else {
-                match character {
-                    '\\' => escaped = true,
-                    '"' => in_string = false,
-                    '\n' | '\r' => in_string = false,
-                    _ => {}
-                }
-            }
-            continue;
-        }
-        match character {
-            '"' if depth > 0 => in_string = true,
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-    }
-    false
 }
 
 fn contains_json_candidate(text: &str) -> bool {
@@ -1812,6 +1793,84 @@ mod tests {
     }
 
     #[test]
+    fn codewhale_parser_rejects_a_new_truncated_candidate_with_reordered_keys() {
+        let old = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "stale draft",
+            "verdict": "must not be accepted",
+            "confidence": 0.2,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let content = format!(
+            "{old}\n```json\n{{\"task_restatement\":\"final but truncated\",\"verdict\":\"new"
+        );
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+
+        let error = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("contains no valid LaneOutput"));
+    }
+
+    #[test]
+    fn codewhale_parser_never_falls_back_past_an_unclosed_json_fence() {
+        let old = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "stale draft",
+            "verdict": "must not be accepted",
+            "confidence": 0.2,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let content = format!("{old}\n```json\n{{");
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+
+        let error = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("contains no valid LaneOutput"));
+    }
+
+    #[test]
+    fn codewhale_parser_does_not_fall_back_from_a_complete_invalid_final_candidate() {
+        let old = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "stale draft",
+            "verdict": "must not be accepted",
+            "confidence": 0.2,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let invalid = serde_json::json!({
+            "task_restatement": "latest but invalid",
+            "verdict": "missing required fields"
+        });
+        let content = format!("{old}\n{invalid}");
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+
+        let error = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("contains no valid LaneOutput"));
+    }
+
+    #[test]
+    fn codewhale_parser_ignores_later_prose_braces() {
+        let output = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "current result",
+            "verdict": "accepted despite later prose braces",
+            "confidence": 0.9,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let content = format!("{output}\n中文分析里的 {{普通括号}} 不是 JSON 候选。");
+        let stream = serde_json::json!({"type": "content", "content": content}).to_string();
+
+        let parsed = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap();
+        assert_eq!(parsed.verdict, "accepted despite later prose braces");
+    }
+
+    #[test]
     fn codewhale_parser_filters_large_numbers_of_non_lane_objects() {
         let output = serde_json::json!({
             "lane_output_version": "1.0",
@@ -1868,7 +1927,7 @@ mod tests {
     fn json_event_error_extraction_requires_the_typed_error_envelope() {
         let canonical = "Text repetition detected: repeated n-grams after 2 recovery attempts. Session terminated.";
         let stream = format!(
-            "{}\n{}\n",
+            "{}\n{}\n\n  \n",
             serde_json::json!({"type": "content", "part": {"text": canonical}}),
             serde_json::json!({
                 "type": "error",
@@ -1889,6 +1948,15 @@ mod tests {
         );
         assert_eq!(
             structured_stream_error(OutputKind::TextJson, stream.as_bytes()),
+            None
+        );
+
+        let recovered = format!(
+            "{stream}{}\n",
+            serde_json::json!({"type": "content", "part": {"text": "recovered"}})
+        );
+        assert_eq!(
+            structured_stream_error(OutputKind::JsonEvents, recovered.as_bytes()),
             None
         );
     }

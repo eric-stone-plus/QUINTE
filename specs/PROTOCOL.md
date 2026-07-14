@@ -197,8 +197,9 @@ The retry delay is bounded exponential backoff with deterministic per-run
 jitter. For rate limits it is the greater of that delay and a trusted numeric
 `Retry-After`; Retry-After values over the policy ceiling fail rather than
 causing an unbounded wait. Scheduling, waiting, and retry start decisions are
-written to the ordered run event ledger, and waits remain responsive to
-explicit cancellation.
+written to the ordered run event ledger. Each lane's deadline is persisted
+before waiting, so `resume` cannot skip a pending cooldown; waits remain
+responsive to explicit cancellation.
 
 The following failures are non-retryable and block the phase:
 

@@ -3,6 +3,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use chrono::{Duration as ChronoDuration, Utc};
 use quinte::model::{
     ArbiterVerdict, Brief, HmResponse, HmSubmissionReceipt, HmSubmissionState, Policy, RunStatus,
     SandboxMode, TEXT_MODEL,
@@ -1107,6 +1108,145 @@ fn resume_consumes_existing_attempt_directories_in_r1_and_r3() {
             && event.attempt == Some(2)
             && event.data["accepted"] == true
     }));
+}
+
+#[test]
+fn resume_honors_a_persisted_r1_retry_deadline_before_starting_the_next_attempt() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.max_attempts = 2;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Does resume preserve a pending retry cooldown?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+    let run_dir = store.run_dir(&created.run_id);
+    let lane_dir = run_dir.join("lanes/R1/fake-0");
+    fs::create_dir_all(lane_dir.join("attempt-1")).unwrap();
+    let due_at = Utc::now() + ChronoDuration::milliseconds(10_000);
+    write_json(
+        &lane_dir.join("retry-deadline.json"),
+        &serde_json::json!({
+            "retry_state_version": "1.0",
+            "phase": "R1",
+            "route_id": "fake-0",
+            "previous_attempt": 1,
+            "next_attempt": 2,
+            "due_at": due_at.to_rfc3339(),
+            "failure_class": "timeout",
+            "source": "host_timeout"
+        }),
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::WaitingHm
+    );
+    assert!(started.elapsed() >= Duration::from_millis(8_000));
+    assert!(!lane_dir.join("retry-deadline.json").exists());
+    assert!(lane_dir.join("attempt-2/stdout.bin").is_file());
+    let events = store.events(&created.run_id).unwrap();
+    let retry_wait = events
+        .iter()
+        .find(|event| {
+            event.event_type == "lane.retry_wait"
+                && event.phase.as_deref() == Some("R1")
+                && event.party_id.as_deref() == Some("Party A")
+                && event.attempt == Some(2)
+        })
+        .unwrap();
+    assert_eq!(retry_wait.data["previous_attempt"], 1);
+    assert_eq!(retry_wait.data["source"], "host_timeout");
+    assert!(retry_wait.data["delay_milliseconds"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn resume_honors_a_persisted_r3_retry_deadline_before_starting_the_auditor() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.max_attempts = 2;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: "1.0".into(),
+            question: "Does resume preserve the auditor retry cooldown?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+    let run_dir = store.run_dir(&created.run_id);
+    let lane_dir = run_dir.join("lanes/R3/cc");
+    fs::create_dir_all(lane_dir.join("attempt-1")).unwrap();
+    // R1/R2 run before R3 is reached, so keep this deadline comfortably ahead.
+    let due_at = Utc::now() + ChronoDuration::milliseconds(10_000);
+    write_json(
+        &lane_dir.join("retry-deadline.json"),
+        &serde_json::json!({
+            "retry_state_version": "1.0",
+            "phase": "R3",
+            "route_id": "fake-cc",
+            "previous_attempt": 1,
+            "next_attempt": 2,
+            "due_at": due_at.to_rfc3339(),
+            "failure_class": "timeout",
+            "source": "host_timeout"
+        }),
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::WaitingHm
+    );
+    assert!(started.elapsed() >= Duration::from_millis(8_000));
+    assert!(!lane_dir.join("retry-deadline.json").exists());
+    assert!(lane_dir.join("attempt-2/stdout.bin").is_file());
+    let events = store.events(&created.run_id).unwrap();
+    let retry_wait = events
+        .iter()
+        .find(|event| {
+            event.event_type == "lane.retry_wait"
+                && event.phase.as_deref() == Some("R3")
+                && event.party_id.as_deref() == Some("Auditor B")
+                && event.attempt == Some(2)
+        })
+        .unwrap();
+    assert_eq!(retry_wait.data["previous_attempt"], 1);
+    assert_eq!(retry_wait.data["source"], "host_timeout");
+    assert!(retry_wait.data["delay_milliseconds"].as_u64().unwrap() > 0);
 }
 
 #[test]

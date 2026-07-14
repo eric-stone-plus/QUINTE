@@ -357,14 +357,18 @@ appropriate. Do not edit them to advance a run.
     lanes/
       R1/<route-id>/
         accepted.json
+        retry-deadline.json
         attempt-<n>/
           invocation.json
           stdout.bin
           stderr.bin
       R2/<route-id>/
         accepted.json
+        retry-deadline.json
         attempt-<n>/...
-      R3/cc/attempt-<n>/...
+      R3/cc/
+        retry-deadline.json
+        attempt-<n>/...
     r3/
       evidence-packet.json
       cc-response.json
@@ -388,10 +392,11 @@ artifact. A completed/degraded manifest contains the SHA-256 of `result.json`;
 `inspect` and `wait` reject a missing or modified final result.
 
 `diagnostics/r2-rate-state.json` is the scheduler-owned next-transport deadline
-for serial R2 pacing or retry backoff. It is written atomically before a wait
-and honored by `resume`. The event ledger records `r2.pacing_wait`,
-`lane.retry_scheduled`, and `lane.retry_started` with typed timing metadata;
-model output cannot create or override these decisions.
+for serial R2 pacing. A lane-local `retry-deadline.json` records retry backoff
+for every phase. Both are written atomically before a wait and honored by
+`resume`. The event ledger records `r2.pacing_wait`, `lane.retry_scheduled`,
+`lane.retry_wait`, and `lane.retry_started` with typed timing metadata; model
+output cannot create or override these decisions.
 
 Not every path exists in every run. A failed R1 run has no R2 or R3 products;
 a `waiting_hm` run has no `hm-response.json`, `result.json`, or `report.md`.

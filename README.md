@@ -152,6 +152,7 @@ The default state root is `~/.quinte`:
     events.jsonl
     input/
     lanes/
+      <phase>/<route-id>/retry-deadline.json
     packets/
     r3/
     diagnostics/

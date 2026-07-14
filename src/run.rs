@@ -165,6 +165,19 @@ struct R2RateState {
     attempt: usize,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RetryDeadlineState {
+    retry_state_version: String,
+    phase: String,
+    route_id: String,
+    previous_attempt: usize,
+    next_attempt: usize,
+    due_at: String,
+    failure_class: String,
+    source: String,
+}
+
 fn retry_allowed(retry: RetryClass, attempt: usize, max_attempts: usize) -> bool {
     retry.is_retryable() && attempt < max_attempts
 }
@@ -222,6 +235,95 @@ fn retry_schedule(
 
 fn r2_rate_state_path(run_dir: &Path) -> PathBuf {
     run_dir.join("diagnostics/r2-rate-state.json")
+}
+
+fn retry_deadline_path(run_dir: &Path, phase: &str, route_id: &str) -> PathBuf {
+    let lane_route_id = if phase == "R3" { "cc" } else { route_id };
+    run_dir
+        .join("lanes")
+        .join(phase)
+        .join(lane_route_id)
+        .join("retry-deadline.json")
+}
+
+fn persist_retry_deadline(
+    run_dir: &Path,
+    phase: &str,
+    route: &crate::model::RoutePolicy,
+    previous_attempt: usize,
+    due_at: chrono::DateTime<Utc>,
+    retry: RetryClass,
+    source: &str,
+) -> anyhow::Result<()> {
+    let next_attempt = previous_attempt
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("attempt history overflow for {phase}/{}", route.route_id))?;
+    write_json(
+        &retry_deadline_path(run_dir, phase, &route.route_id),
+        &RetryDeadlineState {
+            retry_state_version: "1.0".into(),
+            phase: phase.into(),
+            route_id: route.route_id.clone(),
+            previous_attempt,
+            next_attempt,
+            due_at: due_at.to_rfc3339(),
+            failure_class: retry.failure_class().into(),
+            source: source.into(),
+        },
+    )
+}
+
+fn wait_for_retry_deadline(
+    store: &Store,
+    manifest: &mut RunManifest,
+    phase: &str,
+    route: &crate::model::RoutePolicy,
+    attempt: usize,
+) -> anyhow::Result<()> {
+    let run_dir = store.run_dir(&manifest.run_id);
+    let path = retry_deadline_path(&run_dir, phase, &route.route_id);
+    if !path.exists() {
+        return Ok(());
+    }
+    let state: RetryDeadlineState = read_json(&path)?;
+    if state.retry_state_version != "1.0"
+        || state.phase != phase
+        || state.route_id != route.route_id
+        || state.next_attempt != attempt
+        || state.previous_attempt.checked_add(1) != Some(state.next_attempt)
+    {
+        bail!(
+            "retry deadline does not match {phase}/{} attempt {attempt}",
+            route.route_id
+        );
+    }
+    let due_at = chrono::DateTime::parse_from_rfc3339(&state.due_at)?.with_timezone(&Utc);
+    let delay = (due_at - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+    store.event(
+        &manifest.run_id,
+        "lane.retry_wait",
+        Some(phase),
+        Some(&route.party_id),
+        Some(attempt),
+        json!({
+            "route_id": route.route_id,
+            "previous_attempt": state.previous_attempt,
+            "failure_class": state.failure_class,
+            "source": state.source,
+            "delay_milliseconds": delay.as_millis(),
+            "due_at": due_at.to_rfc3339()
+        }),
+    )?;
+    if !delay.is_zero() && wait_cancellable(&run_dir, delay) {
+        cancel_run(store, manifest)?;
+        bail!("run cancelled");
+    }
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 fn persist_r2_pacing(
@@ -990,6 +1092,7 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
         }
         let lane_result = (|| {
             let attempt = next_attempt(&run_dir, "R3", "cc", policy.max_attempts)?;
+            wait_for_retry_deadline(store, &mut manifest, "R3", &policy.auditor, attempt)?;
             let lane_root = run_dir.join(format!("lanes/R3/cc/attempt-{attempt}"));
             let invocation = adapters::build(
                 &policy.auditor,
@@ -1680,6 +1783,7 @@ fn run_phase(
             .collect::<anyhow::Result<Vec<_>>>()?;
         let mut prepared = Vec::new();
         for (route, attempt) in pending {
+            wait_for_retry_deadline(store, manifest, phase, &route, attempt)?;
             let lane_root = run_dir.join(format!(
                 "lanes/{phase}/{}/attempt-{attempt}",
                 route.route_id
@@ -1763,6 +1867,7 @@ fn run_phase(
     } else {
         for route in missing {
             let attempt = next_attempt(&run_dir, phase, &route.route_id, policy.max_attempts)?;
+            wait_for_retry_deadline(store, manifest, phase, &route, attempt)?;
             wait_for_r2_pacing(store, manifest, &route, attempt)?;
             let lane_root = run_dir.join(format!(
                 "lanes/{phase}/{}/attempt-{attempt}",
@@ -1960,6 +2065,15 @@ fn run_retry_attempt(
     let due_at = Utc::now()
         + ChronoDuration::from_std(schedule.delay)
             .context("retry delay exceeds supported duration")?;
+    persist_retry_deadline(
+        run_dir,
+        phase,
+        route,
+        attempt,
+        due_at,
+        retry,
+        schedule.source,
+    )?;
     if phase == "R2" {
         let reason = if matches!(retry, RetryClass::RateLimited(_)) {
             "rate_limit_backoff"
@@ -1986,13 +2100,13 @@ fn run_retry_attempt(
             "due_at": due_at.to_rfc3339()
         }),
     )?;
+    let attempt = attempt
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("attempt history overflow for {phase}/{}", route.route_id))?;
+    wait_for_retry_deadline(store, manifest, phase, route, attempt)?;
     if phase == "R2" {
-        wait_for_r2_pacing(store, manifest, route, attempt + 1)?;
-    } else if wait_cancellable(run_dir, schedule.delay) {
-        cancel_run(store, manifest)?;
-        bail!("run cancelled");
+        wait_for_r2_pacing(store, manifest, route, attempt)?;
     }
-    let attempt = attempt + 1;
     store.event(
         &manifest.run_id,
         "lane.retry_started",
