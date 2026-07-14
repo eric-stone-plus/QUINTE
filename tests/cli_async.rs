@@ -232,13 +232,20 @@ fn run_returns_queued_immediately_and_worker_reaches_waiting_hm() {
         .unwrap();
     let stdout = read_in_background(child.stdout.take().unwrap());
     let stderr = read_in_background(child.stderr.take().unwrap());
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let parent_deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let worker_deadline = std::time::Instant::now() + Duration::from_secs(300);
     let mut parent_exited = false;
     while !parent_exited || !started.is_file() {
-        parent_exited |= child.try_wait().unwrap().is_some();
+        if !parent_exited {
+            parent_exited = child.try_wait().unwrap().is_some();
+            assert!(
+                std::time::Instant::now() < parent_deadline,
+                "run CLI stayed attached to its background worker"
+            );
+        }
         assert!(
-            std::time::Instant::now() < deadline,
-            "run CLI or its detached worker did not reach the handshake"
+            started.is_file() || std::time::Instant::now() < worker_deadline,
+            "detached worker did not reach the fake-agent handshake"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

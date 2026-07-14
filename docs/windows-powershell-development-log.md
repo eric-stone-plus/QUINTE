@@ -156,3 +156,10 @@ Date: 2026-07-14
   serialized, removing architecture- and load-dependent test races.
 - The detached-worker regression uses a fake-agent start/release handshake
   instead of treating a fixed wall-clock limit as proof of process detachment.
+- The detached-worker regression keeps a separate 120-second guard for the
+  parent CLI return and a 300-second readiness budget for the worker handshake.
+  This preserves the detachment assertion without failing on slower native ARM
+  runners under concurrent test load; the product wait behavior is unchanged.
+- The Windows Node setup action is pinned to a Node 24 runtime release, avoiding
+  the hosted-runner deprecation fallback while retaining the fixed Node version
+  used by the npm-shim integration tests.
