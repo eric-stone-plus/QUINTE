@@ -94,3 +94,62 @@ cd /Users/ericstone/Public/QUINTE
 cargo test --all-targets --all-features
 cargo run -- --version   # quinte 0.1.1
 ```
+
+## Assets inventory (this directory)
+
+| File | Role |
+| --- | --- |
+| `GROK_HANDOFF.md` | **Normative** single handoff + closure record |
+| `WINDOWS_REAL_MACHINE_ACCEPTANCE.md` | Open Windows 11 real-machine lifecycle gate |
+| `QUINTE残差管理机制调优分析.md` | Historical residual analysis (non-normative) |
+| `QUINTE残差管理机制调优分析报告.html` | Same report, HTML |
+| `quinte-cover.svg` | Cover art only |
+
+Do not add domain thresholds/TTLs/shipping enums here as product policy.
+
+## Closure record (2026-07-15, post-handoff)
+
+Verified on Mac host after `source ~/.zshrc` → `eric version` / `eric doctor`:
+
+| Checkout | Branch / tip | Note |
+| --- | --- | --- |
+| QUINTE | `impl/0.1.4-handoff` @ `01f19b9` | Product version **0.1.1** |
+| HIGHBALL | `impl/atomic-quinte-action-packet` @ `4574d39` | Atomic `--quinte-result` |
+| Hermes private | `main` @ `2d227eae3` | Same tip as runtime; zero-write in tree |
+| Hermes runtime `~/.hermes/hermes-agent` | `main` @ `2d227eae3` | Package banner still `v0.18.2` (+86 carried) |
+| Rules (mac technical profile) | `main` @ `f0508a7` | `hermes-technical-profile-mac` |
+
+### Dedicated-host zero self-write
+
+- Config: `self_improvement.enabled: false` on technical profile
+- Source module: `agent/self_improvement.py` present in private + runtime
+- Windows host memo (profile repo, not duplicated here):  
+  `/Users/ericstone/Private/hermes-technical-profile-win/WIN_SELF_IMPROVEMENT_ZERO_WRITE_MEMO.md`
+
+### Eric maintenance durability (profiles, not QUINTE tree)
+
+Long-lived shells previously ran a **stale** `eric()` and refused dirty rules
+(`Refusing to update a dirty rules repo worktree`). Durable fixes live in the
+rules/profile repos (pushed), not in this QUINTE worktree:
+
+| Item | Location |
+| --- | --- |
+| Auto-stash dirty rules + always unstash on failure | `scripts/eric.sh` |
+| Maintenance guard allows only named rules stash helper | `scripts/check-hermes-maintenance.sh` (regex uses `(?:\s\|$)`, not corrupted `\b`) |
+| Wrapper identity `2026.07.15-durable-1` | `eric version` / doctor banner |
+| Always load on-disk wrapper | `~/.zshrc` `eric()` dispatcher |
+| Auth failure hints | `gh auth login` / `setup-git` in `_eric_git_fetch` |
+
+Expected healthy `eric doctor` tail:
+
+```text
+→ Rules repo has local changes; auto-stashing before sync (including untracked)
+✓ rules repo synced
+→ Restoring stashed rules repo changes
+```
+
+### Still open (not closed by this pass)
+
+- Windows real-machine acceptance matrix (`WINDOWS_REAL_MACHINE_ACCEPTANCE.md`)
+- Optional residual **read-only** CLI (list/show) — not required for persona; no
+  mutable `result.json` residual update
