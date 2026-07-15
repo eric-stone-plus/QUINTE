@@ -20,7 +20,7 @@ The protocol has three rounds:
 
 - **R1:** Party A-E produce independent analyses.
 - **R2:** the same five parties cross-review anonymized R1 outputs.
-- **R3:** the Primary Arbiter (`hm`) and the Counterpart Arbiter (`cc`) produce the dual verdict.
+- **R3:** the Primary Arbiter and the Counterpart Arbiter produce the dual verdict.
 
 The v0.1 Rust CLI owns the run state machine, fixed roster, typed output gates,
 retry boundary, artifacts, and Primary Arbiter handshake. The host invokes the CLI; it
