@@ -21,6 +21,8 @@ pub struct Brief {
     #[serde(default)]
     pub evidence_roots: Vec<PathBuf>,
     #[serde(default)]
+    pub snapshot_ignore: Vec<String>,
+    #[serde(default)]
     pub attachments: Vec<PathBuf>,
     #[serde(default)]
     pub action_scope: Option<String>,

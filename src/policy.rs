@@ -2,11 +2,44 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
+use serde::{Deserialize, Deserializer};
 
 use crate::model::{
     MULTIMODAL_MODEL, POLICY_VERSION, Policy, RoutePolicy, SandboxMode, TEXT_MODEL,
 };
 use crate::util::{read_json, write_json};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompatiblePolicy {
+    policy_version: String,
+    roster: Vec<RoutePolicy>,
+    #[serde(default, deserialize_with = "deserialize_present_route")]
+    counterpart_arbiter: Option<RoutePolicy>,
+    #[serde(default, deserialize_with = "deserialize_present_route")]
+    auditor: Option<RoutePolicy>,
+    text_model: String,
+    multimodal_model: String,
+    max_parallel_r1: usize,
+    max_parallel_r2: usize,
+    max_attempts: usize,
+    timeout_seconds: u64,
+    retry_backoff_seconds: u64,
+    retry_backoff_max_seconds: u64,
+    r2_min_interval_seconds: u64,
+    max_output_bytes: usize,
+    max_snapshot_files: usize,
+    max_snapshot_bytes: u64,
+    max_attachment_bytes: u64,
+    sandbox_mode: SandboxMode,
+}
+
+fn deserialize_present_route<'de, D>(deserializer: D) -> Result<Option<RoutePolicy>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    RoutePolicy::deserialize(deserializer).map(Some)
+}
 
 pub fn default_policy() -> Policy {
     Policy {
@@ -47,15 +80,56 @@ fn route(party_id: &str, route_id: &str, adapter: &str, executable: &str) -> Rou
 }
 
 pub fn load(path: &Path) -> anyhow::Result<Policy> {
-    let policy: Policy = read_json(path)?;
+    let policy = read_compatible(path)?;
     validate(&policy)?;
     Ok(policy)
 }
 
 pub fn load_for_runtime(path: &Path) -> anyhow::Result<Policy> {
-    let policy: Policy = read_json(path)?;
+    let policy = read_compatible(path)?;
     validate_for_runtime(&policy)?;
     Ok(policy)
+}
+
+fn read_compatible(path: &Path) -> anyhow::Result<Policy> {
+    let compatible: CompatiblePolicy = read_json(path)?;
+    let counterpart_arbiter = match (compatible.counterpart_arbiter, compatible.auditor) {
+        (Some(route), None) => route,
+        (None, Some(mut route)) => {
+            if route.party_id != "Auditor B" {
+                bail!("policy must bind required Counterpart Arbiter");
+            }
+            route.party_id = "Counterpart Arbiter".into();
+            route
+        }
+        (Some(_), Some(_)) => {
+            return Err(anyhow::anyhow!("duplicate field `counterpart_arbiter`")
+                .context(format!("invalid JSON in {}", path.display())));
+        }
+        (None, None) => {
+            return Err(anyhow::anyhow!("missing field `counterpart_arbiter`")
+                .context(format!("invalid JSON in {}", path.display())));
+        }
+    };
+    Ok(Policy {
+        policy_version: compatible.policy_version,
+        roster: compatible.roster,
+        counterpart_arbiter,
+        text_model: compatible.text_model,
+        multimodal_model: compatible.multimodal_model,
+        max_parallel_r1: compatible.max_parallel_r1,
+        max_parallel_r2: compatible.max_parallel_r2,
+        max_attempts: compatible.max_attempts,
+        timeout_seconds: compatible.timeout_seconds,
+        retry_backoff_seconds: compatible.retry_backoff_seconds,
+        retry_backoff_max_seconds: compatible.retry_backoff_max_seconds,
+        r2_min_interval_seconds: compatible.r2_min_interval_seconds,
+        max_output_bytes: compatible.max_output_bytes,
+        max_snapshot_files: compatible.max_snapshot_files,
+        max_snapshot_bytes: compatible.max_snapshot_bytes,
+        max_attachment_bytes: compatible.max_attachment_bytes,
+        sandbox_mode: compatible.sandbox_mode,
+    })
 }
 
 pub fn validate(policy: &Policy) -> anyhow::Result<()> {

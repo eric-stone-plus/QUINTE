@@ -101,6 +101,7 @@ Create a brief such as `brief.json`:
   "question": "Which material risks remain in this change?",
   "context": "Review the implementation, tests, and operational boundary.",
   "evidence_roots": ["/absolute/path/to/project"],
+  "snapshot_ignore": [".git", "build/**", "**/*.key"],
   "attachments": [],
   "action_scope": "decision support for this change only"
 }
@@ -170,6 +171,13 @@ R1/R2 artifacts, the evidence packet, and the Counterpart Arbiter verdict are bo
 input receipt before the Primary Arbiter sees the challenge. The final manifest also binds
 `result.json` by SHA-256. Files are created as the run reaches each phase, so
 failed or waiting runs are expected to have only a prefix of this layout.
+
+Briefs may use `snapshot_ignore` to omit root-relative evidence paths with
+portable `/`-separated glob patterns. For a single-file evidence root, its
+filename is the relative path. A matched directory is pruned with all of its
+contents; for example, `[".firecrawl", "tools/r4se-packages"]` omits both
+trees. Built-in exclusions for credentials and common generated trees remain
+in force.
 
 OpenCode, Kilo, and MiMo receive validated images with native `--file`
 arguments, OMP receives staged `@file` inputs, and CodeWhale/Claude receive

@@ -38,7 +38,9 @@ pub fn sha256_bytes(bytes: &[u8]) -> String {
 }
 
 pub fn sha256_file(path: &Path) -> anyhow::Result<String> {
-    let mut file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+    let io_path = filesystem_path(path)?;
+    let mut file =
+        File::open(&io_path).with_context(|| format!("cannot open {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -49,6 +51,39 @@ pub fn sha256_file(path: &Path) -> anyhow::Result<String> {
         hasher.update(&buffer[..count]);
     }
     Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
+}
+
+/// Returns an OS-facing path that supports long absolute names on Windows.
+/// Verbatim prefixes stay internal and are never serialized into run artifacts.
+pub fn filesystem_path(path: &Path) -> anyhow::Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let absolute = std::path::absolute(path)
+            .with_context(|| format!("cannot make {} absolute", path.display()))?;
+        let raw = absolute.as_os_str().encode_wide().collect::<Vec<_>>();
+        let verbatim = r"\\?\".encode_utf16().collect::<Vec<_>>();
+        if raw.starts_with(&verbatim) {
+            return Ok(absolute);
+        }
+        let mut extended = if raw.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+            let mut prefix = r"\\?\UNC\".encode_utf16().collect::<Vec<_>>();
+            prefix.extend_from_slice(&raw[2..]);
+            prefix
+        } else {
+            let mut prefix = verbatim;
+            prefix.extend_from_slice(&raw);
+            prefix
+        };
+        if extended.last() == Some(&0) {
+            extended.pop();
+        }
+        return Ok(PathBuf::from(OsString::from_wide(&extended)));
+    }
+    #[cfg(not(windows))]
+    Ok(path.to_path_buf())
 }
 
 pub fn canonical_existing(path: &Path) -> anyhow::Result<PathBuf> {

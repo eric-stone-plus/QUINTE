@@ -147,6 +147,7 @@ fn create_waiting_run(
             question: "What remains unresolved?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -178,6 +179,36 @@ fn create_waiting_run(
 }
 
 #[test]
+fn invalid_snapshot_ignore_does_not_create_an_orphan_run_directory() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let executable = temporary.path().join("unused-fake-adapter");
+    let policy = fake_policy(&executable);
+    let brief_path = temporary.path().join("invalid-ignore-brief.json");
+    fs::write(
+        &brief_path,
+        r#"{
+            "brief_version": "1.0",
+            "question": "What remains unresolved?",
+            "snapshot_ignore": ["[invalid"]
+        }"#,
+    )
+    .unwrap();
+
+    let error = run::create(&store, &policy, &RunOptions { brief_path }).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("invalid snapshot_ignore pattern")
+    );
+    assert!(!store.runs_dir().exists());
+}
+
+#[test]
 fn full_fake_run_reaches_primary_arbiter_then_completes() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
@@ -194,6 +225,7 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
         question: "What remains unresolved?".into(),
         context: None,
         evidence_roots: vec![evidence],
+        snapshot_ignore: Vec::new(),
         attachments: Vec::new(),
         action_scope: Some("test only".into()),
     };
@@ -482,6 +514,7 @@ fn cancelling_active_workers_is_terminal_and_cannot_be_overwritten_by_failure() 
             question: "Can an active run be cancelled safely?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -542,6 +575,7 @@ fn invalid_early_r1_lane_still_drains_all_workers() {
             question: "Do failed parallel lanes retain scheduler ownership?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -596,6 +630,7 @@ fn output_limit_caps_captured_memory_and_fails_the_lane() {
             question: "Does QUINTE cap child output while reading it?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -645,6 +680,7 @@ fn r2_rate_limit_retries_same_route_with_persisted_scheduler_events() {
             question: "Does the scheduler recover a typed R2 rate limit?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -702,6 +738,7 @@ fn typed_mimo_repetition_error_retries_and_preserves_the_real_error() {
             question: "Does a typed MiMo repetition failure recover?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -788,6 +825,7 @@ fn typed_mimo_repetition_stops_after_the_bounded_attempts() {
             question: "Does bounded retry stop?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -861,6 +899,7 @@ fn timeout_recovers_a_flushed_valid_output_without_retrying() {
             question: "Can a complete output be recovered at timeout?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -918,6 +957,7 @@ fn invalid_evidence_is_rejected_before_lane_finished_is_recorded_as_accepted() {
             question: "Can invalid evidence be marked accepted?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -981,6 +1021,7 @@ fn completed_codewhale_with_a_truncated_final_candidate_retries_on_the_same_rout
             question: "Does a completed CodeWhale stream retry a truncated final candidate?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -1041,6 +1082,7 @@ fn r3_counterpart_arbiter_timeout_uses_the_same_bounded_retry_policy() {
             question: "Does the R3 counterpart arbiter recover from a transient timeout?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -1097,6 +1139,7 @@ fn resume_consumes_existing_attempt_directories_in_r1_and_r3() {
             question: "Does resume preserve the attempt budget?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -1157,6 +1200,7 @@ fn resume_honors_a_persisted_r1_retry_deadline_before_starting_the_next_attempt(
             question: "Does resume preserve a pending retry cooldown?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -1226,6 +1270,7 @@ fn resume_honors_a_persisted_r3_retry_deadline_before_starting_the_counterpart_a
             question: "Does resume preserve the counterpart arbiter retry cooldown?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },
@@ -1295,6 +1340,7 @@ fn resume_fails_closed_when_an_existing_attempt_consumed_the_budget() {
             question: "Can resume bypass an exhausted attempt budget?".into(),
             context: None,
             evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
         },

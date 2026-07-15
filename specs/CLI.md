@@ -148,7 +148,14 @@ list.
 
 `policy show` prints the effective policy. `policy validate` checks its closed
 v0.1 invariants. v0.1 deliberately has no general-purpose CLI policy mutation
-command.
+command. Policies from before the R3 role rename may use `auditor` with
+`party_id` set to `Auditor B`; QUINTE accepts those exact legacy names and
+normalizes them to `counterpart_arbiter` / `Counterpart Arbiter` in memory. The
+legacy field and party id are accepted only as that pair; partially renamed
+combinations are rejected.
+
+Read-only commands and normal runs never rewrite the source `policy.json`;
+`init --force` remains the only way to replace it.
 
 ## Brief Contract
 
@@ -161,6 +168,7 @@ command.
   "question": "Required non-empty question",
   "context": "Optional bounded context",
   "evidence_roots": ["/absolute/or/resolvable/path"],
+  "snapshot_ignore": [".firecrawl", "tools/r4se-packages", "**/*.key"],
   "attachments": ["/path/to/evidence.png"],
   "action_scope": "Optional scope for the resulting verdict"
 }
@@ -169,7 +177,10 @@ command.
 Unknown fields are rejected. Evidence roots are copied into the run before any
 lane starts. The snapshot excludes common generated or sensitive path names,
 including `.git`, `node_modules`, `target`, `.quinte`, `.env`, `*.key`, and
-`*.pem`; it does not follow symlinks.
+`*.pem`; it does not follow symlinks. Optional `snapshot_ignore` entries are
+portable `/`-separated glob patterns relative to every evidence root. For a
+single-file root, its filename is the relative path. Matching directories are
+pruned together with their contents.
 
 Attachments are identified from file bytes, not their extension. v0.1 accepts
 PNG, JPEG, WebP, and GIF within the configured size limit. An accepted image

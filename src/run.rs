@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, anyhow, bail};
 use base64::Engine;
 use chrono::{Duration as ChronoDuration, Utc};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -34,8 +35,8 @@ use crate::store::{ActiveProcess, Store};
 #[cfg(windows)]
 use crate::util::configure_hidden_process;
 use crate::util::{
-    atomic_write, canonical_existing, read_json, relative_slash, sha256_bytes, sha256_file,
-    utc_now, write_json,
+    atomic_write, canonical_existing, filesystem_path, read_json, relative_slash, sha256_bytes,
+    sha256_file, utc_now, write_json,
 };
 
 static INTERRUPTED: OnceLock<Arc<AtomicBool>> = OnceLock::new();
@@ -437,6 +438,7 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
         bail!("brief_version must be 1.0 and question must not be empty");
     }
     policy::validate_for_runtime(policy)?;
+    let snapshot_ignore = snapshot_ignore_set(&brief.snapshot_ignore)?;
 
     let run_id = Uuid::now_v7().to_string();
     let run_dir = store.create_run_dirs(&run_id)?;
@@ -447,7 +449,7 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
     write_json(&run_dir.join("input/brief.json"), &brief)?;
     write_json(&run_dir.join("input/policy.json"), policy)?;
 
-    let snapshot = build_snapshot(&run_dir, &brief, policy)?;
+    let snapshot = build_snapshot_with_ignore(&run_dir, &brief, policy, &snapshot_ignore)?;
     let snapshot_bytes = serde_json::to_vec(&snapshot)?;
     let snapshot_sha256 = sha256_bytes(&snapshot_bytes);
     write_json(&run_dir.join("input/snapshot-manifest.json"), &snapshot)?;
@@ -1455,10 +1457,21 @@ pub fn cancel(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
     )
 }
 
+#[cfg(test)]
 fn build_snapshot(
     run_dir: &Path,
     brief: &Brief,
     policy: &Policy,
+) -> anyhow::Result<SnapshotManifest> {
+    let ignore = snapshot_ignore_set(&brief.snapshot_ignore)?;
+    build_snapshot_with_ignore(run_dir, brief, policy, &ignore)
+}
+
+fn build_snapshot_with_ignore(
+    run_dir: &Path,
+    brief: &Brief,
+    policy: &Policy,
+    ignore: &GlobSet,
 ) -> anyhow::Result<SnapshotManifest> {
     let snapshot_dir = run_dir.join("input/snapshot");
     let attachments_dir = run_dir.join("input/attachments");
@@ -1468,20 +1481,23 @@ fn build_snapshot(
     for (root_index, root) in brief.evidence_roots.iter().enumerate() {
         let source_root = canonical_existing(root)?;
         if source_root.is_file() {
-            copy_snapshot_file(
-                &source_root,
-                &source_root,
-                root_index,
-                &snapshot_dir,
-                &mut entries,
-                &mut total_bytes,
-                policy,
-            )?;
+            let relative = source_root.file_name().unwrap_or_default();
+            if !ignore.is_match(Path::new(relative)) {
+                copy_snapshot_file(
+                    &source_root,
+                    &source_root,
+                    root_index,
+                    &snapshot_dir,
+                    &mut entries,
+                    &mut total_bytes,
+                    policy,
+                )?;
+            }
         } else {
             for item in WalkDir::new(&source_root)
                 .follow_links(false)
                 .into_iter()
-                .filter_entry(snapshot_entry_allowed)
+                .filter_entry(|entry| snapshot_entry_allowed(entry, &source_root, ignore))
             {
                 let item = item?;
                 let file_type = item.file_type();
@@ -1554,13 +1570,43 @@ fn build_snapshot(
     })
 }
 
-fn snapshot_entry_allowed(entry: &DirEntry) -> bool {
+fn snapshot_ignore_set(patterns: &[String]) -> anyhow::Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        if pattern.starts_with('/') || pattern.ends_with('/') || pattern.contains('\\') {
+            bail!("snapshot_ignore pattern must be a relative '/'-separated path: {pattern}");
+        }
+        let glob = GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .case_insensitive(cfg!(windows))
+            .build()
+            .with_context(|| format!("invalid snapshot_ignore pattern: {pattern}"))?;
+        builder.add(glob);
+    }
+    builder
+        .build()
+        .context("cannot compile snapshot_ignore patterns")
+}
+
+fn snapshot_entry_allowed(entry: &DirEntry, root: &Path, ignore: &GlobSet) -> bool {
     let name = entry.file_name().to_string_lossy();
-    !matches!(
+    let allowed = !matches!(
         name.as_ref(),
         ".git" | "node_modules" | "target" | ".quinte" | ".env"
     ) && !name.ends_with(".key")
-        && !name.ends_with(".pem")
+        && !name.ends_with(".pem");
+    if entry.depth() == 0 {
+        return true;
+    }
+    if !allowed {
+        return false;
+    }
+    entry
+        .path()
+        .strip_prefix(root)
+        .map(relative_slash)
+        .map(|relative| !ignore.is_match(relative))
+        .unwrap_or(false)
 }
 
 fn copy_snapshot_file(
@@ -1614,12 +1660,14 @@ fn copy_snapshot_file(
 }
 
 fn copy_file_streaming(source: &Path, target: &Path, expected_bytes: u64) -> anyhow::Result<()> {
-    let parent = target
+    let io_source = filesystem_path(source)?;
+    let io_target = filesystem_path(target)?;
+    let io_parent = io_target
         .parent()
         .ok_or_else(|| anyhow!("{} has no parent", target.display()))?;
-    fs::create_dir_all(parent)?;
-    let temporary = tempfile::NamedTempFile::new_in(parent)?;
-    let mut input = fs::File::open(source)?;
+    fs::create_dir_all(io_parent)?;
+    let temporary = tempfile::NamedTempFile::new_in(io_parent)?;
+    let mut input = fs::File::open(&io_source)?;
     let mut output = temporary.as_file();
     let copied = std::io::copy(&mut input, &mut output)?;
     if copied != expected_bytes {
@@ -1630,13 +1678,13 @@ fn copy_file_streaming(source: &Path, target: &Path, expected_bytes: u64) -> any
     }
     output.sync_all()?;
     temporary
-        .persist(target)
+        .persist(&io_target)
         .map_err(|error| anyhow!("cannot persist {}: {}", target.display(), error.error))?;
     Ok(())
 }
 
 fn read_prefix(path: &Path, max_bytes: u64) -> anyhow::Result<Vec<u8>> {
-    let mut file = fs::File::open(path)?;
+    let mut file = fs::File::open(filesystem_path(path)?)?;
     let mut bytes = Vec::new();
     std::io::Read::by_ref(&mut file)
         .take(max_bytes)
@@ -3446,12 +3494,12 @@ fn process_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod retry_tests {
     use super::{
-        MIMO_REPETITION_ERROR, RateLimitSignal, RetryClass, classify_rate_limit,
+        MIMO_REPETITION_ERROR, RateLimitSignal, RetryClass, build_snapshot, classify_rate_limit,
         evaluate_attempt_output, next_attempt, retry_allowed, retry_schedule,
         validate_evidence_refs,
     };
     use crate::adapters::OutputKind;
-    use crate::model::{LaneOutput, SnapshotEntry, SnapshotManifest};
+    use crate::model::{Brief, LaneOutput, SnapshotEntry, SnapshotManifest};
     use crate::policy::default_policy;
 
     #[cfg(unix)]
@@ -3468,6 +3516,141 @@ mod retry_tests {
     use std::time::{Duration, Instant};
 
     const VALID_SNAPSHOT_REF: &str = "snapshot://evidence.txt";
+
+    #[test]
+    fn snapshot_ignore_prunes_relative_files_and_directories() {
+        let temporary = tempfile::tempdir().unwrap();
+        let evidence = temporary.path().join("evidence");
+        std::fs::create_dir_all(evidence.join(".firecrawl/nested")).unwrap();
+        std::fs::create_dir_all(evidence.join("tools/r4se-packages/pkg")).unwrap();
+        std::fs::create_dir_all(evidence.join("kept")).unwrap();
+        std::fs::write(evidence.join(".firecrawl/nested/cache.json"), b"ignored").unwrap();
+        std::fs::write(
+            evidence.join("tools/r4se-packages/pkg/archive.ipk"),
+            b"ignored",
+        )
+        .unwrap();
+        std::fs::write(evidence.join("kept/report.txt"), b"kept").unwrap();
+        std::fs::write(evidence.join("kept/scratch.tmp"), b"ignored").unwrap();
+        let brief = Brief {
+            brief_version: "1.0".into(),
+            question: "What remains?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            snapshot_ignore: vec![
+                ".firecrawl".into(),
+                "tools/r4se-packages".into(),
+                "**/*.tmp".into(),
+            ],
+            attachments: Vec::new(),
+            action_scope: None,
+        };
+
+        let snapshot = build_snapshot(temporary.path(), &brief, &default_policy()).unwrap();
+
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(
+            snapshot.entries[0].snapshot_ref,
+            "snapshot://root-0/kept/report.txt"
+        );
+    }
+
+    #[test]
+    fn snapshot_ignore_applies_to_a_single_file_evidence_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let evidence = temporary.path().join("ignored.txt");
+        std::fs::write(&evidence, b"ignored").unwrap();
+        let brief = Brief {
+            brief_version: "1.0".into(),
+            question: "What remains?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            snapshot_ignore: vec!["ignored.txt".into()],
+            attachments: Vec::new(),
+            action_scope: None,
+        };
+
+        let snapshot = build_snapshot(temporary.path(), &brief, &default_policy()).unwrap();
+
+        assert!(snapshot.entries.is_empty());
+        assert_eq!(snapshot.total_bytes, 0);
+    }
+
+    #[test]
+    fn snapshot_ignore_rejects_platform_specific_or_absolute_patterns() {
+        for pattern in [r"tools\\cache", "/cache", "cache/"] {
+            let brief = Brief {
+                brief_version: "1.0".into(),
+                question: "What remains?".into(),
+                context: None,
+                evidence_roots: Vec::new(),
+                snapshot_ignore: vec![pattern.into()],
+                attachments: Vec::new(),
+                action_scope: None,
+            };
+            let temporary = tempfile::tempdir().unwrap();
+
+            let error = build_snapshot(temporary.path(), &brief, &default_policy()).unwrap_err();
+            assert!(error.to_string().contains("snapshot_ignore pattern"));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_persists_and_hashes_paths_beyond_max_path() {
+        let temporary = tempfile::tempdir().unwrap();
+        let evidence = temporary.path().join("evidence");
+        let mut deep = evidence.clone();
+        while deep.as_os_str().len() < 280 {
+            deep.push("segment-with-a-deliberately-long-name");
+        }
+        let io_deep = crate::util::filesystem_path(&deep).unwrap();
+        std::fs::create_dir_all(&io_deep).unwrap();
+        let source = deep.join("long-evidence-name.txt");
+        std::fs::write(crate::util::filesystem_path(&source).unwrap(), b"long path").unwrap();
+        let brief = Brief {
+            brief_version: "1.0".into(),
+            question: "What remains?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
+            attachments: Vec::new(),
+            action_scope: None,
+        };
+
+        let snapshot = build_snapshot(temporary.path(), &brief, &default_policy()).unwrap();
+
+        assert_eq!(snapshot.entries.len(), 1);
+        let relative = snapshot.entries[0]
+            .snapshot_ref
+            .strip_prefix("snapshot://")
+            .unwrap();
+        let copied = temporary.path().join("input/snapshot").join(relative);
+        assert!(copied.as_os_str().len() > 260);
+        assert_eq!(
+            crate::util::sha256_file(&copied).unwrap(),
+            snapshot.entries[0].sha256
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_verbatim_paths_preserve_non_unicode_names() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let name = std::ffi::OsString::from_wide(&[b'n' as u16, 0xd800, b'x' as u16]);
+        let path = temporary.path().join(name);
+
+        let converted = crate::util::filesystem_path(&path).unwrap();
+        let converted_wide = converted.as_os_str().encode_wide().collect::<Vec<_>>();
+
+        assert!(
+            converted_wide
+                .windows(3)
+                .any(|window| window == [b'n' as u16, 0xd800, b'x' as u16])
+        );
+    }
 
     #[cfg(unix)]
     #[test]

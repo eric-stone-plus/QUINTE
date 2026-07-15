@@ -1,7 +1,41 @@
 mod common;
 
-use quinte::model::LaneOutput;
-use quinte::schema::{LANE_OUTPUT_SCHEMA, parse_and_validate};
+use quinte::model::{Brief, LaneOutput};
+use quinte::schema::{BRIEF_SCHEMA, LANE_OUTPUT_SCHEMA, parse_and_validate};
+
+#[test]
+fn brief_snapshot_ignore_is_optional_and_backward_compatible() {
+    let legacy = br#"{
+        "brief_version": "1.0",
+        "question": "What remains?",
+        "evidence_roots": []
+    }"#;
+    let brief = parse_and_validate::<Brief>(legacy, BRIEF_SCHEMA).unwrap();
+    assert!(brief.snapshot_ignore.is_empty());
+
+    let configured = br#"{
+        "brief_version": "1.0",
+        "question": "What remains?",
+        "evidence_roots": [],
+        "snapshot_ignore": [".firecrawl", "tools/r4se-packages", "**/*.tmp"]
+    }"#;
+    let brief = parse_and_validate::<Brief>(configured, BRIEF_SCHEMA).unwrap();
+    assert_eq!(brief.snapshot_ignore.len(), 3);
+}
+
+#[test]
+fn brief_snapshot_ignore_rejects_non_relative_path_syntax() {
+    for pattern in [r#""/cache""#, r#""cache/""#, r#""tools\\cache""#] {
+        let document = format!(
+            r#"{{
+                "brief_version": "1.0",
+                "question": "What remains?",
+                "snapshot_ignore": [{pattern}]
+            }}"#
+        );
+        assert!(parse_and_validate::<Brief>(document.as_bytes(), BRIEF_SCHEMA).is_err());
+    }
+}
 
 #[test]
 fn lane_output_accepts_valid_closed_document() {
