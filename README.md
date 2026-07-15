@@ -37,8 +37,8 @@ The default policy binds the protocol roles to these native routes:
 | Party C | KiloCode| R1, R2 |
 | Party D | MiMoCode| R1, R2 |
 | Party E | Oh-My-Pi | R1, R2 |
-| Counterpart Arbiter | Claude Code (`cc`) | R3 only |
-| Primary Arbiter | host (`hm`) | R3 only |
+| Primary Arbiter | Hermes (`hm`) | R3 only |
+| Counterpart Arbiter | ClaudeCode (`cc`) | R3 only |
 
 R1 and R2 use `mimo-v2.5-pro` for text-only briefs. A supported image
 attachment selects `mimo-v2.5` for the run. These are same-family behavioral

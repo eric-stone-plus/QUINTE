@@ -16,7 +16,7 @@ The product has one supported full-run path:
 ```text
 brief -> R1 (five independent lanes)
       -> R2 (five anonymous cross-review lanes)
-      -> R3 (Counterpart Arbiter + Primary Arbiter `hm`)
+      -> R3 (Primary Arbiter `hm` + Counterpart Arbiter `cc`)
       -> deterministic merge -> result
 ```
 
@@ -39,8 +39,8 @@ The v1 policy binds exactly these routes:
 | Party C | Kilo | R1, R2 |
 | Party D | MiMo | R1, R2 |
 | Party E | OMP | R1, R2 |
-| Counterpart Arbiter | Claude Code (`cc`) | R3 only |
-| Primary Arbiter | host (`hm`) | R3 only |
+| Primary Arbiter | Hermes (`hm`) | R3 only |
+| Counterpart Arbiter | ClaudeCode (`cc`) | R3 only |
 
 All inference routes use the same MiMo token-plan family. Text-only runs use
 `mimo-v2.5-pro`; a validated image attachment selects `mimo-v2.5` for the
