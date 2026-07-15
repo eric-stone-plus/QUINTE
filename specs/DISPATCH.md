@@ -23,7 +23,7 @@ phase may progress.
 R1 and R2 require exactly Party A, Party B, Party C, Party D, and Party E.
 R3 requires Counterpart Arbiter. An R3 manifest may keep the recorded Party A-E bindings
 for traceability or leave `parties` empty, because only Counterpart Arbiter is dispatched
-in R3. hm is not an R1/R2 route and Counterpart Arbiter never substitutes for a failed
+in R3. The host (`hm`) route is not an R1/R2 route and Counterpart Arbiter never substitutes for a failed
 R1/R2 party.
 
 ## Executable Entry Points
@@ -95,7 +95,7 @@ QUINTE evidence artifact for protected action boundaries.
 
 Every attempt for a party must preserve the same `route_id`. A retry may repair
 credentials, working directory, prompt length, environment, or network
-conditions, but it must not swap Party A-E, hm, Counterpart Arbiter, or any other route
+conditions, but it must not swap Party A-E, the host (`hm`) route, Counterpart Arbiter, or any other route
 into the failed party slot.
 
 The dispatch ledger stores a command hash rather than asserting that command
