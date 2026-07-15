@@ -1,7 +1,7 @@
 # QUINTE Phase Dispatcher Compatibility
 
 > Compatibility status: retained for older host integrations. The Rust
-> `quinte` CLI is the canonical full-run scheduler. Hermes must not combine
+> `quinte` CLI is the canonical full-run scheduler. Hosts must not combine
 > this phase-only tool with a CLI run or treat its ledger as a CLI state
 > transition.
 
@@ -21,9 +21,9 @@ large each output artifact was, which failure class applied, and whether the
 phase may progress.
 
 R1 and R2 require exactly Party A, Party B, Party C, Party D, and Party E.
-R3 requires Auditor B. An R3 manifest may keep the recorded Party A-E bindings
-for traceability or leave `parties` empty, because only Auditor B is dispatched
-in R3. hm is not an R1/R2 route and Auditor B never substitutes for a failed
+R3 requires Counterpart Arbiter. An R3 manifest may keep the recorded Party A-E bindings
+for traceability or leave `parties` empty, because only Counterpart Arbiter is dispatched
+in R3. hm is not an R1/R2 route and Counterpart Arbiter never substitutes for a failed
 R1/R2 party.
 
 ## Executable Entry Points
@@ -95,7 +95,7 @@ QUINTE evidence artifact for protected action boundaries.
 
 Every attempt for a party must preserve the same `route_id`. A retry may repair
 credentials, working directory, prompt length, environment, or network
-conditions, but it must not swap Party A-E, hm, Auditor B, or any other route
+conditions, but it must not swap Party A-E, hm, Counterpart Arbiter, or any other route
 into the failed party slot.
 
 The dispatch ledger stores a command hash rather than asserting that command

@@ -20,10 +20,10 @@ The protocol has three rounds:
 
 - **R1:** Party A-E produce independent analyses.
 - **R2:** the same five parties cross-review anonymized R1 outputs.
-- **R3:** Hermes `hm` and an independent Auditor B produce the dual verdict.
+- **R3:** the Primary Arbiter (`hm`) and the Counterpart Arbiter (`cc`) produce the dual verdict.
 
 The v0.1 Rust CLI owns the run state machine, fixed roster, typed output gates,
-retry boundary, artifacts, and Hermes handshake. Hermes invokes the CLI; it
+retry boundary, artifacts, and Primary Arbiter handshake. The host invokes the CLI; it
 does not recreate QUINTE by launching the parties itself.
 
 ## v0.1 Boundary
@@ -37,7 +37,7 @@ The default policy binds the protocol roles to these native routes:
 | Party C | KiloCode| R1, R2 |
 | Party D | MiMoCode| R1, R2 |
 | Party E | Oh-My-Pi | R1, R2 |
-| Auditor B | ClaudeCode | R3 only |
+| Counterpart Arbiter | Claude Code | R3 only |
 
 R1 and R2 use `mimo-v2.5-pro` for text-only briefs. A supported image
 attachment selects `mimo-v2.5` for the run. These are same-family behavioral
@@ -112,33 +112,33 @@ quinte run --brief brief.json --json
 ```
 
 The default command returns immediately with a queued run while a supervised
-background worker advances R1, R2, and Auditor B:
+background worker advances R1, R2, and the Counterpart Arbiter:
 
 ```json
 {"cli_envelope_version":"1.0","ok":true,"data":{"run_id":"...","status":"queued","run_dir":"..."}}
 ```
 
 Use `--wait` to keep the initiating terminal attached to state observation
-(not to the worker itself). It normally returns when Hermes input is required:
+(not to the worker itself). It normally returns when the Primary Arbiter input is required:
 
 ```json
-{"cli_envelope_version":"1.0","ok":true,"data":{"run_id":"...","status":"waiting_hm","run_dir":"..."}}
+{"cli_envelope_version":"1.0","ok":true,"data":{"run_id":"...","status":"waiting_primary_arbiter","run_dir":"..."}}
 ```
 
-`waiting_hm` with exit code `0` is a successful handoff, not a completed
-verdict. Hermes must read the bound request and evidence, submit its response,
+`waiting_primary_arbiter` with exit code `0` is a successful handoff, not a completed
+verdict. The Primary Arbiter must read the bound request and evidence, submit its response,
 and then inspect the result:
 
 ```bash
-quinte hm request RUN_ID --json
-quinte hm submit RUN_ID --verdict hm-verdict.json --json
+quinte primary-arbiter request RUN_ID --json
+quinte primary-arbiter submit RUN_ID --verdict primary-arbiter-verdict.json --json
 quinte inspect RUN_ID --json
 ```
 
 `quinte wait RUN_ID` observes the same boundary. Ctrl-C interrupts only the
 wait and leaves the background run active.
 
-See [CLI.md](specs/CLI.md) for the complete command contract, Hermes response
+See [CLI.md](specs/CLI.md) for the complete command contract, Primary Arbiter response
 schema, state transitions, exit codes, and artifact layout.
 
 ## State and Evidence
@@ -165,8 +165,8 @@ The default state root is `~/.quinte`:
 Inputs are copied into a per-run snapshot. Lane attempts retain their
 invocation metadata, raw stdout/stderr, and accepted typed result. `result.json`
 is the machine artifact; `report.md` is its human-readable rendering. Accepted
-R1/R2 artifacts, the evidence packet, and the CC verdict are bound by an R3
-input receipt before Hermes sees the challenge. The final manifest also binds
+R1/R2 artifacts, the evidence packet, and the Counterpart Arbiter verdict are bound by an R3
+input receipt before the Primary Arbiter sees the challenge. The final manifest also binds
 `result.json` by SHA-256. Files are created as the run reaches each phase, so
 failed or waiting runs are expected to have only a prefix of this layout.
 
@@ -200,12 +200,12 @@ that authority.
   manifest and ledger compatibility layer.
 - [Windows PowerShell development log](docs/windows-powershell-development-log.md)
   records the native process-launch design and regression boundary.
-- [JSON schemas](schemas/) define accepted brief, lane, hm response, result,
+- [JSON schemas](schemas/) define accepted brief, lane, primary-arbiter response, result,
   and compatibility artifacts.
-- [QUINTE skill](skills/SKILL.md) is a thin Hermes entry point to the CLI.
+- [QUINTE skill](skills/SKILL.md) is a thin host entry point to the CLI.
 
 The scripts under `bin/` remain phase-dispatch compatibility tools. They are
-not the normal full-run Hermes interface and do not replace the Rust state
+not the normal full-run host interface and do not replace the Rust state
 machine.
 
 ## License

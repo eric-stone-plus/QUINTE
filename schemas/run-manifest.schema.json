@@ -4,13 +4,13 @@
   "title": "QUINTE Run Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["manifest_version", "run_id", "created_at", "updated_at", "status", "brief_sha256", "policy_sha256", "snapshot_sha256", "runtime_sha256", "protocol_version", "effective_model", "sandbox_mode", "current_phase", "error", "r3_input_receipt", "hm_challenge", "hm_submission", "result_sha256"],
+  "required": ["manifest_version", "run_id", "created_at", "updated_at", "status", "brief_sha256", "policy_sha256", "snapshot_sha256", "runtime_sha256", "protocol_version", "effective_model", "sandbox_mode", "current_phase", "error", "r3_input_receipt", "primary_arbiter_challenge", "primary_arbiter_submission", "result_sha256"],
   "properties": {
     "manifest_version": { "const": "1.0" },
     "run_id": { "type": "string", "format": "uuid" },
     "created_at": { "type": "string", "format": "date-time" },
     "updated_at": { "type": "string", "format": "date-time" },
-    "status": { "enum": ["queued", "preflight", "r1_running", "r1_gate", "r2_packet", "r2_running", "r2_gate", "r3_cc", "waiting_hm", "merging", "completed", "degraded", "failed", "failed_policy", "cancelling", "cancelled"] },
+    "status": { "enum": ["queued", "preflight", "r1_running", "r1_gate", "r2_packet", "r2_running", "r2_gate", "r3_cc", "waiting_primary_arbiter", "merging", "completed", "degraded", "failed", "failed_policy", "cancelling", "cancelled"] },
     "brief_sha256": { "$ref": "#/$defs/digest" },
     "policy_sha256": { "$ref": "#/$defs/digest" },
     "snapshot_sha256": { "$ref": "#/$defs/digest" },
@@ -40,7 +40,7 @@
         { "$ref": "#/$defs/artifact_binding" }
       ]
     },
-    "hm_challenge": {
+    "primary_arbiter_challenge": {
       "oneOf": [
         { "type": "null" },
         {
@@ -62,7 +62,7 @@
         }
       ]
     },
-    "hm_submission": {
+    "primary_arbiter_submission": {
       "oneOf": [
         { "type": "null" },
         {
@@ -72,7 +72,7 @@
           "properties": {
             "submission_receipt_version": { "const": "1.0" },
             "state": { "enum": ["staging", "accepted"] },
-            "response_ref": { "const": "r3/hm-response.json" },
+            "response_ref": { "const": "r3/primary-arbiter-response.json" },
             "response_sha256": { "$ref": "#/$defs/digest" },
             "input_receipt_sha256": { "$ref": "#/$defs/digest" },
             "staged_at": { "type": "string", "format": "date-time" },

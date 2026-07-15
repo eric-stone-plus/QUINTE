@@ -17,7 +17,7 @@
     "prompt_shrink_char_limit",
     "substitution_policy",
     "parties",
-    "auditor_b",
+    "counterpart_arbiter",
     "non_authorization"
   ],
   "properties": {
@@ -73,7 +73,7 @@
         "$ref": "#/$defs/route"
       }
     },
-    "auditor_b": {
+    "counterpart_arbiter": {
       "anyOf": [
         {
           "$ref": "#/$defs/route"
@@ -127,7 +127,7 @@
               }
             ]
           },
-          "auditor_b": {
+          "counterpart_arbiter": {
             "$ref": "#/$defs/route"
           }
         }

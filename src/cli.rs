@@ -38,7 +38,8 @@ enum Command {
     Resume(IdArgs),
     Cancel(IdArgs),
     Inspect(IdArgs),
-    Hm(HmArgs),
+    #[command(name = "primary-arbiter", alias = "hm")]
+    PrimaryArbiter(PrimaryArbiterArgs),
     Agents(AgentArgs),
     Policy(PolicyArgs),
     #[command(name = "__worker", hide = true)]
@@ -89,19 +90,19 @@ struct IdArgs {
 }
 
 #[derive(Debug, Args)]
-struct HmArgs {
+struct PrimaryArbiterArgs {
     #[command(subcommand)]
-    command: HmCommand,
+    command: PrimaryArbiterCommand,
 }
 
 #[derive(Debug, Subcommand)]
-enum HmCommand {
+enum PrimaryArbiterCommand {
     Request(IdArgs),
-    Submit(HmSubmitArgs),
+    Submit(PrimaryArbiterSubmitArgs),
 }
 
 #[derive(Debug, Args)]
-struct HmSubmitArgs {
+struct PrimaryArbiterSubmitArgs {
     run_id: String,
     #[arg(
         long,
@@ -320,22 +321,29 @@ fn execute(cli: Cli) -> anyhow::Result<i32> {
             )?;
             Ok(status_code(manifest.status))
         }
-        Command::Hm(args) => match args.command {
-            HmCommand::Request(args) => {
-                let path = store.run_dir(&args.run_id).join("r3/hm-request.json");
-                let request: Value = read_json(&path).context("hm request is not ready")?;
+        Command::PrimaryArbiter(args) => match args.command {
+            PrimaryArbiterCommand::Request(args) => {
+                let path = store
+                    .run_dir(&args.run_id)
+                    .join("r3/primary-arbiter-request.json");
+                let request: Value =
+                    read_json(&path).context("primary-arbiter request is not ready")?;
                 emit(
                     args.json,
                     request,
-                    format!("Hermes hm request: {}", path.display()),
+                    format!("Primary Arbiter request: {}", path.display()),
                 )?;
                 Ok(0)
             }
-            HmCommand::Submit(args) => {
+            PrimaryArbiterCommand::Submit(args) => {
                 let status = if let Some(verdict) = args.verdict {
-                    run::submit_hm_verdict(&store, &args.run_id, &verdict)?
+                    run::submit_primary_arbiter_verdict(&store, &args.run_id, &verdict)?
                 } else {
-                    run::submit_hm(&store, &args.run_id, args.response.as_deref().unwrap())?
+                    run::submit_primary_arbiter(
+                        &store,
+                        &args.run_id,
+                        args.response.as_deref().unwrap(),
+                    )?
                 };
                 emit(
                     args.json,
@@ -359,7 +367,7 @@ fn execute(cli: Cli) -> anyhow::Result<i32> {
                     let route = policy
                         .roster
                         .iter()
-                        .chain(std::iter::once(&policy.auditor))
+                        .chain(std::iter::once(&policy.counterpart_arbiter))
                         .find(|route| route.party_id == id || route.route_id == id)
                         .ok_or_else(|| anyhow::anyhow!("unknown party/route {id}"))?;
                     emit(
@@ -450,7 +458,7 @@ fn format_status(run_id: &str, status: RunStatus) -> String {
 
 fn status_code(status: RunStatus) -> i32 {
     match status {
-        RunStatus::Completed | RunStatus::WaitingHm => 0,
+        RunStatus::Completed | RunStatus::WaitingPrimaryArbiter => 0,
         RunStatus::Cancelled => 4,
         RunStatus::FailedPolicy => 3,
         RunStatus::Failed | RunStatus::Degraded => 1,
@@ -462,10 +470,10 @@ fn map_error(error: anyhow::Error) -> QuinteError {
     let message = error.to_string();
     if message.contains("policy")
         || message.contains("changed since run creation")
-        || message.contains("hm response does not bind")
+        || message.contains("primary-arbiter response does not bind")
         || message.contains("challenge was already consumed")
         || message.contains("challenge expired")
-        || message.contains("not waiting for Hermes hm")
+        || message.contains("not waiting for Primary Arbiter")
         || message.contains("response already exists")
     {
         QuinteError::Policy(message)

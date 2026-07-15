@@ -135,8 +135,8 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
                 required: true,
             })
             .collect(),
-        auditor: quinte::model::RoutePolicy {
-            party_id: "Auditor B".into(),
+        counterpart_arbiter: quinte::model::RoutePolicy {
+            party_id: "Counterpart Arbiter".into(),
             route_id: "fake-cc".into(),
             adapter: "fake".into(),
             executable: executable.display().to_string(),
@@ -213,7 +213,7 @@ fn quinte(fixture: &Fixture) -> Command {
 }
 
 #[test]
-fn run_returns_queued_immediately_and_worker_reaches_waiting_hm() {
+fn run_returns_queued_immediately_and_worker_reaches_waiting_primary_arbiter() {
     let fixture = fixture(0);
     let fixture_dir = fixture.executable.parent().unwrap();
     let started = fixture_dir.join("fake-agent-started");
@@ -293,7 +293,7 @@ fn run_returns_queued_immediately_and_worker_reaches_waiting_hm() {
         String::from_utf8_lossy(&waited.stderr)
     );
     let envelope: Value = serde_json::from_slice(&waited.stdout).unwrap();
-    assert_eq!(envelope["data"]["status"], "waiting_hm");
+    assert_eq!(envelope["data"]["status"], "waiting_primary_arbiter");
     assert!(
         Store::new(fixture.home.clone())
             .run_dir(&run_id)
@@ -386,7 +386,7 @@ fn wait_reports_a_dead_background_worker() {
 }
 
 #[test]
-fn wait_accepts_a_durable_waiting_hm_state_after_worker_exit() {
+fn wait_accepts_a_durable_waiting_primary_arbiter_state_after_worker_exit() {
     use quinte::run::{self, RunOptions};
 
     let fixture = fixture(0);
@@ -402,7 +402,7 @@ fn wait_accepts_a_durable_waiting_hm_state_after_worker_exit() {
     )
     .unwrap();
     let mut manifest = store.load_manifest(&created.run_id).unwrap();
-    manifest.status = RunStatus::WaitingHm;
+    manifest.status = RunStatus::WaitingPrimaryArbiter;
     manifest.current_phase = Some("R3".into());
     store.save_manifest(&manifest).unwrap();
     write_json(
@@ -423,5 +423,5 @@ fn wait_accepts_a_durable_waiting_hm_state_after_worker_exit() {
         String::from_utf8_lossy(&output.stderr)
     );
     let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(envelope["data"]["status"], "waiting_hm");
+    assert_eq!(envelope["data"]["status"], "waiting_primary_arbiter");
 }

@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/hm-response.schema.json",
-  "title": "QUINTE Hermes Arbiter Response",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/primary-arbiter-response.schema.json",
+  "title": "QUINTE Primary Arbiter Response",
   "type": "object",
   "additionalProperties": false,
-  "required": ["hm_response_version", "run_id", "nonce", "policy_sha256", "evidence_packet_sha256", "input_receipt_sha256", "action_scope", "verdict"],
+  "required": ["primary_arbiter_response_version", "run_id", "nonce", "policy_sha256", "evidence_packet_sha256", "input_receipt_sha256", "action_scope", "verdict"],
   "properties": {
-    "hm_response_version": { "const": "1.0" },
+    "primary_arbiter_response_version": { "const": "1.0" },
     "run_id": { "type": "string", "minLength": 1 },
     "nonce": { "type": "string", "minLength": 32 },
     "policy_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },

@@ -1,8 +1,8 @@
 # QUINTE CLI v0.1 Contract
 
 This document defines the public v0.1 command boundary for the `quinte` Rust
-CLI. The CLI is the execution authority for a QUINTE run. A host such as Hermes
-may create a brief, invoke commands, supply the `hm` verdict, and consume the
+CLI. The CLI is the execution authority for a QUINTE run. A host such as the
+Primary Arbiter may create a brief, invoke commands, supply the `primary-arbiter` verdict, and consume the
 result; it must not reproduce the scheduler with ad hoc agent calls.
 
 The protocol itself remains defined by [PROTOCOL.md](PROTOCOL.md). The Python
@@ -22,7 +22,7 @@ Precedence is:
 3. `$HOME/.quinte` (or `%USERPROFILE%\.quinte` on Windows)
 
 Commands that create or inspect policy-bound runs require
-`<state-root>/policy.json` to exist. The `hm` commands operate on the immutable
+`<state-root>/policy.json` to exist. The `primary-arbiter` commands operate on the immutable
 policy copy and challenge already stored in an existing run. `quinte init
 --force` replaces the global policy; normal runs never rewrite it.
 
@@ -49,8 +49,8 @@ quinte wait RUN_ID [--json]
 quinte resume RUN_ID [--json]
 quinte cancel RUN_ID [--json]
 quinte inspect RUN_ID [--json]
-quinte hm request RUN_ID [--json]
-quinte hm submit RUN_ID (--verdict FILE | --response FILE) [--json]
+quinte primary-arbiter request RUN_ID [--json]
+quinte primary-arbiter submit RUN_ID (--verdict FILE | --response FILE) [--json]
 quinte agents list [--json]
 quinte agents describe ID [--json]
 quinte policy show [--json]
@@ -67,7 +67,7 @@ Creates the state root, `policy.json`, and `runs/`. It refuses to replace an
 existing policy unless `--force` is supplied.
 
 The default policy fixes Party A-E to CodeWhale, OpenCode, Kilo, MiMo, and OMP,
-and fixes Auditor B to Claude Code. Text uses `mimo-v2.5-pro`; a supported image
+and fixes Counterpart Arbiter to Claude Code. Text uses `mimo-v2.5-pro`; a supported image
 attachment selects `mimo-v2.5` for the whole run.
 
 ### `status`
@@ -89,10 +89,10 @@ not by itself fail `doctor`; missing required routes do.
 Validates the brief, snapshots its evidence roots and attachments, creates a
 queued run, and starts a per-run background worker. Without `--wait`, the
 command returns the run id and `queued` status immediately; the worker owns
-advancement through R1, R2, and the Auditor B part of R3.
+advancement through R1, R2, and the Counterpart Arbiter part of R3.
 
 With `--wait`, the initiating process observes the manifest until it reaches a
-terminal state or `waiting_hm`. The worker remains a separate process, so
+terminal state or `waiting_primary_arbiter`. The worker remains a separate process, so
 Ctrl-C interrupts only observation (exit `130`) and does not cancel the run.
 Worker launch metadata and logs are retained under `diagnostics/`. QUINTE does
 not require a resident daemon. The worker writes a one-second heartbeat and a
@@ -101,7 +101,7 @@ finished marker. `wait` reports a stale/dead worker and directs the caller to
 
 ### `wait`
 
-Polls an existing manifest until the run is terminal or reaches `waiting_hm`.
+Polls an existing manifest until the run is terminal or reaches `waiting_primary_arbiter`.
 It observes state; it does not advance the scheduler. Ctrl-C interrupts only
 the local wait, returns `130`, and does not cancel the run.
 
@@ -135,13 +135,13 @@ Cancellation supervision is implemented with Unix process groups and Windows
 
 Returns the run manifest, parsed event log, and `result.json` when one exists.
 Human output is a status summary; use `--json` when consuming evidence or
-integrating Hermes.
+integrating the Primary Arbiter.
 
 ### `agents`
 
 `agents list` reports the fixed R1/R2 roster. `agents describe ID` accepts a
 party id or route id and reports its configured adapter binding. It does not
-run the party. Auditor B can be described but is not included in the R1/R2
+run the party. Counterpart Arbiter can be described but is not included in the R1/R2
 list.
 
 ### `policy`
@@ -188,7 +188,7 @@ r2_packet
 r2_running
 r2_gate
 r3_cc
-waiting_hm
+waiting_primary_arbiter
 merging
 completed
 degraded
@@ -203,28 +203,28 @@ The normal flow is:
 ```text
 queued -> preflight -> r1_running -> r1_gate
        -> r2_packet -> r2_running -> r2_gate
-       -> r3_cc -> waiting_hm
+       -> r3_cc -> waiting_primary_arbiter
        -> merging -> completed
 ```
 
-`waiting_hm` is non-terminal. It is a deliberate host handoff and may be
+`waiting_primary_arbiter` is non-terminal. It is a deliberate host handoff and may be
 returned with exit `0`; callers must inspect the status value instead of using
 the exit code alone as proof of completion.
 
 `completed`, `degraded`, `failed`, `failed_policy`, and `cancelled` are terminal
 states. A completed analysis still does not authorize any external action.
 
-## Hermes `hm` Handshake
+## Primary Arbiter Handshake
 
-Auditor B runs first in R3. The scheduler then creates:
+Counterpart Arbiter runs first in R3. The scheduler then creates:
 
 - `r3/evidence-packet.json`: the accepted R1/R2 evidence and snapshot binding
-- `r3/cc-response.json`: Auditor B's typed verdict
+- `r3/cc-response.json`: Counterpart Arbiter's typed verdict
 - `r3/input-receipt.json`: SHA-256 bindings for all accepted R1/R2 artifacts,
   the evidence packet, and the CC verdict
-- `r3/hm-request.json`: the challenge Hermes must answer
+- `r3/primary-arbiter-request.json`: the challenge the Primary Arbiter must answer
 
-`quinte hm request RUN_ID --json` returns the challenge. It contains:
+`quinte primary-arbiter request RUN_ID --json` returns the challenge. It contains:
 
 ```text
 run_id
@@ -238,23 +238,23 @@ expires_at
 consumed
 ```
 
-Hermes must read the evidence packet and Auditor B response, independently
+The Primary Arbiter must read the evidence packet and Counterpart Arbiter response, independently
 draft its verdict, and write a response conforming to
-[`schemas/hm-response.schema.json`](../schemas/hm-response.schema.json):
+[`schemas/primary-arbiter-response.schema.json`](../schemas/primary-arbiter-response.schema.json):
 
 ```json
 {
-  "hm_response_version": "1.0",
-  "run_id": "exact value from hm-request.json",
-  "nonce": "exact value from hm-request.json",
-  "policy_sha256": "exact value from hm-request.json",
-  "evidence_packet_sha256": "exact value from hm-request.json",
-  "input_receipt_sha256": "exact value from hm-request.json",
-  "action_scope": "exact value from hm-request.json, including null",
+  "primary_arbiter_response_version": "1.0",
+  "run_id": "exact value from primary-arbiter-request.json",
+  "nonce": "exact value from primary-arbiter-request.json",
+  "policy_sha256": "exact value from primary-arbiter-request.json",
+  "evidence_packet_sha256": "exact value from primary-arbiter-request.json",
+  "input_receipt_sha256": "exact value from primary-arbiter-request.json",
+  "action_scope": "exact value from primary-arbiter-request.json, including null",
   "verdict": {
     "arbiter_verdict_version": "1.0",
-    "summary": "Hermes evidence-based summary",
-    "recommendation": "Hermes recommendation",
+    "summary": "Primary Arbiter evidence-based summary",
+    "recommendation": "Primary Arbiter recommendation",
     "residuals": []
   }
 }
@@ -263,13 +263,13 @@ draft its verdict, and write a response conforming to
 Submit it only through:
 
 ```bash
-quinte hm submit RUN_ID --verdict /path/to/arbiter-verdict.json --json
+quinte primary-arbiter submit RUN_ID --verdict /path/to/arbiter-verdict.json --json
 ```
 
-`--verdict` is the preferred host boundary: Hermes supplies only the
+`--verdict` is the preferred host boundary: the Primary Arbiter supplies only the
 `ArbiterVerdict`, and the CLI copies the challenge bindings into the
 scheduler-owned response. The verdict file must be outside the run directory.
-The lower-level `--response` form remains for non-Hermes API integrations but
+The lower-level `--response` form remains for non-host API integrations but
 must likewise read an external file and match every challenge field exactly.
 
 The CLI rejects unknown response fields, an expired challenge, mismatched run,
@@ -280,10 +280,10 @@ accepting a different response. A valid submission is copied into the run,
 recorded in the event log, and immediately advances through deterministic
 merge.
 
-Model text such as `hm_approved` or a lane's self-reported identity is not an hm
-acceptance signal. Directly placing `hm-response.json` in the run directory is
+Model text such as `primary_arbiter_approved` or a lane's self-reported identity is not a
+primary-arbiter acceptance signal. Directly placing `primary-arbiter-response.json` in the run directory is
 an unsupported internal operation and cannot bypass challenge validation;
-Hermes integrations must use the handshake command.
+host integrations must use the handshake command.
 
 The challenge is a state-integrity and replay control, not cryptographic user
 authentication. v0.1 does not sign the response or prove the operating-system
@@ -323,16 +323,16 @@ stderr, persisted manifest, and `inspect` for failure handling.
 
 | Code | Meaning |
 | ---: | --- |
-| `0` | Command succeeded. For advancing commands this includes `waiting_hm`; inspect the returned status. |
+| `0` | Command succeeded. For advancing commands this includes `waiting_primary_arbiter`; inspect the returned status. |
 | `1` | Runtime, adapter, output-contract, or protocol execution failure. |
 | `2` | CLI usage, initialization, brief/snapshot preflight, or missing-route failure. |
-| `3` | Policy or integrity violation, including hm binding mismatch or replay. |
+| `3` | Policy or integrity violation, including primary-arbiter binding mismatch or replay. |
 | `4` | The observed run is cancelled. `quinte cancel` itself returns `0` when handled. |
 | `130` | Local `quinte wait` was interrupted; the run was not implicitly cancelled. |
 
 Read-only `status` returns `0` when it can report state, even if the reported
 run has a non-success terminal status. `inspect`, `wait`, `resume`, `run`, and
-`hm submit` map an observed terminal run status to the codes above.
+`primary-arbiter submit` map an observed terminal run status to the codes above.
 
 ## Artifact Layout
 
@@ -373,8 +373,8 @@ appropriate. Do not edit them to advance a run.
       evidence-packet.json
       cc-response.json
       input-receipt.json
-      hm-request.json
-      hm-response.json
+      primary-arbiter-request.json
+      primary-arbiter-response.json
     diagnostics/
       r2-rate-state.json
     result.json
@@ -399,7 +399,7 @@ for every phase. Both are written atomically before a wait and honored by
 output cannot create or override these decisions.
 
 Not every path exists in every run. A failed R1 run has no R2 or R3 products;
-a `waiting_hm` run has no `hm-response.json`, `result.json`, or `report.md`.
+a `waiting_primary_arbiter` run has no `primary-arbiter-response.json`, `result.json`, or `report.md`.
 
 The state root may contain copied source evidence and raw model output. Protect,
 retain, and delete it according to the sensitivity of the reviewed material.

@@ -20,15 +20,15 @@ use walkdir::{DirEntry, WalkDir};
 use crate::adapters::{self, Invocation};
 use crate::model::{
     ArbiterVerdict, ArtifactBinding, AttachmentEntry, Brief, ClosureState, Disposition,
-    HmChallenge, HmResponse, HmSubmissionReceipt, HmSubmissionState, LaneArtifactBinding,
-    LaneOutput, MULTIMODAL_MODEL, Policy, R2Packet, R3InputReceipt, RESULT_VERSION, Residual,
-    ResultEnvelope, RunError, RunManifest, RunStatus, SnapshotEntry, SnapshotManifest, TEXT_MODEL,
-    TrialManifest, TrialPerspective,
+    LaneArtifactBinding, LaneOutput, MULTIMODAL_MODEL, Policy, PrimaryArbiterChallenge,
+    PrimaryArbiterResponse, PrimaryArbiterSubmissionReceipt, PrimaryArbiterSubmissionState,
+    R2Packet, R3InputReceipt, RESULT_VERSION, Residual, ResultEnvelope, RunError, RunManifest,
+    RunStatus, SnapshotEntry, SnapshotManifest, TEXT_MODEL, TrialManifest, TrialPerspective,
 };
 use crate::policy;
 use crate::schema::{
-    BRIEF_SCHEMA, HM_RESPONSE_SCHEMA, LANE_OUTPUT_SCHEMA, R3_INPUT_RECEIPT_SCHEMA, RESULT_SCHEMA,
-    validate_file, validate_value,
+    BRIEF_SCHEMA, LANE_OUTPUT_SCHEMA, PRIMARY_ARBITER_RESPONSE_SCHEMA, R3_INPUT_RECEIPT_SCHEMA,
+    RESULT_SCHEMA, validate_file, validate_value,
 };
 use crate::store::{ActiveProcess, Store};
 #[cfg(windows)]
@@ -475,8 +475,8 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
         current_phase: None,
         error: None,
         r3_input_receipt: None,
-        hm_challenge: None,
-        hm_submission: None,
+        primary_arbiter_challenge: None,
+        primary_arbiter_submission: None,
         result_sha256: None,
     };
     store.save_manifest(&manifest)?;
@@ -909,7 +909,7 @@ pub fn record_worker_failure(
     let _lock = store.lock(run_id)?;
     let mut manifest = store.load_manifest(run_id)?;
     if manifest.status.terminal()
-        || manifest.status == RunStatus::WaitingHm
+        || manifest.status == RunStatus::WaitingPrimaryArbiter
         || manifest.status == RunStatus::Cancelling
     {
         return Ok(manifest.status);
@@ -1091,10 +1091,16 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
         }
         let lane_result = (|| {
             let attempt = next_attempt(&run_dir, "R3", "cc", policy.max_attempts)?;
-            wait_for_retry_deadline(store, &mut manifest, "R3", &policy.auditor, attempt)?;
+            wait_for_retry_deadline(
+                store,
+                &mut manifest,
+                "R3",
+                &policy.counterpart_arbiter,
+                attempt,
+            )?;
             let lane_root = run_dir.join(format!("lanes/R3/cc/attempt-{attempt}"));
             let invocation = adapters::build(
-                &policy.auditor,
+                &policy.counterpart_arbiter,
                 "R3",
                 &manifest.effective_model,
                 &evidence_packet_path,
@@ -1104,8 +1110,8 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
             let outcome = run_attempt(
                 store,
                 &manifest,
-                &policy.auditor.party_id,
-                &policy.auditor.adapter,
+                &policy.counterpart_arbiter.party_id,
+                &policy.counterpart_arbiter.adapter,
                 "R3",
                 attempt,
                 invocation,
@@ -1120,7 +1126,7 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
                 "R3",
                 &evidence_packet_path,
                 &run_dir,
-                &policy.auditor,
+                &policy.counterpart_arbiter,
                 attempt,
                 outcome,
             )
@@ -1149,7 +1155,7 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
                 &mut manifest,
                 RunStatus::Failed,
                 "r3_cc_failed",
-                &format!("cannot persist Auditor B verdict: {error:#}"),
+                &format!("cannot persist Counterpart Arbiter verdict: {error:#}"),
                 false,
             );
         }
@@ -1174,38 +1180,40 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
         );
     }
 
-    let hm_path = run_dir.join("r3/hm-response.json");
-    if manifest.hm_submission.is_none() {
-        if manifest.hm_challenge.is_none() {
-            let challenge = create_hm_challenge(&manifest, &brief, &evidence_packet_path)?;
-            manifest.hm_challenge = Some(challenge);
+    let primary_arbiter_response_path = run_dir.join("r3/primary-arbiter-response.json");
+    if manifest.primary_arbiter_submission.is_none() {
+        if manifest.primary_arbiter_challenge.is_none() {
+            let challenge =
+                create_primary_arbiter_challenge(&manifest, &brief, &evidence_packet_path)?;
+            manifest.primary_arbiter_challenge = Some(challenge);
             // Persist scheduler ownership before publishing the request. A crash can then
             // regenerate the same request instead of exposing an orphan challenge.
             store.save_manifest(&manifest)?;
         }
         write_json(
-            &run_dir.join("r3/hm-request.json"),
-            manifest.hm_challenge.as_ref().unwrap(),
+            &run_dir.join("r3/primary-arbiter-request.json"),
+            manifest.primary_arbiter_challenge.as_ref().unwrap(),
         )?;
         let status = store.transition(
             &mut manifest,
-            RunStatus::WaitingHm,
+            RunStatus::WaitingPrimaryArbiter,
             Some("R3"),
             json!({
-                "hm_request": "r3/hm-request.json"
+                "primary_arbiter_request": "r3/primary-arbiter-request.json"
             }),
         )?;
         return Ok(status);
     }
 
-    let submission_ready = match recover_hm_submission(&mut manifest, &brief, &run_dir) {
+    let submission_ready = match recover_primary_arbiter_submission(&mut manifest, &brief, &run_dir)
+    {
         Ok(ready) => ready,
         Err(error) => {
             return fail_run(
                 store,
                 &mut manifest,
                 RunStatus::FailedPolicy,
-                "hm_submission_drift",
+                "primary_arbiter_submission_drift",
                 &error.to_string(),
                 false,
             );
@@ -1214,9 +1222,9 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
     if !submission_ready {
         return store.transition(
             &mut manifest,
-            RunStatus::WaitingHm,
+            RunStatus::WaitingPrimaryArbiter,
             Some("R3"),
-            json!({"hm_request": "r3/hm-request.json", "submission": "staging"}),
+            json!({"primary_arbiter_request": "r3/primary-arbiter-request.json", "submission": "staging"}),
         );
     }
 
@@ -1225,10 +1233,25 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
     {
         return Ok(RunStatus::Cancelled);
     }
-    let hm: HmResponse = validate_file(&hm_path, HM_RESPONSE_SCHEMA)?;
-    validate_hm_response_binding(&manifest, &hm, &brief, &evidence_packet_path)?;
-    let cc: ArbiterVerdict = read_json(&cc_path)?;
-    let result = merge_verdicts(&manifest, &policy, &r1, &r2, &hm.verdict, &cc);
+    let primary_arbiter_response: PrimaryArbiterResponse = validate_file(
+        &primary_arbiter_response_path,
+        PRIMARY_ARBITER_RESPONSE_SCHEMA,
+    )?;
+    validate_primary_arbiter_response_binding(
+        &manifest,
+        &primary_arbiter_response,
+        &brief,
+        &evidence_packet_path,
+    )?;
+    let counterpart_arbiter: ArbiterVerdict = read_json(&cc_path)?;
+    let result = merge_verdicts(
+        &manifest,
+        &policy,
+        &r1,
+        &r2,
+        &primary_arbiter_response.verdict,
+        &counterpart_arbiter,
+    );
     validate_value(&serde_json::to_value(&result)?, RESULT_SCHEMA)?;
     let finalization = store.finalization_guard(run_id)?;
     if finalization.cancellation_requested() {
@@ -1251,20 +1274,27 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
     Ok(status)
 }
 
-pub fn submit_hm(store: &Store, run_id: &str, response_path: &Path) -> anyhow::Result<RunStatus> {
-    let internal = store.run_dir(run_id).join("r3/hm-response.json");
+pub fn submit_primary_arbiter(
+    store: &Store,
+    run_id: &str,
+    response_path: &Path,
+) -> anyhow::Result<RunStatus> {
+    let internal = store
+        .run_dir(run_id)
+        .join("r3/primary-arbiter-response.json");
     if response_path
         .canonicalize()
         .ok()
         .is_some_and(|path| path == internal)
     {
-        bail!("hm response input must be outside the scheduler-owned run directory");
+        bail!("primary-arbiter response input must be outside the scheduler-owned run directory");
     }
-    let response: HmResponse = validate_file(response_path, HM_RESPONSE_SCHEMA)?;
-    submit_hm_response(store, run_id, response)
+    let response: PrimaryArbiterResponse =
+        validate_file(response_path, PRIMARY_ARBITER_RESPONSE_SCHEMA)?;
+    submit_primary_arbiter_response(store, run_id, response)
 }
 
-pub fn submit_hm_verdict(
+pub fn submit_primary_arbiter_verdict(
     store: &Store,
     run_id: &str,
     verdict_path: &Path,
@@ -1274,15 +1304,15 @@ pub fn submit_hm_verdict(
         .ok()
         .is_some_and(|path| path.starts_with(store.run_dir(run_id)))
     {
-        bail!("hm verdict input must be outside the scheduler-owned run directory");
+        bail!("primary-arbiter verdict input must be outside the scheduler-owned run directory");
     }
     let verdict: ArbiterVerdict = read_json(verdict_path)?;
     let manifest = store.load_manifest(run_id)?;
     let challenge = manifest
-        .hm_challenge
-        .ok_or_else(|| anyhow!("hm challenge is not ready"))?;
-    let response = HmResponse {
-        hm_response_version: "1.0".into(),
+        .primary_arbiter_challenge
+        .ok_or_else(|| anyhow!("primary arbiter challenge is not ready"))?;
+    let response = PrimaryArbiterResponse {
+        primary_arbiter_response_version: "1.0".into(),
         run_id: challenge.run_id,
         nonce: challenge.nonce,
         policy_sha256: challenge.policy_sha256,
@@ -1291,14 +1321,17 @@ pub fn submit_hm_verdict(
         action_scope: challenge.action_scope,
         verdict,
     };
-    validate_value(&serde_json::to_value(&response)?, HM_RESPONSE_SCHEMA)?;
-    submit_hm_response(store, run_id, response)
+    validate_value(
+        &serde_json::to_value(&response)?,
+        PRIMARY_ARBITER_RESPONSE_SCHEMA,
+    )?;
+    submit_primary_arbiter_response(store, run_id, response)
 }
 
-fn submit_hm_response(
+fn submit_primary_arbiter_response(
     store: &Store,
     run_id: &str,
-    response: HmResponse,
+    response: PrimaryArbiterResponse,
 ) -> anyhow::Result<RunStatus> {
     let _lock = store.lock(run_id)?;
     let mut manifest = store.load_manifest(run_id)?;
@@ -1319,25 +1352,25 @@ fn submit_hm_response(
     let response_sha256 = sha256_bytes(&response_bytes_with_newline(response_bytes));
 
     let already_accepted = manifest
-        .hm_submission
+        .primary_arbiter_submission
         .as_ref()
-        .is_some_and(|receipt| receipt.state == HmSubmissionState::Accepted);
-    if let Some(receipt) = &manifest.hm_submission {
+        .is_some_and(|receipt| receipt.state == PrimaryArbiterSubmissionState::Accepted);
+    if let Some(receipt) = &manifest.primary_arbiter_submission {
         if receipt.response_sha256 != response_sha256 {
-            bail!("hm challenge already has a different scheduler-owned submission");
+            bail!("primary arbiter challenge already has a different scheduler-owned submission");
         }
     } else {
-        if manifest.status != RunStatus::WaitingHm {
-            bail!("run {run_id} is not waiting for Hermes hm");
+        if manifest.status != RunStatus::WaitingPrimaryArbiter {
+            bail!("run {run_id} is not waiting for Primary Arbiter");
         }
         if manifest
-            .hm_challenge
+            .primary_arbiter_challenge
             .as_ref()
             .is_some_and(|challenge| challenge.consumed)
         {
-            bail!("hm challenge was already consumed");
+            bail!("primary arbiter challenge was already consumed");
         }
-        validate_new_hm_response(
+        validate_new_primary_arbiter_response(
             &manifest,
             &response,
             &brief,
@@ -1349,10 +1382,10 @@ fn submit_hm_response(
             .ok_or_else(|| anyhow!("R3 input receipt is missing"))?
             .sha256
             .clone();
-        manifest.hm_submission = Some(HmSubmissionReceipt {
+        manifest.primary_arbiter_submission = Some(PrimaryArbiterSubmissionReceipt {
             submission_receipt_version: "1.0".into(),
-            state: HmSubmissionState::Staging,
-            response_ref: "r3/hm-response.json".into(),
+            state: PrimaryArbiterSubmissionState::Staging,
+            response_ref: "r3/primary-arbiter-response.json".into(),
             response_sha256: response_sha256.clone(),
             input_receipt_sha256,
             staged_at: utc_now(),
@@ -1361,15 +1394,15 @@ fn submit_hm_response(
         store.save_manifest(&manifest)?;
     }
 
-    write_json(&run_dir.join("r3/hm-response.json"), &response)?;
-    if !recover_hm_submission(&mut manifest, &brief, &run_dir)? {
-        bail!("hm response could not be durably accepted");
+    write_json(&run_dir.join("r3/primary-arbiter-response.json"), &response)?;
+    if !recover_primary_arbiter_submission(&mut manifest, &brief, &run_dir)? {
+        bail!("primary-arbiter response could not be durably accepted");
     }
     store.save_manifest(&manifest)?;
     if !already_accepted {
         store.event(
             run_id,
-            "hm.accepted",
+            "primary_arbiter.accepted",
             Some("R3"),
             None,
             None,
@@ -1648,9 +1681,9 @@ fn verify_resume_integrity(
     if manifest.r3_input_receipt.is_some() {
         verify_r3_input_receipt(manifest, policy, run_dir)?;
     }
-    if manifest.hm_submission.is_some() {
+    if manifest.primary_arbiter_submission.is_some() {
         let mut recovered = manifest.clone();
-        recover_hm_submission(&mut recovered, brief, run_dir)?;
+        recover_primary_arbiter_submission(&mut recovered, brief, run_dir)?;
     }
     Ok(())
 }
@@ -2687,11 +2720,11 @@ fn build_r2_packet(
     })
 }
 
-fn create_hm_challenge(
+fn create_primary_arbiter_challenge(
     manifest: &RunManifest,
     brief: &Brief,
     evidence_packet_path: &Path,
-) -> anyhow::Result<HmChallenge> {
+) -> anyhow::Result<PrimaryArbiterChallenge> {
     let input_receipt_sha256 = manifest
         .r3_input_receipt
         .as_ref()
@@ -2700,7 +2733,7 @@ fn create_hm_challenge(
         .clone();
     let mut nonce = [0_u8; 32];
     rand::rng().fill_bytes(&mut nonce);
-    Ok(HmChallenge {
+    Ok(PrimaryArbiterChallenge {
         challenge_version: "1.0".into(),
         run_id: manifest.run_id.clone(),
         nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce),
@@ -2714,16 +2747,16 @@ fn create_hm_challenge(
     })
 }
 
-fn validate_hm_response_binding(
+fn validate_primary_arbiter_response_binding(
     manifest: &RunManifest,
-    response: &HmResponse,
+    response: &PrimaryArbiterResponse,
     brief: &Brief,
     evidence_packet_path: &Path,
 ) -> anyhow::Result<()> {
     let challenge = manifest
-        .hm_challenge
+        .primary_arbiter_challenge
         .as_ref()
-        .ok_or_else(|| anyhow!("hm challenge is missing"))?;
+        .ok_or_else(|| anyhow!("primary arbiter challenge is missing"))?;
     let expected = (
         &challenge.run_id,
         &challenge.nonce,
@@ -2750,25 +2783,25 @@ fn validate_hm_response_binding(
             .is_none_or(|binding| response.input_receipt_sha256 != binding.sha256)
         || response.action_scope != brief.action_scope
     {
-        bail!("hm response does not bind the active challenge");
+        bail!("primary-arbiter response does not bind the active challenge");
     }
     Ok(())
 }
 
-fn validate_new_hm_response(
+fn validate_new_primary_arbiter_response(
     manifest: &RunManifest,
-    response: &HmResponse,
+    response: &PrimaryArbiterResponse,
     brief: &Brief,
     evidence_packet_path: &Path,
 ) -> anyhow::Result<()> {
-    validate_hm_response_binding(manifest, response, brief, evidence_packet_path)?;
-    let challenge = manifest.hm_challenge.as_ref().unwrap();
+    validate_primary_arbiter_response_binding(manifest, response, brief, evidence_packet_path)?;
+    let challenge = manifest.primary_arbiter_challenge.as_ref().unwrap();
     if challenge.consumed {
-        bail!("hm challenge was already consumed");
+        bail!("primary arbiter challenge was already consumed");
     }
     let expiry = chrono::DateTime::parse_from_rfc3339(&challenge.expires_at)?;
     if expiry < Utc::now() {
-        bail!("hm challenge expired");
+        bail!("primary arbiter challenge expired");
     }
     Ok(())
 }
@@ -2904,50 +2937,55 @@ fn verify_artifact_binding(
     Ok(())
 }
 
-fn recover_hm_submission(
+fn recover_primary_arbiter_submission(
     manifest: &mut RunManifest,
     brief: &Brief,
     run_dir: &Path,
 ) -> anyhow::Result<bool> {
-    let Some(receipt) = manifest.hm_submission.as_ref() else {
+    let Some(receipt) = manifest.primary_arbiter_submission.as_ref() else {
         return Ok(false);
     };
     let response_path = run_dir.join(&receipt.response_ref);
     if !response_path.exists() {
-        if receipt.state == HmSubmissionState::Staging {
+        if receipt.state == PrimaryArbiterSubmissionState::Staging {
             return Ok(false);
         }
-        bail!("accepted hm response artifact is missing");
+        bail!("accepted primary-arbiter response artifact is missing");
     }
     if sha256_file(&response_path)? != receipt.response_sha256 {
-        bail!("hm response changed after scheduler staging");
+        bail!("primary-arbiter response changed after scheduler staging");
     }
     let input_receipt = manifest
         .r3_input_receipt
         .as_ref()
         .ok_or_else(|| anyhow!("R3 input receipt is missing"))?;
     if receipt.input_receipt_sha256 != input_receipt.sha256 {
-        bail!("hm submission does not bind the accepted R3 inputs");
+        bail!("primary arbiter submission does not bind the accepted R3 inputs");
     }
-    let response: HmResponse = validate_file(&response_path, HM_RESPONSE_SCHEMA)?;
-    validate_hm_response_binding(
+    let response: PrimaryArbiterResponse =
+        validate_file(&response_path, PRIMARY_ARBITER_RESPONSE_SCHEMA)?;
+    validate_primary_arbiter_response_binding(
         manifest,
         &response,
         brief,
         &run_dir.join("r3/evidence-packet.json"),
     )?;
 
-    if receipt.state == HmSubmissionState::Staging {
-        let receipt = manifest.hm_submission.as_mut().unwrap();
-        receipt.state = HmSubmissionState::Accepted;
+    if receipt.state == PrimaryArbiterSubmissionState::Staging {
+        let receipt = manifest.primary_arbiter_submission.as_mut().unwrap();
+        receipt.state = PrimaryArbiterSubmissionState::Accepted;
         receipt.accepted_at = Some(utc_now());
-        manifest.hm_challenge.as_mut().unwrap().consumed = true;
+        manifest
+            .primary_arbiter_challenge
+            .as_mut()
+            .unwrap()
+            .consumed = true;
     } else if !manifest
-        .hm_challenge
+        .primary_arbiter_challenge
         .as_ref()
         .is_some_and(|challenge| challenge.consumed)
     {
-        bail!("accepted hm receipt has an unconsumed challenge");
+        bail!("accepted primary arbiter receipt has an unconsumed challenge");
     }
     Ok(true)
 }
@@ -2971,19 +3009,23 @@ fn merge_verdicts(
     policy: &Policy,
     r1: &[LaneAccepted],
     r2: &[LaneAccepted],
-    hm: &ArbiterVerdict,
-    cc: &ArbiterVerdict,
+    primary_arbiter: &ArbiterVerdict,
+    counterpart_arbiter: &ArbiterVerdict,
 ) -> ResultEnvelope {
     let mut residuals = BTreeMap::<String, Residual>::new();
     let mut dissent = Vec::new();
-    for residual in hm.residuals.iter().chain(cc.residuals.iter()) {
+    for residual in primary_arbiter
+        .residuals
+        .iter()
+        .chain(counterpart_arbiter.residuals.iter())
+    {
         if let Some(existing) = residuals.get(&residual.id)
             && (existing.disposition != residual.disposition
                 || existing.closure_state != residual.closure_state
                 || existing.finding != residual.finding)
         {
             dissent.push(format!(
-                "Residual {} differs between hm and cc; retained as unresolved/open.",
+                "Residual {} differs between primary arbiter and counterpart arbiter; retained as unresolved/open.",
                 residual.id
             ));
             let mut merged = existing.clone();
@@ -2997,10 +3039,11 @@ fn merge_verdicts(
             .entry(residual.id.clone())
             .or_insert_with(|| residual.clone());
     }
-    if hm.recommendation != cc.recommendation {
+    if primary_arbiter.recommendation != counterpart_arbiter.recommendation {
         dissent.push(format!(
-            "hm: {}\ncc: {}",
-            hm.recommendation, cc.recommendation
+            "primary arbiter: {}
+counterpart arbiter: {}",
+            primary_arbiter.recommendation, counterpart_arbiter.recommendation
         ));
     }
     let perspectives = policy
@@ -3028,8 +3071,8 @@ fn merge_verdicts(
         result_version: RESULT_VERSION.into(),
         run_id: manifest.run_id.clone(),
         status: RunStatus::Completed,
-        summary: hm.summary.clone(),
-        recommendation: hm.recommendation.clone(),
+        summary: primary_arbiter.summary.clone(),
+        recommendation: primary_arbiter.recommendation.clone(),
         dissent,
         residuals: residuals.into_values().collect(),
         trial_manifest: TrialManifest {
@@ -3314,7 +3357,7 @@ pub fn wait(store: &Store, run_id: &str, poll_interval: Duration) -> anyhow::Res
             verify_result_integrity(store, run_id)?;
             return Ok(status);
         }
-        if status == RunStatus::WaitingHm {
+        if status == RunStatus::WaitingPrimaryArbiter {
             return Ok(status);
         }
         ensure_worker_liveness(store, run_id)?;
@@ -3363,7 +3406,7 @@ fn ensure_worker_liveness(store: &Store, run_id: &str) -> anyhow::Result<()> {
         // The worker may publish a durable stop state between the waiter's
         // manifest read and this process check.
         let status = store.load_manifest(run_id)?.status;
-        if status.terminal() || status == RunStatus::WaitingHm {
+        if status.terminal() || status == RunStatus::WaitingPrimaryArbiter {
             return Ok(());
         }
         bail!("worker is not alive; run `quinte resume {run_id}` to recover the run");

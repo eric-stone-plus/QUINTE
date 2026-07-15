@@ -31,7 +31,7 @@ pub struct Brief {
 pub struct Policy {
     pub policy_version: String,
     pub roster: Vec<RoutePolicy>,
-    pub auditor: RoutePolicy,
+    pub counterpart_arbiter: RoutePolicy,
     pub text_model: String,
     pub multimodal_model: String,
     pub max_parallel_r1: usize,
@@ -106,7 +106,7 @@ pub enum RunStatus {
     R2Running,
     R2Gate,
     R3Cc,
-    WaitingHm,
+    WaitingPrimaryArbiter,
     Merging,
     Completed,
     Degraded,
@@ -143,8 +143,8 @@ pub struct RunManifest {
     pub current_phase: Option<String>,
     pub error: Option<RunError>,
     pub r3_input_receipt: Option<ArtifactBinding>,
-    pub hm_challenge: Option<HmChallenge>,
-    pub hm_submission: Option<HmSubmissionReceipt>,
+    pub primary_arbiter_challenge: Option<PrimaryArbiterChallenge>,
+    pub primary_arbiter_submission: Option<PrimaryArbiterSubmissionReceipt>,
     pub result_sha256: Option<String>,
 }
 
@@ -287,7 +287,7 @@ pub struct R3InputReceipt {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct HmChallenge {
+pub struct PrimaryArbiterChallenge {
     pub challenge_version: String,
     pub run_id: String,
     pub nonce: String,
@@ -302,8 +302,8 @@ pub struct HmChallenge {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct HmResponse {
-    pub hm_response_version: String,
+pub struct PrimaryArbiterResponse {
+    pub primary_arbiter_response_version: String,
     pub run_id: String,
     pub nonce: String,
     pub policy_sha256: String,
@@ -315,16 +315,16 @@ pub struct HmResponse {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum HmSubmissionState {
+pub enum PrimaryArbiterSubmissionState {
     Staging,
     Accepted,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct HmSubmissionReceipt {
+pub struct PrimaryArbiterSubmissionReceipt {
     pub submission_receipt_version: String,
-    pub state: HmSubmissionState,
+    pub state: PrimaryArbiterSubmissionState,
     pub response_ref: String,
     pub response_sha256: String,
     pub input_receipt_sha256: String,

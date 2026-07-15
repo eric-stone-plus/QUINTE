@@ -64,7 +64,7 @@ pub fn doctor(policy: &Policy) -> Vec<Value> {
     policy
         .roster
         .iter()
-        .chain(std::iter::once(&policy.auditor))
+        .chain(std::iter::once(&policy.counterpart_arbiter))
         .map(|route| {
             let resolution = diagnose_route_program(route);
             let resolved = resolution.command;

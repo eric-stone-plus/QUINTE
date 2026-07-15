@@ -595,9 +595,9 @@ fn transition_allowed(from: RunStatus, to: RunStatus) -> bool {
             | (RunStatus::R2Packet, RunStatus::R2Gate)
             | (RunStatus::R2Running, RunStatus::R2Gate)
             | (RunStatus::R2Gate, RunStatus::R3Cc)
-            | (RunStatus::R2Gate, RunStatus::WaitingHm)
-            | (RunStatus::R3Cc, RunStatus::WaitingHm)
-            | (RunStatus::WaitingHm, RunStatus::Merging)
+            | (RunStatus::R2Gate, RunStatus::WaitingPrimaryArbiter)
+            | (RunStatus::R3Cc, RunStatus::WaitingPrimaryArbiter)
+            | (RunStatus::WaitingPrimaryArbiter, RunStatus::Merging)
             | (RunStatus::Merging, RunStatus::Completed)
             | (RunStatus::Merging, RunStatus::Degraded)
     )
@@ -638,8 +638,8 @@ mod tests {
             current_phase: None,
             error: None,
             r3_input_receipt: None,
-            hm_challenge: None,
-            hm_submission: None,
+            primary_arbiter_challenge: None,
+            primary_arbiter_submission: None,
             result_sha256: None,
         }
     }
@@ -652,7 +652,12 @@ mod tests {
         let mut manifest = manifest("run-1");
         store.save_manifest(&manifest).unwrap();
         let error = store
-            .transition(&mut manifest, RunStatus::WaitingHm, Some("R3"), json!({}))
+            .transition(
+                &mut manifest,
+                RunStatus::WaitingPrimaryArbiter,
+                Some("R3"),
+                json!({}),
+            )
             .unwrap_err();
         assert!(error.to_string().contains("illegal run transition"));
         assert_eq!(

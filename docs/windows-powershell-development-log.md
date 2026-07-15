@@ -63,7 +63,7 @@ fragile and an avoidable injection boundary.
   without a verifiable identity continues to fail closed.
 - Worker liveness uses native Windows process handles rather than localized
   `tasklist` text. Waiters reload the durable manifest after a worker exit so
-  a concurrently published `waiting_hm` state cannot be mistaken for a crash.
+  a concurrently published `waiting_primary_arbiter` state cannot be mistaken for a crash.
 
 ### Silent adapter processes
 

@@ -60,7 +60,7 @@ TOP_LEVEL_FIELDS = {
     "prompt_shrink_char_limit",
     "substitution_policy",
     "parties",
-    "auditor_b",
+    "counterpart_arbiter",
     "non_authorization",
 }
 ROUTE_FIELDS = {"id", "route_id", "command", "required"}
@@ -264,12 +264,12 @@ def validate_manifest(manifest: Any) -> list[str]:
         if len(parties) == 5 and {party.get("id") for party in parsed_parties} != set(PARTY_IDS):
             errors.append("parties must bind Party A through Party E exactly once")
 
-    auditor = manifest.get("auditor_b")
-    if auditor is not None:
-        validate_route("auditor_b", auditor, errors, expected_id="Auditor B")
+    counterpart_arbiter = manifest.get("counterpart_arbiter")
+    if counterpart_arbiter is not None:
+        validate_route("counterpart_arbiter", counterpart_arbiter, errors, expected_id="Counterpart Arbiter")
     if phase == "R3":
-        if not isinstance(auditor, dict) or auditor.get("required") is not True:
-            errors.append("R3 dispatch requires auditor_b.required true")
+        if not isinstance(counterpart_arbiter, dict) or counterpart_arbiter.get("required") is not True:
+            errors.append("R3 dispatch requires counterpart_arbiter.required true")
 
     return errors
 
@@ -329,8 +329,8 @@ def executable_errors(manifest_path: Path, manifest: dict[str, Any]) -> list[str
 def dispatch_targets(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     if manifest["phase"] in {"R1", "R2"}:
         return list(manifest["parties"])
-    auditor = manifest.get("auditor_b")
-    return [auditor] if isinstance(auditor, dict) else []
+    counterpart_arbiter = manifest.get("counterpart_arbiter")
+    return [counterpart_arbiter] if isinstance(counterpart_arbiter, dict) else []
 
 
 def slug(value: str) -> str:
@@ -764,8 +764,8 @@ def validate_ledger(ledger: Any) -> list[str]:
                 parsed_parties.append(parsed)
         if ledger.get("phase") in {"R1", "R2"} and [party.get("id") for party in parsed_parties] != PARTY_IDS:
             errors.append("R1/R2 ledgers must include Party A through Party E in order")
-        if ledger.get("phase") == "R3" and [party.get("id") for party in parsed_parties] != ["Auditor B"]:
-            errors.append("R3 ledgers must include Auditor B")
+        if ledger.get("phase") == "R3" and [party.get("id") for party in parsed_parties] != ["Counterpart Arbiter"]:
+            errors.append("R3 ledgers must include Counterpart Arbiter")
 
     failures = ledger.get("blocking_failures")
     parsed_failures: list[dict[str, Any]] = []

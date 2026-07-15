@@ -22,8 +22,8 @@ fn default_policy_binds_the_fixed_roster_and_models() {
         ]
     );
     assert!(policy.roster.iter().all(|route| route.required));
-    assert_eq!(policy.auditor.party_id, "Auditor B");
-    assert!(policy.auditor.required);
+    assert_eq!(policy.counterpart_arbiter.party_id, "Counterpart Arbiter");
+    assert!(policy.counterpart_arbiter.required);
     assert_eq!(policy.text_model, TEXT_MODEL);
     assert_eq!(policy.multimodal_model, MULTIMODAL_MODEL);
 }
@@ -78,10 +78,10 @@ fn policy_rejects_model_route_drift() {
 }
 
 #[test]
-fn policy_rejects_invalid_auditor_and_phase_limits() {
-    let mut auditor = default_policy();
-    auditor.auditor.required = false;
-    assert!(validate(&auditor).is_err());
+fn policy_rejects_invalid_counterpart_arbiter_and_phase_limits() {
+    let mut counterpart_arbiter = default_policy();
+    counterpart_arbiter.counterpart_arbiter.required = false;
+    assert!(validate(&counterpart_arbiter).is_err());
 
     let mut r1 = default_policy();
     r1.max_parallel_r1 = 4;

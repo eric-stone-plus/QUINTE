@@ -8,7 +8,8 @@ use crate::util::read_json;
 
 pub const BRIEF_SCHEMA: &str = include_str!("../schemas/brief.schema.json");
 pub const LANE_OUTPUT_SCHEMA: &str = include_str!("../schemas/lane-output.schema.json");
-pub const HM_RESPONSE_SCHEMA: &str = include_str!("../schemas/hm-response.schema.json");
+pub const PRIMARY_ARBITER_RESPONSE_SCHEMA: &str =
+    include_str!("../schemas/primary-arbiter-response.schema.json");
 pub const R3_INPUT_RECEIPT_SCHEMA: &str = include_str!("../schemas/r3-input-receipt.schema.json");
 pub const RESULT_SCHEMA: &str = include_str!("../schemas/result.schema.json");
 pub const RUN_MANIFEST_SCHEMA: &str = include_str!("../schemas/run-manifest.schema.json");

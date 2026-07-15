@@ -18,7 +18,7 @@ pub fn default_policy() -> Policy {
             route("Party D", "mimo", "mimo", "mimo"),
             route("Party E", "omp", "omp", "omp"),
         ],
-        auditor: route("Auditor B", "cc", "claude", "claude"),
+        counterpart_arbiter: route("Counterpart Arbiter", "cc", "claude", "claude"),
         text_model: TEXT_MODEL.to_string(),
         multimodal_model: MULTIMODAL_MODEL.to_string(),
         max_parallel_r1: 5,
@@ -100,13 +100,19 @@ fn validate_with_options(policy: &Policy, allow_fake: bool) -> anyhow::Result<()
             );
         }
     }
-    if policy.auditor.party_id != "Auditor B" || !policy.auditor.required {
-        bail!("policy must bind required Auditor B");
-    }
-    if policy.auditor.adapter != "claude"
-        && !(allow_fake && matches!(policy.auditor.adapter.as_str(), "fake" | "fake_arbiter"))
+    if policy.counterpart_arbiter.party_id != "Counterpart Arbiter"
+        || !policy.counterpart_arbiter.required
     {
-        bail!("Auditor B must use the fixed claude adapter");
+        bail!("policy must bind required Counterpart Arbiter");
+    }
+    if policy.counterpart_arbiter.adapter != "claude"
+        && !(allow_fake
+            && matches!(
+                policy.counterpart_arbiter.adapter.as_str(),
+                "fake" | "fake_arbiter"
+            ))
+    {
+        bail!("Counterpart Arbiter must use the fixed claude adapter");
     }
     if policy.text_model != TEXT_MODEL || policy.multimodal_model != MULTIMODAL_MODEL {
         bail!("model routing is fixed to {TEXT_MODEL} and {MULTIMODAL_MODEL}");

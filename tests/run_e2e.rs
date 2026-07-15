@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use chrono::{Duration as ChronoDuration, Utc};
 use quinte::model::{
-    ArbiterVerdict, Brief, HmResponse, HmSubmissionReceipt, HmSubmissionState, Policy, RunStatus,
-    SandboxMode, TEXT_MODEL,
+    ArbiterVerdict, Brief, Policy, PrimaryArbiterResponse, PrimaryArbiterSubmissionReceipt,
+    PrimaryArbiterSubmissionState, RunStatus, SandboxMode, TEXT_MODEL,
 };
 use quinte::run::{self, RunOptions};
 use quinte::store::Store;
@@ -103,8 +103,8 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
                 required: true,
             })
             .collect(),
-        auditor: quinte::model::RoutePolicy {
-            party_id: "Auditor B".into(),
+        counterpart_arbiter: quinte::model::RoutePolicy {
+            party_id: "Counterpart Arbiter".into(),
             route_id: "fake-cc".into(),
             adapter: "fake".into(),
             executable: executable.display().to_string(),
@@ -131,7 +131,7 @@ fn create_waiting_run(
     temporary: &std::path::Path,
     executable: &std::path::Path,
     suffix: &str,
-) -> (Store, String, HmResponse) {
+) -> (Store, String, PrimaryArbiterResponse) {
     let home = temporary.join(format!("home-{suffix}"));
     let store = Store::new(home.clone());
     fs::create_dir_all(&home).unwrap();
@@ -155,30 +155,30 @@ fn create_waiting_run(
     let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
     assert_eq!(
         run::advance(&store, &created.run_id).unwrap(),
-        RunStatus::WaitingHm
+        RunStatus::WaitingPrimaryArbiter
     );
     let challenge = store
         .load_manifest(&created.run_id)
         .unwrap()
-        .hm_challenge
+        .primary_arbiter_challenge
         .unwrap();
-    let cc: ArbiterVerdict =
+    let counterpart_arbiter: ArbiterVerdict =
         read_json(&store.run_dir(&created.run_id).join("r3/cc-response.json")).unwrap();
-    let response = HmResponse {
-        hm_response_version: "1.0".into(),
+    let response = PrimaryArbiterResponse {
+        primary_arbiter_response_version: "1.0".into(),
         run_id: challenge.run_id,
         nonce: challenge.nonce,
         policy_sha256: challenge.policy_sha256,
         evidence_packet_sha256: challenge.evidence_packet_sha256,
         input_receipt_sha256: challenge.input_receipt_sha256,
         action_scope: challenge.action_scope,
-        verdict: cc,
+        verdict: counterpart_arbiter,
     };
     (store, created.run_id, response)
 }
 
 #[test]
-fn full_fake_run_reaches_hm_then_completes() {
+fn full_fake_run_reaches_primary_arbiter_then_completes() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::compile_fake_agent(temporary.path());
@@ -205,32 +205,32 @@ fn full_fake_run_reaches_hm_then_completes() {
     let after_advance = store.load_manifest(&created.run_id).unwrap();
     assert_eq!(
         advanced,
-        RunStatus::WaitingHm,
-        "run failed before Hermes handoff: {:?}",
+        RunStatus::WaitingPrimaryArbiter,
+        "run failed before Primary Arbiter handoff: {:?}",
         after_advance.error
     );
 
     let challenge = store
         .load_manifest(&created.run_id)
         .unwrap()
-        .hm_challenge
+        .primary_arbiter_challenge
         .unwrap();
-    let cc: ArbiterVerdict =
+    let counterpart_arbiter: ArbiterVerdict =
         read_json(&store.run_dir(&created.run_id).join("r3/cc-response.json")).unwrap();
-    let response = HmResponse {
-        hm_response_version: "1.0".into(),
+    let response = PrimaryArbiterResponse {
+        primary_arbiter_response_version: "1.0".into(),
         run_id: challenge.run_id,
         nonce: challenge.nonce,
         policy_sha256: challenge.policy_sha256,
         evidence_packet_sha256: challenge.evidence_packet_sha256,
         input_receipt_sha256: challenge.input_receipt_sha256,
         action_scope: challenge.action_scope,
-        verdict: cc,
+        verdict: counterpart_arbiter,
     };
-    let response_path = temporary.path().join("hm-response.json");
+    let response_path = temporary.path().join("primary-arbiter-response.json");
     write_json(&response_path, &response).unwrap();
     assert_eq!(
-        run::submit_hm(&store, &created.run_id, &response_path).unwrap(),
+        run::submit_primary_arbiter(&store, &created.run_id, &response_path).unwrap(),
         RunStatus::Completed
     );
     assert!(store.run_dir(&created.run_id).join("result.json").is_file());
@@ -265,7 +265,7 @@ fn completed_result_tampering_is_rejected() {
     let response_path = temporary.path().join("result-integrity-response.json");
     write_json(&response_path, &response).unwrap();
     assert_eq!(
-        run::submit_hm(&store, &run_id, &response_path).unwrap(),
+        run::submit_primary_arbiter(&store, &run_id, &response_path).unwrap(),
         RunStatus::Completed
     );
     fs::write(store.run_dir(&run_id).join("result.json"), b"{}\n").unwrap();
@@ -279,34 +279,48 @@ fn verdict_submission_constructs_scheduler_owned_binding_envelope() {
     let executable = common::compile_fake_agent(temporary.path());
     let (store, run_id, response) =
         create_waiting_run(temporary.path(), &executable, "verdict-submit");
-    let verdict_path = temporary.path().join("hm-verdict.json");
+    let verdict_path = temporary.path().join("primary-arbiter-verdict.json");
     write_json(&verdict_path, &response.verdict).unwrap();
 
     assert_eq!(
-        run::submit_hm_verdict(&store, &run_id, &verdict_path).unwrap(),
+        run::submit_primary_arbiter_verdict(&store, &run_id, &verdict_path).unwrap(),
         RunStatus::Completed
     );
-    let owned: HmResponse = read_json(&store.run_dir(&run_id).join("r3/hm-response.json")).unwrap();
-    let challenge = store.load_manifest(&run_id).unwrap().hm_challenge.unwrap();
+    let owned: PrimaryArbiterResponse = read_json(
+        &store
+            .run_dir(&run_id)
+            .join("r3/primary-arbiter-response.json"),
+    )
+    .unwrap();
+    let challenge = store
+        .load_manifest(&run_id)
+        .unwrap()
+        .primary_arbiter_challenge
+        .unwrap();
     assert_eq!(owned.input_receipt_sha256, challenge.input_receipt_sha256);
     assert_eq!(owned.nonce, challenge.nonce);
 }
 
 #[test]
-fn preplaced_hm_response_cannot_bypass_scheduler_acceptance() {
+fn preplaced_primary_arbiter_response_cannot_bypass_scheduler_acceptance() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::compile_fake_agent(temporary.path());
     let (store, run_id, response) = create_waiting_run(temporary.path(), &executable, "preplaced");
     write_json(
-        &store.run_dir(&run_id).join("r3/hm-response.json"),
+        &store
+            .run_dir(&run_id)
+            .join("r3/primary-arbiter-response.json"),
         &response,
     )
     .unwrap();
 
-    assert_eq!(run::advance(&store, &run_id).unwrap(), RunStatus::WaitingHm);
+    assert_eq!(
+        run::advance(&store, &run_id).unwrap(),
+        RunStatus::WaitingPrimaryArbiter
+    );
     let manifest = store.load_manifest(&run_id).unwrap();
-    assert!(manifest.hm_submission.is_none());
+    assert!(manifest.primary_arbiter_submission.is_none());
     assert!(!store.run_dir(&run_id).join("result.json").exists());
 }
 
@@ -338,7 +352,7 @@ fn r3_receipt_blocks_tampering_of_every_accepted_input() {
 }
 
 #[test]
-fn hm_staging_receipt_is_retryable_when_response_write_never_happened() {
+fn primary_arbiter_staging_receipt_is_retryable_when_response_write_never_happened() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::compile_fake_agent(temporary.path());
@@ -347,10 +361,10 @@ fn hm_staging_receipt_is_retryable_when_response_write_never_happened() {
     let response_path = temporary.path().join("staged-no-file-response.json");
     write_json(&response_path, &response).unwrap();
     let mut manifest = store.load_manifest(&run_id).unwrap();
-    manifest.hm_submission = Some(HmSubmissionReceipt {
+    manifest.primary_arbiter_submission = Some(PrimaryArbiterSubmissionReceipt {
         submission_receipt_version: "1.0".into(),
-        state: HmSubmissionState::Staging,
-        response_ref: "r3/hm-response.json".into(),
+        state: PrimaryArbiterSubmissionState::Staging,
+        response_ref: "r3/primary-arbiter-response.json".into(),
         response_sha256: sha256_file(&response_path).unwrap(),
         input_receipt_sha256: manifest.r3_input_receipt.as_ref().unwrap().sha256.clone(),
         staged_at: manifest.updated_at.clone(),
@@ -359,25 +373,27 @@ fn hm_staging_receipt_is_retryable_when_response_write_never_happened() {
     store.save_manifest(&manifest).unwrap();
 
     assert_eq!(
-        run::submit_hm(&store, &run_id, &response_path).unwrap(),
+        run::submit_primary_arbiter(&store, &run_id, &response_path).unwrap(),
         RunStatus::Completed
     );
 }
 
 #[test]
-fn hm_staged_file_is_recovered_without_resubmission() {
+fn primary_arbiter_staged_file_is_recovered_without_resubmission() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::compile_fake_agent(temporary.path());
     let (store, run_id, response) =
         create_waiting_run(temporary.path(), &executable, "staged-file");
-    let response_path = store.run_dir(&run_id).join("r3/hm-response.json");
+    let response_path = store
+        .run_dir(&run_id)
+        .join("r3/primary-arbiter-response.json");
     write_json(&response_path, &response).unwrap();
     let mut manifest = store.load_manifest(&run_id).unwrap();
-    manifest.hm_submission = Some(HmSubmissionReceipt {
+    manifest.primary_arbiter_submission = Some(PrimaryArbiterSubmissionReceipt {
         submission_receipt_version: "1.0".into(),
-        state: HmSubmissionState::Staging,
-        response_ref: "r3/hm-response.json".into(),
+        state: PrimaryArbiterSubmissionState::Staging,
+        response_ref: "r3/primary-arbiter-response.json".into(),
         response_sha256: sha256_file(&response_path).unwrap(),
         input_receipt_sha256: manifest.r3_input_receipt.as_ref().unwrap().sha256.clone(),
         staged_at: manifest.updated_at.clone(),
@@ -390,31 +406,41 @@ fn hm_staged_file_is_recovered_without_resubmission() {
         store
             .load_manifest(&run_id)
             .unwrap()
-            .hm_submission
+            .primary_arbiter_submission
             .unwrap()
             .state,
-        HmSubmissionState::Accepted
+        PrimaryArbiterSubmissionState::Accepted
     );
 }
 
 #[test]
-fn accepted_hm_submission_resumes_after_expiry_and_is_idempotent() {
+fn accepted_primary_arbiter_submission_resumes_after_expiry_and_is_idempotent() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::compile_fake_agent(temporary.path());
     let (store, run_id, response) =
         create_waiting_run(temporary.path(), &executable, "accepted-crash");
-    let internal_response = store.run_dir(&run_id).join("r3/hm-response.json");
+    let internal_response = store
+        .run_dir(&run_id)
+        .join("r3/primary-arbiter-response.json");
     let external_response = temporary.path().join("accepted-crash-response.json");
     write_json(&internal_response, &response).unwrap();
     write_json(&external_response, &response).unwrap();
     let mut manifest = store.load_manifest(&run_id).unwrap();
-    manifest.hm_challenge.as_mut().unwrap().consumed = true;
-    manifest.hm_challenge.as_mut().unwrap().expires_at = "2000-01-01T00:00:00Z".into();
-    manifest.hm_submission = Some(HmSubmissionReceipt {
+    manifest
+        .primary_arbiter_challenge
+        .as_mut()
+        .unwrap()
+        .consumed = true;
+    manifest
+        .primary_arbiter_challenge
+        .as_mut()
+        .unwrap()
+        .expires_at = "2000-01-01T00:00:00Z".into();
+    manifest.primary_arbiter_submission = Some(PrimaryArbiterSubmissionReceipt {
         submission_receipt_version: "1.0".into(),
-        state: HmSubmissionState::Accepted,
-        response_ref: "r3/hm-response.json".into(),
+        state: PrimaryArbiterSubmissionState::Accepted,
+        response_ref: "r3/primary-arbiter-response.json".into(),
         response_sha256: sha256_file(&internal_response).unwrap(),
         input_receipt_sha256: manifest.r3_input_receipt.as_ref().unwrap().sha256.clone(),
         staged_at: manifest.updated_at.clone(),
@@ -424,7 +450,7 @@ fn accepted_hm_submission_resumes_after_expiry_and_is_idempotent() {
 
     assert_eq!(run::advance(&store, &run_id).unwrap(), RunStatus::Completed);
     assert_eq!(
-        run::submit_hm(&store, &run_id, &external_response).unwrap(),
+        run::submit_primary_arbiter(&store, &run_id, &external_response).unwrap(),
         RunStatus::Completed
     );
 }
@@ -628,7 +654,7 @@ fn r2_rate_limit_retries_same_route_with_persisted_scheduler_events() {
 
     assert_eq!(
         run::advance(&store, &created.run_id).unwrap(),
-        RunStatus::WaitingHm
+        RunStatus::WaitingPrimaryArbiter
     );
     assert!(
         store
@@ -685,7 +711,7 @@ fn typed_mimo_repetition_error_retries_and_preserves_the_real_error() {
 
     assert_eq!(
         run::advance(&store, &created.run_id).unwrap(),
-        RunStatus::WaitingHm
+        RunStatus::WaitingPrimaryArbiter
     );
     assert!(
         store
@@ -844,7 +870,7 @@ fn timeout_recovers_a_flushed_valid_output_without_retrying() {
 
     assert_eq!(
         run::advance(&store, &created.run_id).unwrap(),
-        RunStatus::WaitingHm
+        RunStatus::WaitingPrimaryArbiter
     );
     let lane_dir = store.run_dir(&created.run_id).join("lanes/R1/fake-0");
     assert!(lane_dir.join("accepted.json").is_file());
@@ -964,7 +990,7 @@ fn completed_codewhale_with_a_truncated_final_candidate_retries_on_the_same_rout
 
     assert_eq!(
         run::advance(&store, &created.run_id).unwrap(),
-        RunStatus::WaitingHm
+        RunStatus::WaitingPrimaryArbiter
     );
     let events = store.events(&created.run_id).unwrap();
     let first = events
@@ -989,13 +1015,13 @@ fn completed_codewhale_with_a_truncated_final_candidate_retries_on_the_same_rout
 }
 
 #[test]
-fn r3_auditor_timeout_uses_the_same_bounded_retry_policy() {
+fn r3_counterpart_arbiter_timeout_uses_the_same_bounded_retry_policy() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::compile_fake_agent(temporary.path());
     fs::write(
         temporary.path().join("fake-agent-timeout-once-party"),
-        "Auditor B\n",
+        "Counterpart Arbiter\n",
     )
     .unwrap();
     let home = temporary.path().join("home");
@@ -1012,7 +1038,7 @@ fn r3_auditor_timeout_uses_the_same_bounded_retry_policy() {
         &brief_path,
         &Brief {
             brief_version: "1.0".into(),
-            question: "Does the R3 auditor recover from a transient timeout?".into(),
+            question: "Does the R3 counterpart arbiter recover from a transient timeout?".into(),
             context: None,
             evidence_roots: vec![evidence],
             attachments: Vec::new(),
@@ -1024,13 +1050,13 @@ fn r3_auditor_timeout_uses_the_same_bounded_retry_policy() {
 
     assert_eq!(
         run::advance(&store, &created.run_id).unwrap(),
-        RunStatus::WaitingHm
+        RunStatus::WaitingPrimaryArbiter
     );
     let events = store.events(&created.run_id).unwrap();
     assert!(events.iter().any(|event| {
         event.event_type == "lane.finished"
             && event.phase.as_deref() == Some("R3")
-            && event.party_id.as_deref() == Some("Auditor B")
+            && event.party_id.as_deref() == Some("Counterpart Arbiter")
             && event.attempt == Some(1)
             && event.data["failure_class"] == "timeout"
             && event.data["retryable"] == true
@@ -1038,7 +1064,7 @@ fn r3_auditor_timeout_uses_the_same_bounded_retry_policy() {
     assert!(events.iter().any(|event| {
         event.event_type == "lane.finished"
             && event.phase.as_deref() == Some("R3")
-            && event.party_id.as_deref() == Some("Auditor B")
+            && event.party_id.as_deref() == Some("Counterpart Arbiter")
             && event.attempt == Some(2)
             && event.data["accepted"] == true
     }));
@@ -1085,7 +1111,7 @@ fn resume_consumes_existing_attempt_directories_in_r1_and_r3() {
 
     assert_eq!(
         run::advance(&store, &created.run_id).unwrap(),
-        RunStatus::WaitingHm
+        RunStatus::WaitingPrimaryArbiter
     );
     assert!(
         run_dir
@@ -1104,7 +1130,7 @@ fn resume_consumes_existing_attempt_directories_in_r1_and_r3() {
     assert!(events.iter().any(|event| {
         event.event_type == "lane.finished"
             && event.phase.as_deref() == Some("R3")
-            && event.party_id.as_deref() == Some("Auditor B")
+            && event.party_id.as_deref() == Some("Counterpart Arbiter")
             && event.attempt == Some(2)
             && event.data["accepted"] == true
     }));
@@ -1159,7 +1185,7 @@ fn resume_honors_a_persisted_r1_retry_deadline_before_starting_the_next_attempt(
     let started = Instant::now();
     assert_eq!(
         run::advance(&store, &created.run_id).unwrap(),
-        RunStatus::WaitingHm
+        RunStatus::WaitingPrimaryArbiter
     );
     assert!(started.elapsed() >= Duration::from_millis(8_000));
     assert!(!lane_dir.join("retry-deadline.json").exists());
@@ -1180,7 +1206,7 @@ fn resume_honors_a_persisted_r1_retry_deadline_before_starting_the_next_attempt(
 }
 
 #[test]
-fn resume_honors_a_persisted_r3_retry_deadline_before_starting_the_auditor() {
+fn resume_honors_a_persisted_r3_retry_deadline_before_starting_the_counterpart_arbiter() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::compile_fake_agent(temporary.path());
@@ -1197,7 +1223,7 @@ fn resume_honors_a_persisted_r3_retry_deadline_before_starting_the_auditor() {
         &brief_path,
         &Brief {
             brief_version: "1.0".into(),
-            question: "Does resume preserve the auditor retry cooldown?".into(),
+            question: "Does resume preserve the counterpart arbiter retry cooldown?".into(),
             context: None,
             evidence_roots: vec![evidence],
             attachments: Vec::new(),
@@ -1229,7 +1255,7 @@ fn resume_honors_a_persisted_r3_retry_deadline_before_starting_the_auditor() {
     let started = Instant::now();
     assert_eq!(
         run::advance(&store, &created.run_id).unwrap(),
-        RunStatus::WaitingHm
+        RunStatus::WaitingPrimaryArbiter
     );
     assert!(started.elapsed() >= Duration::from_millis(8_000));
     assert!(!lane_dir.join("retry-deadline.json").exists());
@@ -1240,7 +1266,7 @@ fn resume_honors_a_persisted_r3_retry_deadline_before_starting_the_auditor() {
         .find(|event| {
             event.event_type == "lane.retry_wait"
                 && event.phase.as_deref() == Some("R3")
-                && event.party_id.as_deref() == Some("Auditor B")
+                && event.party_id.as_deref() == Some("Counterpart Arbiter")
                 && event.attempt == Some(2)
         })
         .unwrap();

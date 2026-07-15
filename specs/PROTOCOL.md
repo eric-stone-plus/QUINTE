@@ -1,7 +1,7 @@
 # QUINTE Protocol v1.0
 
 This document defines the product protocol enforced by the `quinte` CLI. The
-CLI scheduler is the canonical runtime authority. Hermes is a trigger and one
+CLI scheduler is the canonical runtime authority. The Primary Arbiter is a trigger and one
 of the two R3 arbiters; it does not select routes, launch individual parties,
 or advance phases itself.
 
@@ -16,7 +16,7 @@ The product has one supported full-run path:
 ```text
 brief -> R1 (five independent lanes)
       -> R2 (five anonymous cross-review lanes)
-      -> R3 (Auditor B + Hermes hm)
+      -> R3 (Counterpart Arbiter + Primary Arbiter `hm`)
       -> deterministic merge -> result
 ```
 
@@ -39,8 +39,8 @@ The v1 policy binds exactly these routes:
 | Party C | Kilo | R1, R2 |
 | Party D | MiMo | R1, R2 |
 | Party E | OMP | R1, R2 |
-| Auditor B | Claude Code (`cc`) | R3 only |
-| Primary arbiter | Hermes (`hm`) | R3 only |
+| Counterpart Arbiter | Claude Code (`cc`) | R3 only |
+| Primary Arbiter | host (`hm`) | R3 only |
 
 All inference routes use the same MiMo token-plan family. Text-only runs use
 `mimo-v2.5-pro`; a validated image attachment selects `mimo-v2.5` for the
@@ -58,10 +58,10 @@ The ownership chain is intentionally narrow:
 
 ```text
 user intent
-  -> Hermes QUINTE skill (brief construction and CLI invocation only)
+  -> host QUINTE skill (brief construction and CLI invocation only)
   -> quinte CLI (policy, scheduler, adapters, state, evidence gates)
   -> fixed native routes
-  -> Hermes hm handshake
+  -> Primary Arbiter handshake
   -> immutable result artifacts
 ```
 
@@ -110,8 +110,8 @@ not make the underlying model family independent.
 After R2 passes, the scheduler writes an evidence packet containing the bound
 question, accepted R1 and R2 outputs, and snapshot digest.
 
-Auditor B runs through the fixed Claude Code route and returns a typed verdict.
-The scheduler then creates a single-use Hermes challenge bound to:
+Counterpart Arbiter runs through the fixed Claude Code route and returns a typed verdict.
+The scheduler then creates a single-use Primary Arbiter challenge bound to:
 
 - run id;
 - random nonce;
@@ -120,9 +120,9 @@ The scheduler then creates a single-use Hermes challenge bound to:
 - action scope;
 - issue and expiry times.
 
-The run enters `waiting_hm`. Hermes reads the evidence packet and Auditor B
+The run enters `waiting_primary_arbiter`. The Primary Arbiter reads the evidence packet and Counterpart Arbiter
 response, independently produces an `ArbiterVerdict`, and submits it through
-`quinte hm submit`. Direct file placement, an agent-authored `hm_approved`
+`quinte primary-arbiter submit`. Direct file placement, an agent-authored `primary_arbiter_approved`
 marker, or a claimed identity never advances the state machine.
 
 The challenge is consumed once. A mismatch, expiry, replay, or integrity drift
@@ -137,7 +137,7 @@ different finding, disposition, or closure state, the merged residual remains
 
 The final `result.json` includes:
 
-- Hermes summary and recommendation;
+- Primary Arbiter summary and recommendation;
 - annotated arbiter dissent;
 - merged residuals;
 - a trial manifest naming all five routes and their R1/R2 artifacts;
@@ -209,7 +209,7 @@ The following failures are non-retryable and block the phase:
 - invalid UTF-8, JSON, or schema outside the exact terminal conditions above;
 - unknown output fields or identity/route claims;
 - invalid or outside-snapshot evidence references;
-- policy, model, roster, digest, or hm challenge mismatch;
+- policy, model, roster, digest, or primary arbiter challenge mismatch;
 - credential or executable preflight failure;
 - cancellation requested by the user.
 
@@ -221,7 +221,7 @@ answer.
 
 1. Exactly Party A-E participate in R1 and R2.
 2. R2 is mandatory and starts only after all five R1 outputs pass.
-3. Auditor B and Hermes participate only in R3.
+3. Counterpart Arbiter and Primary Arbiter participate only in R3.
 4. Only the CLI scheduler writes phase transitions.
 5. Every accepted output validates against the embedded closed schema.
 6. Events are append-only and monotonically sequenced per run.
@@ -236,4 +236,4 @@ answer.
 `bin/quinte-dispatch-phase.py` and the dispatch manifest/ledger schemas remain
 available for historical host integrations. Their ledgers may be useful as
 evidence, but they do not create or advance a Rust CLI run and must not be
-called by the Hermes QUINTE skill. New integrations use the public CLI only.
+called by the host QUINTE skill. New integrations use the public CLI only.

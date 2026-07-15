@@ -23,8 +23,8 @@ fn manifest(run_id: &str) -> RunManifest {
         current_phase: None,
         error: None,
         r3_input_receipt: None,
-        hm_challenge: None,
-        hm_submission: None,
+        primary_arbiter_challenge: None,
+        primary_arbiter_submission: None,
         result_sha256: None,
     }
 }
