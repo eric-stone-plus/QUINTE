@@ -70,15 +70,15 @@ pub fn doctor(policy: &Policy) -> Vec<Value> {
             let resolved = resolution.command;
             let executable_ok = resolved.is_some();
             let credential = credential_status(&route.adapter);
-            let credential_ok = credential.as_ref().is_none_or(|(ok, _)| *ok);
+            let credential_ok = credential.as_ref().is_none_or(|(ok, _, _, _)| *ok);
             let ok = executable_ok && credential_ok;
-            let message = match (executable_ok, credential) {
+            let message = match (executable_ok, credential.as_ref()) {
                 (false, _) => resolution.message,
-                (true, Some((false, detail))) => detail,
-                (true, Some((true, detail))) => format!("available; {detail}"),
+                (true, Some((false, detail, _, _))) => detail.clone(),
+                (true, Some((true, detail, _, _))) => format!("available; {detail}"),
                 (true, None) => "available".to_string(),
             };
-            json!({
+            let mut row = json!({
                 "party_id": route.party_id,
                 "route_id": route.route_id,
                 "adapter": route.adapter,
@@ -92,12 +92,28 @@ pub fn doctor(policy: &Policy) -> Vec<Value> {
                 }),
                 "ok": ok,
                 "message": message
-            })
+            });
+            if let Some((_, _, source, isolated)) = credential.as_ref() {
+                if let Some(obj) = row.as_object_mut() {
+                    obj.insert(
+                        "credential_source".into(),
+                        match source {
+                            Some(source) => json!(source.as_str()),
+                            None => Value::Null,
+                        },
+                    );
+                    obj.insert("credential_isolated".into(), json!(isolated));
+                }
+            }
+            row
         })
         .collect()
 }
 
-fn credential_status(adapter: &str) -> Option<(bool, String)> {
+/// (available, message, optional source label, isolated)
+fn credential_status(
+    adapter: &str,
+) -> Option<(bool, String, Option<crate::credential::CredentialSource>, bool)> {
     let home = real_home().ok()?;
     let path = match adapter {
         "codewhale" => home.join(".codewhale/config.toml"),
@@ -111,17 +127,23 @@ fn credential_status(adapter: &str) -> Option<(bool, String)> {
         .into_iter()
         .find(|path| path.is_file())
         .unwrap_or_else(|| home.join(".local/share/mimocode/auth.json")),
-        "omp" => return Some(omp_credential_status(&home)),
+        "omp" => {
+            let (ok, message) = omp_credential_status(&home);
+            return Some((ok, message, None, true));
+        }
         "claude" => return Some(claude_credential_status()),
         _ => return None,
     };
+    let ok = path.is_file();
     Some((
-        path.is_file(),
-        if path.is_file() {
+        ok,
+        if ok {
             "credential source available".into()
         } else {
             format!("credential source missing: {}", path.display())
         },
+        None,
+        true,
     ))
 }
 
@@ -175,43 +197,15 @@ fn validate_omp_database(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn claude_credential_status() -> (bool, String) {
-    #[cfg(target_os = "macos")]
-    {
-        let status = Command::new("/usr/bin/security")
-            .args([
-                "find-generic-password",
-                "-a",
-                &std::env::var("USER").unwrap_or_default(),
-                "-s",
-                "xiaomi-mimo-token-plan-api-key",
-                "-w",
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        let ok = status.is_ok_and(|status| status.success());
-        (
-            ok,
-            if ok {
-                "Keychain credential available".into()
-            } else {
-                "Keychain credential missing".into()
-            },
-        )
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let ok = std::env::var_os("ANTHROPIC_API_KEY").is_some();
-        (
-            ok,
-            if ok {
-                "ANTHROPIC_API_KEY available".into()
-            } else {
-                "ANTHROPIC_API_KEY missing".into()
-            },
-        )
-    }
+fn claude_credential_status()
+-> (bool, String, Option<crate::credential::CredentialSource>, bool) {
+    let status = crate::credential::probe(crate::credential::DEFAULT_CLAUDE_SERVICE);
+    (
+        status.available,
+        status.message,
+        status.source,
+        status.isolated,
+    )
 }
 
 pub fn build(
@@ -1483,41 +1477,107 @@ fn configure_claude_credential(
     env: &mut BTreeMap<String, String>,
     lane_root: &Path,
 ) -> anyhow::Result<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::unix::fs::PermissionsExt;
+    use crate::credential::{self, CredentialSource, DEFAULT_CLAUDE_SERVICE};
 
-        let helper = lane_root.join("config/claude-key-helper.sh");
-        fs::write(
-            &helper,
-            "#!/bin/sh\nexec /usr/bin/security find-generic-password -s \"xiaomi-mimo-token-plan-api-key\" -w \"$QUINTE_KEYCHAIN_PATH\"\n",
-        )?;
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
-        let settings = lane_root.join("config/claude-settings.json");
-        write_json(&settings, &json!({"apiKeyHelper": helper}))?;
-        env.insert(
-            "ANTHROPIC_BASE_URL".into(),
-            "https://token-plan-cn.xiaomimimo.com/anthropic".into(),
-        );
-        env.insert("CLAUDE_CODE_SIMPLE".into(), "1".into());
-        env.insert(
-            "QUINTE_KEYCHAIN_PATH".into(),
-            real_home()?
-                .join("Library/Keychains/login.keychain-db")
-                .display()
-                .to_string(),
-        );
-        Ok(settings)
+    let status = credential::probe(DEFAULT_CLAUDE_SERVICE);
+    let settings = lane_root.join("config/claude-settings.json");
+    fs::create_dir_all(lane_root.join("config"))?;
+
+    env.insert(
+        "ANTHROPIC_BASE_URL".into(),
+        "https://token-plan-cn.xiaomimimo.com/anthropic".into(),
+    );
+    env.insert("CLAUDE_CODE_SIMPLE".into(), "1".into());
+
+    let use_isolated = status.available
+        && status
+            .source
+            .is_some_and(|source| source != CredentialSource::EnvironmentVariable);
+
+    if use_isolated {
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let helper = lane_root.join("config/claude-key-helper.sh");
+            fs::write(
+                &helper,
+                "#!/bin/sh\nexec /usr/bin/security find-generic-password -s \"xiaomi-mimo-token-plan-api-key\" -w \"$QUINTE_KEYCHAIN_PATH\"\n",
+            )?;
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
+            env.insert(
+                "QUINTE_KEYCHAIN_PATH".into(),
+                real_home()?
+                    .join("Library/Keychains/login.keychain-db")
+                    .display()
+                    .to_string(),
+            );
+            write_json(&settings, &json!({"apiKeyHelper": helper}))?;
+            // Token stays in Keychain; never enter lane env.
+            return Ok(settings);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            write_credential_helper(lane_root, DEFAULT_CLAUDE_SERVICE)?;
+            let helper = credential_helper_path(lane_root);
+            env.insert("QUINTE_CREDENTIAL_HELPER_ALLOWED".into(), "1".into());
+            env.insert(
+                "QUINTE_LANE_ROOT".into(),
+                lane_root.display().to_string(),
+            );
+            // Token stays in protected store; never enter lane env.
+            write_json(&settings, &json!({"apiKeyHelper": helper}))?;
+            return Ok(settings);
+        }
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .context("ANTHROPIC_API_KEY is required for the Claude adapter on this platform")?;
-        env.insert("ANTHROPIC_API_KEY".into(), api_key);
-        let settings = lane_root.join("config/claude-settings.json");
-        write_json(&settings, &json!({}))?;
-        Ok(settings)
+
+    // Legacy fallback: process env. Doctor reports credential_isolated=false.
+    let api_key = std::env::var("ANTHROPIC_API_KEY").context(
+        "Claude credential not found in protected store; set it with `quinte credential set` \
+         or export ANTHROPIC_API_KEY as a non-isolated fallback",
+    )?;
+    env.insert("ANTHROPIC_API_KEY".into(), api_key);
+    write_json(&settings, &json!({}))?;
+    Ok(settings)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn credential_helper_path(lane_root: &Path) -> PathBuf {
+    if cfg!(windows) {
+        lane_root.join("config/claude-key-helper.cmd")
+    } else {
+        lane_root.join("config/claude-key-helper.sh")
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_credential_helper(lane_root: &Path, service: &str) -> anyhow::Result<()> {
+    let helper = credential_helper_path(lane_root);
+    let quinte_exe = std::env::current_exe().context("cannot resolve quinte executable path")?;
+    let quinte_exe = quinte_exe.display().to_string();
+    if cfg!(windows) {
+        // Claude Code invokes apiKeyHelper as a process; embed absolute quinte path.
+        let body = format!(
+            "@echo off\r\n\"{quinte_exe}\" __credential-helper --service {service}\r\n"
+        );
+        fs::write(&helper, body)?;
+    } else {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let body = format!(
+                "#!/bin/sh\nexec \"{quinte_exe}\" __credential-helper --service {service}\n"
+            );
+            fs::write(&helper, body)?;
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (helper, quinte_exe, service);
+            bail!("credential helper is not supported on this platform");
+        }
+    }
+    Ok(())
 }
 
 fn resolve_route_program(route: &RoutePolicy) -> Option<ResolvedCommand> {

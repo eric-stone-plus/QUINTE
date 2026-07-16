@@ -42,8 +42,12 @@ enum Command {
     PrimaryArbiter(PrimaryArbiterArgs),
     Agents(AgentArgs),
     Policy(PolicyArgs),
+    Credential(CredentialArgs),
     #[command(name = "__worker", hide = true)]
     Worker(WorkerArgs),
+    /// Internal Claude Code apiKeyHelper entrypoint. Not a user command.
+    #[command(name = "__credential-helper", hide = true)]
+    CredentialHelper(CredentialHelperArgs),
 }
 
 #[derive(Debug, Args)]
@@ -148,6 +152,37 @@ struct PolicyArgs {
 enum PolicyCommand {
     Show(JsonArgs),
     Validate(JsonArgs),
+}
+
+#[derive(Debug, Args)]
+struct CredentialArgs {
+    #[command(subcommand)]
+    command: CredentialCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum CredentialCommand {
+    /// Store the Claude/MiMo token in the platform protected store.
+    Set(CredentialSetArgs),
+    /// Report whether the Claude credential is available and isolated.
+    Status(JsonArgs),
+}
+
+#[derive(Debug, Args)]
+struct CredentialSetArgs {
+    #[arg(long, default_value = "xiaomi-mimo-token-plan-api-key")]
+    service: String,
+    /// Read the secret from a file instead of the terminal (file is not logged).
+    #[arg(long, value_name = "FILE")]
+    from_file: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct CredentialHelperArgs {
+    #[arg(long, default_value = "xiaomi-mimo-token-plan-api-key")]
+    service: String,
 }
 
 pub fn entrypoint() -> Result<i32> {
@@ -409,6 +444,68 @@ fn execute(cli: Cli) -> anyhow::Result<i32> {
                     Err(error.context(message))
                 }
             }
+        }
+        Command::Credential(args) => match args.command {
+            CredentialCommand::Set(args) => {
+                let secret = if let Some(path) = args.from_file {
+                    std::fs::read_to_string(&path)
+                        .with_context(|| format!("cannot read {}", path.display()))?
+                } else {
+                    eprint!("Enter credential for service {} (input hidden not guaranteed on all terminals): ", args.service);
+                    let mut line = String::new();
+                    std::io::stdin()
+                        .read_line(&mut line)
+                        .context("failed to read credential from stdin")?;
+                    line
+                };
+                crate::credential::set(&args.service, &secret)?;
+                emit(
+                    args.json,
+                    json!({
+                        "service": args.service,
+                        "stored": true,
+                        "source": if cfg!(target_os = "macos") {
+                            "keychain"
+                        } else if cfg!(windows) {
+                            "windows_credential_manager"
+                        } else {
+                            "unsupported"
+                        }
+                    }),
+                    format!(
+                        "Stored credential for service {} in the platform protected store",
+                        args.service
+                    ),
+                )?;
+                Ok(0)
+            }
+            CredentialCommand::Status(args) => {
+                let status = crate::credential::probe(crate::credential::DEFAULT_CLAUDE_SERVICE);
+                emit(
+                    args.json,
+                    &status,
+                    format!(
+                        "Claude credential: available={} isolated={} ({})",
+                        status.available, status.isolated, status.message
+                    ),
+                )?;
+                Ok(if status.available { 0 } else { 2 })
+            }
+        },
+        Command::CredentialHelper(args) => {
+            // Fail closed unless the adapter marked this process as a lane helper.
+            let allowed = std::env::var_os("QUINTE_CREDENTIAL_HELPER_ALLOWED").as_deref()
+                == Some(std::ffi::OsStr::new("1"));
+            let lane_root = std::env::var_os("QUINTE_LANE_ROOT");
+            if !allowed || lane_root.as_ref().is_none_or(|value| value.is_empty()) {
+                bail!(
+                    "credential helper is only callable from a QUINTE lane context \
+                     (missing QUINTE_CREDENTIAL_HELPER_ALLOWED / QUINTE_LANE_ROOT)"
+                );
+            }
+            let secret = crate::credential::get(&args.service)?;
+            print!("{secret}");
+            Ok(0)
         }
     }
 }
