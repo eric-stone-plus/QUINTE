@@ -4,11 +4,10 @@ Date: 2026-07-13
 
 ## Scope
 
-This non-normative historical record documents Windows process-launch fixes
-made after the initial release
-could discover its fixed agents during `quinte doctor` but could not start four
-of them during R1. It intentionally excludes host-specific paths, run IDs,
-credentials, and runtime artifacts.
+This non-normative historical record documents a Windows incident after the
+initial release: QUINTE could discover its fixed agents during `quinte doctor`
+but could not start four of them during R1. It intentionally excludes
+host-specific paths, run IDs, credentials, and runtime artifacts.
 
 ## Incident Signature
 
