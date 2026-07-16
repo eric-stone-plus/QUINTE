@@ -1,34 +1,43 @@
 name: Release binaries
+run-name: Release v${{ inputs.version }} from ${{ github.sha }}
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable Cargo version to release (for example 0.1.5)
+        required: true
+        type: string
+
+concurrency:
+  group: quinte-release
+  cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: read
+
+env:
+  RELEASE_VERSION: ${{ inputs.version }}
+  RELEASE_CANDIDATE: ${{ github.sha }}
 
 jobs:
   validate:
-    name: Validate release metadata
+    name: Bind immutable release candidate
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
-      - name: Match tag and package versions
-        shell: bash
-        run: |
-          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "quinte") | .version')"
-          test -n "$version"
-          if [[ "$GITHUB_REF" == refs/tags/v* && "$GITHUB_REF_NAME" != "v$version" ]]; then
-            echo "tag $GITHUB_REF_NAME does not match package version $version" >&2
-            exit 1
-          fi
+      - name: Reject reused identity or candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/release-guard.sh "$RELEASE_VERSION" "$RELEASE_CANDIDATE"
 
   build:
     name: Build ${{ matrix.target }}
@@ -56,6 +65,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ env.RELEASE_CANDIDATE }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: stable
@@ -71,32 +83,28 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Test native target
-        timeout-minutes: 20
-        run: cargo test --locked --all-features --target ${{ matrix.target }}
+        run: cargo test --locked --all-features --target "${{ matrix.target }}"
       - name: Build release binary
-        run: cargo build --locked --release --target ${{ matrix.target }}
-      - name: Verify Unix binary version
+        run: cargo build --locked --release --target "${{ matrix.target }}"
+      - name: Verify Unix binary identity
         if: runner.os != 'Windows'
-        shell: bash
         run: |
-          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "quinte") | .version')"
-          reported="$(target/${{ matrix.target }}/release/quinte --version)"
-          [[ "$reported" == "quinte $version" ]]
-      - name: Verify Windows binary version
+          test "$(git rev-parse HEAD)" = "$RELEASE_CANDIDATE"
+          test "$(target/${{ matrix.target }}/release/quinte --version)" = "quinte $RELEASE_VERSION"
+      - name: Verify Windows binary identity
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $Version = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages |
-            Where-Object name -eq 'quinte' |
-            Select-Object -ExpandProperty version
+          if ((git rev-parse HEAD) -ne "$env:RELEASE_CANDIDATE") {
+            throw "checkout is not the bound release candidate"
+          }
           $Reported = & target/${{ matrix.target }}/release/quinte.exe --version
-          if ($LASTEXITCODE -ne 0 -or $Reported -ne "quinte $Version") {
-            throw "binary version '$Reported' does not match package version '$Version'"
+          if ($LASTEXITCODE -ne 0 -or $Reported -ne "quinte $env:RELEASE_VERSION") {
+            throw "binary identity '$Reported' does not match the release request"
           }
       - name: Package Unix binary
         if: runner.os != 'Windows'
-        shell: bash
-        run: tar -C target/${{ matrix.target }}/release -czf ${{ matrix.archive }} quinte
+        run: tar -C "target/${{ matrix.target }}/release" -czf "${{ matrix.archive }}" quinte
       - name: Package Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
@@ -108,22 +116,71 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish GitHub release
+    name: Create immutable tag and release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: write
     steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+          ref: ${{ env.RELEASE_CANDIDATE }}
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
-      - name: Create checksums
-        working-directory: dist
-        run: sha256sum quinte-* > SHA256SUMS
-      - name: Publish immutable assets
+      - name: Recheck candidate and exact asset set
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --verify-tag --generate-notes
+        run: |
+          scripts/release-guard.sh "$RELEASE_VERSION" "$RELEASE_CANDIDATE"
+          scripts/release-guard.sh --assets dist
+      - name: Create annotated tag through non-updating REST endpoints
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$RELEASE_VERSION"
+          tag_object="$(jq -nc \
+            --arg tag "$tag" \
+            --arg message "Release $tag" \
+            --arg object "$RELEASE_CANDIDATE" \
+            --arg name "github-actions[bot]" \
+            --arg email "41898282+github-actions[bot]@users.noreply.github.com" \
+            '{tag:$tag,message:$message,object:$object,type:"commit",tagger:{name:$name,email:$email}}')"
+          tag_sha="$(gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" \
+            --input - --jq '.sha' <<<"$tag_object")"
+          [[ "$tag_sha" =~ ^[0-9a-f]{40}$ ]]
+          ref_object="$(jq -nc --arg ref "refs/tags/$tag" --arg sha "$tag_sha" '{ref:$ref,sha:$sha}')"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" --input - <<<"$ref_object" >/dev/null
+      - name: Verify remote tag and publish exact checksummed assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$RELEASE_VERSION"
+          git fetch --no-tags origin "refs/tags/$tag:refs/tags/$tag"
+          test "$(git cat-file -t "$tag")" = tag
+          test "$(git rev-parse "$tag^{commit}")" = "$RELEASE_CANDIDATE"
+          cd dist
+          LC_ALL=C sha256sum \
+            quinte-aarch64-apple-darwin.tar.gz \
+            quinte-aarch64-unknown-linux-gnu.tar.gz \
+            quinte-x86_64-apple-darwin.tar.gz \
+            quinte-x86_64-pc-windows-msvc.zip \
+            quinte-x86_64-unknown-linux-gnu.tar.gz > SHA256SUMS
+          cd ..
+          scripts/release-guard.sh --assets dist --checksums
+          gh release create "$tag" \
+            dist/quinte-aarch64-apple-darwin.tar.gz \
+            dist/quinte-aarch64-unknown-linux-gnu.tar.gz \
+            dist/quinte-x86_64-apple-darwin.tar.gz \
+            dist/quinte-x86_64-pc-windows-msvc.zip \
+            dist/quinte-x86_64-unknown-linux-gnu.tar.gz \
+            dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --target "$RELEASE_CANDIDATE" \
+            --generate-notes

@@ -38,7 +38,7 @@ enum Command {
     Resume(IdArgs),
     Cancel(IdArgs),
     Inspect(IdArgs),
-    #[command(name = "primary-arbiter", alias = "hm")]
+    #[command(name = "primary-arbiter")]
     PrimaryArbiter(PrimaryArbiterArgs),
     Agents(AgentArgs),
     Policy(PolicyArgs),
@@ -162,27 +162,18 @@ struct CredentialArgs {
 
 #[derive(Debug, Subcommand)]
 enum CredentialCommand {
-    /// Store the Claude/MiMo token in the platform protected store.
-    Set(CredentialSetArgs),
     /// Report whether the Claude credential is available and isolated.
     Status(JsonArgs),
 }
 
 #[derive(Debug, Args)]
-struct CredentialSetArgs {
-    #[arg(long, default_value = "xiaomi-mimo-token-plan-api-key")]
-    service: String,
-    /// Read the secret from a file instead of the terminal (file is not logged).
-    #[arg(long, value_name = "FILE")]
-    from_file: Option<PathBuf>,
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(Debug, Args)]
 struct CredentialHelperArgs {
-    #[arg(long, default_value = "xiaomi-mimo-token-plan-api-key")]
+    #[arg(long)]
     service: String,
+    #[arg(long, value_name = "DIR")]
+    lane_root: PathBuf,
+    #[arg(long, value_name = "FILE")]
+    authorization: PathBuf,
 }
 
 pub fn entrypoint() -> Result<i32> {
@@ -339,8 +330,8 @@ fn execute(cli: Cli) -> anyhow::Result<i32> {
         Command::Inspect(args) => {
             ensure_initialized(&store)?;
             let manifest = store.load_manifest(&args.run_id)?;
-            run::verify_result_integrity(&store, &args.run_id)?;
-            let result_path = store.run_dir(&args.run_id).join("result.json");
+            let integrity = run::verify_result_integrity(&store, &args.run_id)?;
+            let result_path = store.run_dir(&args.run_id)?.join("result.json");
             let result = if matches!(manifest.status, RunStatus::Completed | RunStatus::Degraded)
                 && result_path.exists()
             {
@@ -349,9 +340,21 @@ fn execute(cli: Cli) -> anyhow::Result<i32> {
                 None
             };
             let events = store.events(&args.run_id)?;
+            let result_contract = integrity.map(|integrity| {
+                json!({
+                    "version": integrity.contract_version,
+                    "actionable": integrity.actionable,
+                    "mode": if integrity.actionable { "current" } else { "historical_read_only" },
+                })
+            });
             emit(
                 args.json,
-                json!({"manifest": manifest, "result": result, "events": events}),
+                json!({
+                    "manifest": manifest,
+                    "result": result,
+                    "result_contract": result_contract,
+                    "events": events
+                }),
                 format_status(&args.run_id, manifest.status),
             )?;
             Ok(status_code(manifest.status))
@@ -359,7 +362,7 @@ fn execute(cli: Cli) -> anyhow::Result<i32> {
         Command::PrimaryArbiter(args) => match args.command {
             PrimaryArbiterCommand::Request(args) => {
                 let path = store
-                    .run_dir(&args.run_id)
+                    .run_dir(&args.run_id)?
                     .join("r3/primary-arbiter-request.json");
                 let request: Value =
                     read_json(&path).context("primary-arbiter request is not ready")?;
@@ -433,7 +436,7 @@ fn execute(cli: Cli) -> anyhow::Result<i32> {
         Command::Worker(args) => {
             let _worker_stdio = run::prepare_worker_stdio()?;
             ensure_initialized(&store)?;
-            let _heartbeat = run::WorkerHeartbeat::start(&store, &args.run_id);
+            let _heartbeat = run::WorkerHeartbeat::start(&store, &args.run_id)?;
             match run::advance(&store, &args.run_id) {
                 Ok(status) => Ok(status_code(status)),
                 Err(error) => {
@@ -446,39 +449,6 @@ fn execute(cli: Cli) -> anyhow::Result<i32> {
             }
         }
         Command::Credential(args) => match args.command {
-            CredentialCommand::Set(args) => {
-                let secret = if let Some(path) = args.from_file {
-                    std::fs::read_to_string(&path)
-                        .with_context(|| format!("cannot read {}", path.display()))?
-                } else {
-                    eprint!("Enter credential for service {} (input hidden not guaranteed on all terminals): ", args.service);
-                    let mut line = String::new();
-                    std::io::stdin()
-                        .read_line(&mut line)
-                        .context("failed to read credential from stdin")?;
-                    line
-                };
-                crate::credential::set(&args.service, &secret)?;
-                emit(
-                    args.json,
-                    json!({
-                        "service": args.service,
-                        "stored": true,
-                        "source": if cfg!(target_os = "macos") {
-                            "keychain"
-                        } else if cfg!(windows) {
-                            "windows_credential_manager"
-                        } else {
-                            "unsupported"
-                        }
-                    }),
-                    format!(
-                        "Stored credential for service {} in the platform protected store",
-                        args.service
-                    ),
-                )?;
-                Ok(0)
-            }
             CredentialCommand::Status(args) => {
                 let status = crate::credential::probe(crate::credential::DEFAULT_CLAUDE_SERVICE);
                 emit(
@@ -493,18 +463,16 @@ fn execute(cli: Cli) -> anyhow::Result<i32> {
             }
         },
         Command::CredentialHelper(args) => {
-            // Fail closed unless the adapter marked this process as a lane helper.
-            let allowed = std::env::var_os("QUINTE_CREDENTIAL_HELPER_ALLOWED").as_deref()
-                == Some(std::ffi::OsStr::new("1"));
-            let lane_root = std::env::var_os("QUINTE_LANE_ROOT");
-            if !allowed || lane_root.as_ref().is_none_or(|value| value.is_empty()) {
-                bail!(
-                    "credential helper is only callable from a QUINTE lane context \
-                     (missing QUINTE_CREDENTIAL_HELPER_ALLOWED / QUINTE_LANE_ROOT)"
-                );
-            }
-            let secret = crate::credential::get(&args.service)?;
-            print!("{secret}");
+            crate::credential::authorize_helper(
+                &args.service,
+                &args.lane_root,
+                &args.authorization,
+            )?;
+            let secret = crate::credential::get_isolated(&args.service)?;
+            use std::io::Write;
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(secret.as_bytes())?;
+            stdout.flush()?;
             Ok(0)
         }
     }
@@ -582,5 +550,42 @@ fn map_error(error: anyhow::Error) -> QuinteError {
         QuinteError::Usage(message)
     } else {
         QuinteError::Internal(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Cli, Command};
+
+    #[test]
+    fn credential_helper_rejects_a_token_argument() {
+        let parsed = Cli::try_parse_from([
+            "quinte",
+            "__credential-helper",
+            "--service",
+            "xiaomi-mimo-token-plan-api-key",
+            "--lane-root",
+            "/lane",
+            "--authorization",
+            "/lane/config/credential-helper-authorization.json",
+            "--token",
+            "secret",
+        ]);
+        assert!(parsed.is_err());
+
+        let parsed = Cli::try_parse_from([
+            "quinte",
+            "__credential-helper",
+            "--service",
+            "xiaomi-mimo-token-plan-api-key",
+            "--lane-root",
+            "/lane",
+            "--authorization",
+            "/lane/config/credential-helper-authorization.json",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Command::CredentialHelper(_)));
     }
 }

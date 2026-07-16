@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/lane-output.schema.json",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/lane-output/1.0/schema.json",
   "title": "QUINTE Lane Output",
   "type": "object",
   "additionalProperties": false,

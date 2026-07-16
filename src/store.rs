@@ -1,14 +1,18 @@
 use std::fs::{self, File};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, bail};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::contract::RUN_EVENT_VERSION;
 use crate::model::{Event, RunError, RunManifest, RunStatus};
 use crate::schema::{RUN_EVENT_SCHEMA, RUN_MANIFEST_SCHEMA, validate_value};
-use crate::util::{append_jsonl, atomic_write, read_json, utc_now, write_json};
+use crate::util::{
+    append_jsonl, atomic_write, create_private_dir_all, harden_private_file, read_json, utc_now,
+    write_json,
+};
 
 pub struct Store {
     home: PathBuf,
@@ -92,12 +96,17 @@ impl Store {
         self.home.join("runs")
     }
 
-    pub fn run_dir(&self, run_id: &str) -> PathBuf {
-        self.runs_dir().join(run_id)
+    pub fn run_dir(&self, run_id: &str) -> anyhow::Result<PathBuf> {
+        validate_run_id(run_id)?;
+        Ok(self.runs_dir().join(run_id))
     }
 
     pub fn create_run_dirs(&self, run_id: &str) -> anyhow::Result<PathBuf> {
-        let run_dir = self.run_dir(run_id);
+        // These are QUINTE-owned roots, so existing installations are tightened
+        // before any new run state is created below them.
+        create_private_dir_all(&self.home)?;
+        create_private_dir_all(&self.runs_dir())?;
+        let run_dir = self.run_dir(run_id)?;
         if run_dir.exists() {
             bail!("run {run_id} already exists");
         }
@@ -110,30 +119,34 @@ impl Store {
             "r3",
             "diagnostics",
         ] {
-            fs::create_dir_all(run_dir.join(relative))?;
+            create_private_dir_all(&run_dir.join(relative))?;
         }
         Ok(run_dir)
     }
 
-    pub fn manifest_path(&self, run_id: &str) -> PathBuf {
-        self.run_dir(run_id).join("manifest.json")
+    pub fn manifest_path(&self, run_id: &str) -> anyhow::Result<PathBuf> {
+        Ok(self.run_dir(run_id)?.join("manifest.json"))
     }
 
     pub fn load_manifest(&self, run_id: &str) -> anyhow::Result<RunManifest> {
-        let manifest = read_json(&self.manifest_path(run_id))
+        let manifest: RunManifest = read_json(&self.manifest_path(run_id)?)
             .with_context(|| format!("unknown or invalid run {run_id}"))?;
+        if manifest.run_id != run_id {
+            bail!("run manifest ID does not match its directory");
+        }
+        validate_run_id(&manifest.run_id)?;
         self.recover_pending_transition(&manifest)?;
         Ok(manifest)
     }
 
     pub fn save_manifest(&self, manifest: &RunManifest) -> anyhow::Result<()> {
         let _lock = self.resource_lock(&manifest.run_id, ".manifest.lock")?;
-        let path = self.manifest_path(&manifest.run_id);
+        let path = self.manifest_path(&manifest.run_id)?;
         if path.exists() {
             let current: RunManifest = read_json(&path)?;
             if current.status.terminal()
                 || current.status == RunStatus::Cancelling
-                || self.cancellation_requested(&manifest.run_id)
+                || self.cancellation_requested(&manifest.run_id)?
             {
                 return Ok(());
             }
@@ -143,17 +156,18 @@ impl Store {
 
     fn save_manifest_unlocked(&self, manifest: &RunManifest) -> anyhow::Result<()> {
         validate_value(&serde_json::to_value(manifest)?, RUN_MANIFEST_SCHEMA)?;
-        write_json(&self.manifest_path(&manifest.run_id), manifest)
+        write_json(&self.manifest_path(&manifest.run_id)?, manifest)
     }
 
     pub fn lock(&self, run_id: &str) -> anyhow::Result<RunLock> {
-        let path = self.run_dir(run_id).join(".run.lock");
+        let path = self.run_dir(run_id)?.join(".run.lock");
         let file = File::options()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(&path)?;
+        harden_private_file(&path)?;
         file.try_lock_exclusive()
             .with_context(|| format!("run {run_id} is already being advanced"))?;
         Ok(RunLock { _file: file })
@@ -167,7 +181,7 @@ impl Store {
         data: Value,
     ) -> anyhow::Result<RunStatus> {
         let _lock = self.resource_lock(&manifest.run_id, ".manifest.lock")?;
-        let current = if self.manifest_path(&manifest.run_id).exists() {
+        let current = if self.manifest_path(&manifest.run_id)?.exists() {
             self.load_manifest(&manifest.run_id)?
         } else {
             manifest.clone()
@@ -178,13 +192,13 @@ impl Store {
         }
 
         if status == RunStatus::Cancelling {
-            fs::write(
-                self.run_dir(&manifest.run_id).join("cancel.requested"),
-                utc_now(),
+            atomic_write(
+                &self.run_dir(&manifest.run_id)?.join("cancel.requested"),
+                utc_now().as_bytes(),
             )?;
         }
 
-        let cancellation_wins = self.cancellation_requested(&manifest.run_id)
+        let cancellation_wins = self.cancellation_requested(&manifest.run_id)?
             || current.status == RunStatus::Cancelling;
         let effective_status = if cancellation_wins
             && !matches!(status, RunStatus::Cancelling | RunStatus::Cancelled)
@@ -228,7 +242,7 @@ impl Store {
             phase: phase.map(str::to_string),
             detail: data,
         };
-        write_json(&self.pending_transition_path(&manifest.run_id), &pending)?;
+        write_json(&self.pending_transition_path(&manifest.run_id)?, &pending)?;
         self.save_manifest_unlocked(&next)?;
         *manifest = next;
         let event_result = self.event_at(
@@ -247,7 +261,7 @@ impl Store {
             &pending.timestamp,
         );
         if event_result.is_ok() {
-            remove_if_exists(&self.pending_transition_path(&manifest.run_id))?;
+            remove_if_exists(&self.pending_transition_path(&manifest.run_id)?)?;
         }
         Ok(effective_status)
     }
@@ -284,7 +298,7 @@ impl Store {
         timestamp: &str,
     ) -> anyhow::Result<Event> {
         let _lock = self.resource_lock(run_id, ".events.lock")?;
-        let path = self.run_dir(run_id).join("events.jsonl");
+        let path = self.run_dir(run_id)?.join("events.jsonl");
         let existing = read_events(&path)?;
         if event_type == "run.transition"
             && let Some(transition_id) = data.get("transition_id").and_then(Value::as_str)
@@ -296,7 +310,7 @@ impl Store {
         }
         let sequence = existing.last().map_or(1, |event| event.sequence + 1);
         let event = Event {
-            event_version: "1.0".to_string(),
+            event_version: RUN_EVENT_VERSION.into(),
             sequence,
             timestamp: timestamp.to_string(),
             run_id: run_id.to_string(),
@@ -313,7 +327,7 @@ impl Store {
 
     pub fn add_active_pid(&self, run_id: &str, pid: u32) -> anyhow::Result<()> {
         let _lock = self.resource_lock(run_id, ".active-pids.lock")?;
-        let path = self.run_dir(run_id).join("active-pids.json");
+        let path = self.run_dir(run_id)?.join("active-pids.json");
         let mut processes = read_processes(&path)?;
         let process = ActiveProcess {
             pid,
@@ -332,8 +346,8 @@ impl Store {
         let file = self.open_resource_lock(run_id, ".active-pids.lock")?;
         Ok(ProcessRegistration {
             _file: file,
-            pids_path: self.run_dir(run_id).join("active-pids.json"),
-            cancel_path: self.run_dir(run_id).join("cancel.requested"),
+            pids_path: self.run_dir(run_id)?.join("active-pids.json"),
+            cancel_path: self.run_dir(run_id)?.join("cancel.requested"),
         })
     }
 
@@ -341,14 +355,14 @@ impl Store {
     pub fn finalization_guard(&self, run_id: &str) -> anyhow::Result<FinalizationGuard> {
         Ok(FinalizationGuard {
             _file: self.open_resource_lock(run_id, ".active-pids.lock")?,
-            cancel_path: self.run_dir(run_id).join("cancel.requested"),
+            cancel_path: self.run_dir(run_id)?.join("cancel.requested"),
         })
     }
 
     /// Publishes cancellation and snapshots supervised PIDs under the spawn lock.
     pub fn request_cancellation(&self, run_id: &str) -> anyhow::Result<CancellationSnapshot> {
         let _lock = self.resource_lock(run_id, ".active-pids.lock")?;
-        let manifest: RunManifest = read_json(&self.manifest_path(run_id))?;
+        let manifest: RunManifest = read_json(&self.manifest_path(run_id)?)?;
         if manifest.status.terminal() {
             return Ok(CancellationSnapshot {
                 status: manifest.status,
@@ -356,22 +370,22 @@ impl Store {
             });
         }
         atomic_write(
-            &self.run_dir(run_id).join("cancel.requested"),
+            &self.run_dir(run_id)?.join("cancel.requested"),
             utc_now().as_bytes(),
         )?;
         // A result is public only after a success terminal manifest is committed.
         // Remove any artifacts left by a worker crash in the finalization window.
-        remove_if_exists(&self.run_dir(run_id).join("result.json"))?;
-        remove_if_exists(&self.run_dir(run_id).join("report.md"))?;
+        remove_if_exists(&self.run_dir(run_id)?.join("result.json"))?;
+        remove_if_exists(&self.run_dir(run_id)?.join("report.md"))?;
         Ok(CancellationSnapshot {
             status: manifest.status,
-            processes: read_processes(&self.run_dir(run_id).join("active-pids.json"))?,
+            processes: read_processes(&self.run_dir(run_id)?.join("active-pids.json"))?,
         })
     }
 
     pub fn remove_active_pid(&self, run_id: &str, pid: u32) -> anyhow::Result<()> {
         let _lock = self.resource_lock(run_id, ".active-pids.lock")?;
-        let path = self.run_dir(run_id).join("active-pids.json");
+        let path = self.run_dir(run_id)?.join("active-pids.json");
         let mut processes = read_processes(&path)?;
         processes.retain(|entry| entry.pid != pid);
         write_json(&path, &processes)
@@ -383,7 +397,7 @@ impl Store {
         process: &ActiveProcess,
     ) -> anyhow::Result<()> {
         let _lock = self.resource_lock(run_id, ".active-pids.lock")?;
-        let path = self.run_dir(run_id).join("active-pids.json");
+        let path = self.run_dir(run_id)?.join("active-pids.json");
         let mut processes = read_processes(&path)?;
         processes.retain(|entry| entry != process);
         write_json(&path, &processes)
@@ -392,7 +406,7 @@ impl Store {
     pub fn active_pids(&self, run_id: &str) -> anyhow::Result<Vec<u32>> {
         let _lock = self.resource_lock(run_id, ".active-pids.lock")?;
         Ok(
-            read_processes(&self.run_dir(run_id).join("active-pids.json"))?
+            read_processes(&self.run_dir(run_id)?.join("active-pids.json"))?
                 .into_iter()
                 .map(|entry| entry.pid)
                 .collect(),
@@ -401,14 +415,14 @@ impl Store {
 
     pub fn active_processes(&self, run_id: &str) -> anyhow::Result<Vec<ActiveProcess>> {
         let _lock = self.resource_lock(run_id, ".active-pids.lock")?;
-        read_processes(&self.run_dir(run_id).join("active-pids.json"))
+        read_processes(&self.run_dir(run_id)?.join("active-pids.json"))
     }
 
     pub fn events(&self, run_id: &str) -> anyhow::Result<Vec<Event>> {
         let manifest = self.load_manifest(run_id)?;
         self.recover_pending_transition(&manifest)?;
         let _lock = self.resource_lock(run_id, ".events.lock")?;
-        read_events(&self.run_dir(run_id).join("events.jsonl"))
+        read_events(&self.run_dir(run_id)?.join("events.jsonl"))
     }
 
     pub fn write_artifact<T: Serialize>(
@@ -417,7 +431,8 @@ impl Store {
         relative: &str,
         value: &T,
     ) -> anyhow::Result<PathBuf> {
-        let path = self.run_dir(run_id).join(relative);
+        validate_relative_artifact_path(relative)?;
+        let path = self.run_dir(run_id)?.join(relative);
         write_json(&path, value)?;
         Ok(path)
     }
@@ -432,9 +447,26 @@ impl Store {
             if !entry.file_type()?.is_dir() {
                 continue;
             }
+            let run_id = match entry.file_name().to_str().map(str::to_owned) {
+                Some(run_id) if validate_run_id(&run_id).is_ok() => run_id,
+                _ => {
+                    eprintln!("warning: skipping run directory with invalid ID");
+                    continue;
+                }
+            };
             let path = entry.path().join("manifest.json");
             if path.exists() {
-                manifests.push(read_json(&path)?);
+                match read_json::<RunManifest>(&path) {
+                    Ok(manifest) if manifest.run_id == run_id => manifests.push(manifest),
+                    Ok(_) => eprintln!(
+                        "warning: skipping run manifest whose ID does not match {}",
+                        path.display()
+                    ),
+                    Err(error) => eprintln!(
+                        "warning: skipping invalid run manifest {}: {error:#}",
+                        path.display()
+                    ),
+                }
             }
         }
         manifests.sort_by(|left: &RunManifest, right| right.created_at.cmp(&left.created_at));
@@ -448,28 +480,30 @@ impl Store {
     }
 
     fn open_resource_lock(&self, run_id: &str, name: &str) -> anyhow::Result<File> {
-        let path = self.run_dir(run_id).join(name);
+        let path = self.run_dir(run_id)?.join(name);
         let file = File::options()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(path)?;
+            .open(&path)?;
+        harden_private_file(&path)?;
         file.lock_exclusive()?;
         Ok(file)
     }
 
-    fn cancellation_requested(&self, run_id: &str) -> bool {
-        self.run_dir(run_id).join("cancel.requested").exists()
+    fn cancellation_requested(&self, run_id: &str) -> anyhow::Result<bool> {
+        Ok(self.run_dir(run_id)?.join("cancel.requested").exists())
     }
 
-    fn pending_transition_path(&self, run_id: &str) -> PathBuf {
-        self.run_dir(run_id)
-            .join("diagnostics/pending-transition.json")
+    fn pending_transition_path(&self, run_id: &str) -> anyhow::Result<PathBuf> {
+        Ok(self
+            .run_dir(run_id)?
+            .join("diagnostics/pending-transition.json"))
     }
 
     fn recover_pending_transition(&self, manifest: &RunManifest) -> anyhow::Result<()> {
-        let path = self.pending_transition_path(&manifest.run_id);
+        let path = self.pending_transition_path(&manifest.run_id)?;
         if !path.exists() {
             return Ok(());
         }
@@ -487,7 +521,7 @@ impl Store {
             );
         }
         let _lock = self.resource_lock(&manifest.run_id, ".events.lock")?;
-        let events_path = self.run_dir(&manifest.run_id).join("events.jsonl");
+        let events_path = self.run_dir(&manifest.run_id)?.join("events.jsonl");
         let events = read_events(&events_path)?;
         let already_recorded = events.iter().any(|event| {
             event.data.get("transition_id").and_then(Value::as_str)
@@ -495,7 +529,7 @@ impl Store {
         });
         if !already_recorded {
             let event = Event {
-                event_version: "1.0".into(),
+                event_version: RUN_EVENT_VERSION.into(),
                 sequence: events.last().map_or(1, |event| event.sequence + 1),
                 timestamp: pending.timestamp.clone(),
                 run_id: manifest.run_id.clone(),
@@ -516,6 +550,34 @@ impl Store {
         }
         remove_if_exists(&path)
     }
+}
+
+/// Accept only the canonical UUIDv7 identifiers produced by QUINTE. This is
+/// intentionally stricter than a path-component check so storage callers
+/// cannot create alternative names for the same run.
+pub fn validate_run_id(run_id: &str) -> anyhow::Result<()> {
+    let parsed = uuid::Uuid::parse_str(run_id).context("run ID must be a UUID")?;
+    if parsed.get_version() != Some(uuid::Version::SortRand)
+        || parsed.get_variant() != uuid::Variant::RFC4122
+        || parsed.to_string() != run_id
+    {
+        bail!("run ID must be a canonical lowercase UUIDv7");
+    }
+    Ok(())
+}
+
+fn validate_relative_artifact_path(relative: &str) -> anyhow::Result<()> {
+    let path = Path::new(relative);
+    if relative.is_empty()
+        || relative.contains('\\')
+        || path.is_absolute()
+        || !path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
+        bail!("artifact path must be a non-empty relative path without traversal");
+    }
+    Ok(())
 }
 
 fn read_processes(path: &Path) -> anyhow::Result<Vec<ActiveProcess>> {
@@ -644,12 +706,14 @@ mod tests {
         }
     }
 
+    const RUN_ID: &str = "019bf52a-73b0-7000-8000-000000000001";
+
     #[test]
     fn rejects_state_regression() {
         let temporary = tempfile::tempdir().unwrap();
         let store = Store::new(temporary.path().join("home"));
-        store.create_run_dirs("run-1").unwrap();
-        let mut manifest = manifest("run-1");
+        store.create_run_dirs(RUN_ID).unwrap();
+        let mut manifest = manifest(RUN_ID);
         store.save_manifest(&manifest).unwrap();
         let error = store
             .transition(
@@ -661,7 +725,7 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("illegal run transition"));
         assert_eq!(
-            store.load_manifest("run-1").unwrap().status,
+            store.load_manifest(RUN_ID).unwrap().status,
             RunStatus::Queued
         );
     }
@@ -670,12 +734,12 @@ mod tests {
     fn truncates_only_an_uncommitted_event_tail() {
         let temporary = tempfile::tempdir().unwrap();
         let store = Store::new(temporary.path().join("home"));
-        store.create_run_dirs("run-1").unwrap();
-        store.save_manifest(&manifest("run-1")).unwrap();
+        store.create_run_dirs(RUN_ID).unwrap();
+        store.save_manifest(&manifest(RUN_ID)).unwrap();
         store
-            .event("run-1", "first", None, None, None, json!({}))
+            .event(RUN_ID, "first", None, None, None, json!({}))
             .unwrap();
-        let path = store.run_dir("run-1").join("events.jsonl");
+        let path = store.run_dir(RUN_ID).unwrap().join("events.jsonl");
         OpenOptions::new()
             .append(true)
             .open(&path)
@@ -683,10 +747,10 @@ mod tests {
             .write_all(b"{\"torn\":")
             .unwrap();
         let second = store
-            .event("run-1", "second", None, None, None, json!({}))
+            .event(RUN_ID, "second", None, None, None, json!({}))
             .unwrap();
         assert_eq!(second.sequence, 2);
-        assert_eq!(store.events("run-1").unwrap().len(), 2);
+        assert_eq!(store.events(RUN_ID).unwrap().len(), 2);
         assert!(fs::read(path).unwrap().ends_with(b"\n"));
     }
 }

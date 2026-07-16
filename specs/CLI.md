@@ -1,13 +1,11 @@
-# QUINTE CLI v0.1 Contract
+# QUINTE CLI Contract
 
-This document defines the public v0.1 command boundary for the `quinte` Rust
+This document defines the public command boundary for the `quinte` Rust
 CLI. The CLI is the execution authority for a QUINTE run. A host such as the
 Primary Arbiter may create a brief, invoke commands, supply the `primary-arbiter` verdict, and consume the
 result; it must not reproduce the scheduler with ad hoc agent calls.
 
-The protocol itself remains defined by [PROTOCOL.md](PROTOCOL.md). The Python
-phase manifest and ledger interface in [DISPATCH.md](DISPATCH.md) is a
-compatibility surface, not the v0.1 full-run interface.
+The protocol itself remains defined by [PROTOCOL.md](PROTOCOL.md).
 
 ## State Root
 
@@ -57,7 +55,7 @@ quinte policy show [--json]
 quinte policy validate [--json]
 ```
 
-No v0.1 command runs an individual R1/R2 party. There is no phase-skip,
+No public command runs an individual R1/R2 party. There is no phase-skip,
 substitution, arbitrary model, arbitrary adapter, or agent-selected transition
 command.
 
@@ -81,7 +79,7 @@ regardless of whether the reported run itself failed or was cancelled.
 Checks that every executable required by the effective policy is discoverable
 and reports platform capabilities. A missing required executable exits `2`.
 
-The report intentionally warns that v0.1 has no OS sandbox. The warning does
+The report intentionally warns that process isolation is not an OS sandbox. The warning does
 not by itself fail `doctor`; missing required routes do.
 
 ### `run`
@@ -108,7 +106,7 @@ the local wait, returns `130`, and does not cancel the run.
 ### `resume`
 
 Continues the next incomplete phase. Previously accepted lane artifacts are
-reused. Before continuing, v0.1 verifies the stored per-run brief, policy, and
+reused. Before continuing, the runtime verifies the stored per-run brief, policy, and
 snapshot manifest hashes and the copied snapshot file hashes. Integrity drift
 blocks continuation rather than silently creating a different trial.
 
@@ -147,7 +145,7 @@ list.
 ### `policy`
 
 `policy show` prints the effective policy. `policy validate` checks its closed
-v0.1 invariants. v0.1 deliberately has no general-purpose CLI policy mutation
+runtime invariants. QUINTE deliberately has no general-purpose CLI policy mutation
 command. Policies from before the R3 role rename may use `auditor` with
 `party_id` set to `Auditor B`; QUINTE accepts those exact legacy names and
 normalizes them to `counterpart_arbiter` / `Counterpart Arbiter` in memory. The
@@ -182,7 +180,7 @@ portable `/`-separated glob patterns relative to every evidence root. For a
 single-file root, its filename is the relative path. Matching directories are
 pruned together with their contents.
 
-Attachments are identified from file bytes, not their extension. v0.1 accepts
+Attachments are identified from file bytes, not their extension. QUINTE accepts
 PNG, JPEG, WebP, and GIF within the configured size limit. An accepted image
 selects the multimodal model. The source files are not modified.
 
@@ -297,7 +295,7 @@ an unsupported internal operation and cannot bypass challenge validation;
 host integrations must use the handshake command.
 
 The challenge is a state-integrity and replay control, not cryptographic user
-authentication. v0.1 does not sign the response or prove the operating-system
+authentication. QUINTE does not sign the response or prove the operating-system
 identity of the process that wrote it. Protect access to the state root and use
 an authenticated host control channel when identity authentication is needed.
 
@@ -417,7 +415,7 @@ retain, and delete it according to the sensitivity of the reviewed material.
 
 ## Isolation Boundary
 
-The v0.1 adapters clear inherited environment variables except a small runtime
+The adapters clear inherited environment variables except a small runtime
 set, assign per-lane HOME/config/cache/state directories, use separate working
 directories, request read-only tool sets where supported, validate strict UTF-8
 and closed JSON schemas, cap captured output, and supervise child process trees.
@@ -428,29 +426,29 @@ that a native CLI honors every requested permission flag. A lane process still
 has the OS credentials of the `quinte` process.
 
 Use an external OS sandbox, container, VM, or restricted account for hostile
-code, secrets, or network containment. Do not describe v0.1 `process` isolation
+code, secrets, or network containment. Do not describe `process` isolation
 as a security sandbox.
 
 ## Credential Commands
 
-### `credential set`
+### `credential status`
 
-Store the Claude / MiMo token-plan secret in the platform protected store:
+Provision the Claude / MiMo token with OS-native protected-store tooling or UI:
 
-- macOS: Keychain service `xiaomi-mimo-token-plan-api-key`
-- Windows: Windows Credential Manager target under service name
-  `xiaomi-mimo-token-plan-api-key` (keyring entry `quinte` / service)
+- macOS: a Keychain generic password whose account is the current login user
+  and service is `xiaomi-mimo-token-plan-api-key`.
+- Windows: a Generic Credential whose target is
+  `xiaomi-mimo-token-plan-api-key.quinte`.
 
-```bash
-quinte credential set --from-file /path/to/token
-quinte credential status --json
-```
+QUINTE intentionally exposes no secret-writing command. Verify provisioning
+with `quinte credential status --json`.
 
 `ANTHROPIC_API_KEY` remains a legacy non-isolated fallback. Doctor reports
 `credential_source` and `credential_isolated` for the Claude route.
 
 ### `__credential-helper` (hidden)
 
-Internal Claude Code `apiKeyHelper` entrypoint. Requires
-`QUINTE_CREDENTIAL_HELPER_ALLOWED=1` and `QUINTE_LANE_ROOT` set by the adapter.
-User hosts must not invoke it directly.
+Internal Claude Code `apiKeyHelper` entrypoint. It requires a private per-lane
+authorization file and binds the request to the canonical lane root and fixed
+service. No credential or bearer token is placed in the helper command line or
+script. User hosts must not invoke it directly.

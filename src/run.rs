@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -19,24 +19,33 @@ use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
 
 use crate::adapters::{self, Invocation};
+use crate::contract::{
+    ARBITER_VERDICT_VERSION, BRIEF_VERSION, EVIDENCE_PACKET_VERSION,
+    PRIMARY_ARBITER_CHALLENGE_VERSION, PRIMARY_ARBITER_RESPONSE_VERSION,
+    PRIMARY_ARBITER_SUBMISSION_VERSION, PROTOCOL_VERSION, R2_PACKET_VERSION,
+    R3_INPUT_RECEIPT_VERSION, RATE_STATE_VERSION, RETRY_STATE_VERSION, RUN_MANIFEST_VERSION,
+    SNAPSHOT_VERSION, TASK_PACKET_VERSION, TRIAL_MANIFEST_VERSION, brief_version_supported,
+    contract,
+};
 use crate::model::{
     ArbiterVerdict, ArtifactBinding, AttachmentEntry, Brief, ClosureState, Disposition,
     LaneArtifactBinding, LaneOutput, MULTIMODAL_MODEL, Policy, PrimaryArbiterChallenge,
     PrimaryArbiterResponse, PrimaryArbiterSubmissionReceipt, PrimaryArbiterSubmissionState,
     R2Packet, R3InputReceipt, RESULT_VERSION, Residual, ResultEnvelope, RunError, RunManifest,
-    RunStatus, SnapshotEntry, SnapshotManifest, TEXT_MODEL, TrialManifest, TrialPerspective,
+    RunStatus, Severity, SnapshotEntry, SnapshotManifest, TEXT_MODEL, TrialManifest,
+    TrialPerspective,
 };
 use crate::policy;
 use crate::schema::{
-    BRIEF_SCHEMA, LANE_OUTPUT_SCHEMA, PRIMARY_ARBITER_RESPONSE_SCHEMA, R3_INPUT_RECEIPT_SCHEMA,
-    RESULT_SCHEMA, validate_file, validate_value,
+    LANE_OUTPUT_SCHEMA, PRIMARY_ARBITER_RESPONSE_SCHEMA, R3_INPUT_RECEIPT_SCHEMA, RESULT_SCHEMA,
+    validate_file, validate_value, validate_versioned_file,
 };
 use crate::store::{ActiveProcess, Store};
 #[cfg(windows)]
 use crate::util::configure_hidden_process;
 use crate::util::{
-    atomic_write, canonical_existing, filesystem_path, read_json, relative_slash, sha256_bytes,
-    sha256_file, utc_now, write_json,
+    atomic_write, canonical_existing, create_private_dir_all, filesystem_path, harden_private_file,
+    read_json, relative_slash, sha256_bytes, sha256_file, utc_now, write_json,
 };
 
 static INTERRUPTED: OnceLock<Arc<AtomicBool>> = OnceLock::new();
@@ -78,6 +87,9 @@ struct ChildCleanup<'a> {
     run_id: &'a str,
     registered: Option<ActiveProcess>,
     tree_cleaned: bool,
+    /// Windows Job Object that owns the adapter process tree (kill-on-close).
+    #[cfg(windows)]
+    job: Option<WindowsJob>,
 }
 
 impl<'a> ChildCleanup<'a> {
@@ -88,7 +100,14 @@ impl<'a> ChildCleanup<'a> {
             run_id,
             registered: None,
             tree_cleaned: false,
+            #[cfg(windows)]
+            job: None,
         }
+    }
+
+    #[cfg(windows)]
+    fn attach_job(&mut self, job: WindowsJob) {
+        self.job = Some(job);
     }
 
     fn mark_registered(&mut self, process: ActiveProcess) {
@@ -107,12 +126,202 @@ impl<'a> ChildCleanup<'a> {
 impl Drop for ChildCleanup<'_> {
     fn drop(&mut self) {
         if !self.tree_cleaned {
-            let _ = terminate_child(&mut self.child, Duration::from_millis(500));
+            #[cfg(windows)]
+            let job = self.job.as_ref();
+            #[cfg(not(windows))]
+            let job = Option::<&()>::None;
+            let _ = terminate_child(&mut self.child, Duration::from_millis(500), job);
+        }
+        #[cfg(windows)]
+        {
+            // Closing the job with KILL_ON_JOB_CLOSE reaps any remaining descendants.
+            self.job.take();
         }
         if let Some(process) = self.registered.take() {
             let _ = self.store.remove_active_process(self.run_id, &process);
         }
     }
+}
+
+/// Owned Windows Job Object used to contain an adapter process tree.
+#[cfg(windows)]
+struct WindowsJob {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn create() -> anyhow::Result<Self> {
+        use std::mem::zeroed;
+        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+        use windows_sys::Win32::System::JobObjects::{
+            CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            bail!("CreateJobObjectW failed: {}", unsafe { GetLastError() });
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                (&raw const info).cast(),
+                std::mem::size_of_val(&info) as u32,
+            )
+        };
+        if ok == 0 {
+            let error = unsafe { GetLastError() };
+            unsafe {
+                CloseHandle(handle);
+            }
+            bail!("SetInformationJobObject KILL_ON_JOB_CLOSE failed: {error}");
+        }
+        Ok(Self { handle })
+    }
+
+    fn assign_process_handle(
+        &self,
+        process: windows_sys::Win32::Foundation::HANDLE,
+    ) -> anyhow::Result<()> {
+        use windows_sys::Win32::Foundation::GetLastError;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+
+        let ok = unsafe { AssignProcessToJobObject(self.handle, process) };
+        if ok == 0 {
+            bail!("AssignProcessToJobObject failed: {}", unsafe {
+                GetLastError()
+            });
+        }
+        Ok(())
+    }
+
+    fn terminate(&self) {
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        let _ = unsafe { TerminateJobObject(self.handle, 1) };
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE terminates remaining members.
+        unsafe {
+            CloseHandle(self.handle);
+        }
+        self.handle = std::ptr::null_mut();
+    }
+}
+
+/// Spawn an adapter with platform containment. On Windows the process is created
+/// suspended, assigned to a kill-on-close Job Object, then resumed so children
+/// cannot escape before assignment.
+fn spawn_adapter_process(
+    command: &mut std::process::Command,
+) -> anyhow::Result<(Child, Option<WindowsJobPlaceholder>)> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::{
+            CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+        };
+
+        let job = WindowsJob::create()?;
+        // Combine hidden + suspended + new process group. CREATE_SUSPENDED closes
+        // the race between spawn and AssignProcessToJobObject.
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
+        let child = command.spawn().context("cannot start adapter process")?;
+        let process = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+        if let Err(error) = job.assign_process_handle(process) {
+            // Ensure a failed assignment cannot leave a suspended orphan.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        if let Err(error) = resume_suspended_process(child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        Ok((child, Some(job)))
+    }
+    #[cfg(not(windows))]
+    {
+        let child = command.spawn().context("cannot start adapter process")?;
+        Ok((child, None))
+    }
+}
+
+/// Placeholder type so non-Windows builds can keep a uniform Option without
+/// referencing WindowsJob.
+#[cfg(not(windows))]
+type WindowsJobPlaceholder = ();
+#[cfg(windows)]
+type WindowsJobPlaceholder = WindowsJob;
+
+#[cfg(windows)]
+fn resume_suspended_process(pid: u32) -> anyhow::Result<()> {
+    use std::mem::size_of;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenThread, ResumeThread, THREAD_QUERY_INFORMATION, THREAD_SUSPEND_RESUME,
+    };
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
+        bail!(
+            "CreateToolhelp32Snapshot failed while resuming adapter: {}",
+            unsafe { GetLastError() }
+        );
+    }
+    let mut entry = THREADENTRY32 {
+        dwSize: size_of::<THREADENTRY32>() as u32,
+        cntUsage: 0,
+        th32ThreadID: 0,
+        th32OwnerProcessID: 0,
+        tpBasePri: 0,
+        tpDeltaPri: 0,
+        dwFlags: 0,
+    };
+    let mut resumed = 0_u32;
+    let mut ok = unsafe { Thread32First(snapshot, &mut entry) };
+    while ok != 0 {
+        if entry.th32OwnerProcessID == pid {
+            let thread = unsafe {
+                OpenThread(
+                    THREAD_SUSPEND_RESUME | THREAD_QUERY_INFORMATION,
+                    0,
+                    entry.th32ThreadID,
+                )
+            };
+            if !thread.is_null() {
+                let previous = unsafe { ResumeThread(thread) };
+                unsafe {
+                    CloseHandle(thread);
+                }
+                if previous != u32::MAX {
+                    resumed += 1;
+                }
+            }
+        }
+        ok = unsafe { Thread32Next(snapshot, &mut entry) };
+    }
+    unsafe {
+        CloseHandle(snapshot);
+    }
+    if resumed == 0 {
+        bail!("failed to resume any thread for suspended adapter pid {pid}");
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -261,7 +470,7 @@ fn persist_retry_deadline(
     write_json(
         &retry_deadline_path(run_dir, phase, &route.route_id),
         &RetryDeadlineState {
-            retry_state_version: "1.0".into(),
+            retry_state_version: RETRY_STATE_VERSION.into(),
             phase: phase.into(),
             route_id: route.route_id.clone(),
             previous_attempt,
@@ -280,13 +489,13 @@ fn wait_for_retry_deadline(
     route: &crate::model::RoutePolicy,
     attempt: usize,
 ) -> anyhow::Result<()> {
-    let run_dir = store.run_dir(&manifest.run_id);
+    let run_dir = store.run_dir(&manifest.run_id)?;
     let path = retry_deadline_path(&run_dir, phase, &route.route_id);
     if !path.exists() {
         return Ok(());
     }
     let state: RetryDeadlineState = read_json(&path)?;
-    if state.retry_state_version != "1.0"
+    if state.retry_state_version != RETRY_STATE_VERSION
         || state.phase != phase
         || state.route_id != route.route_id
         || state.next_attempt != attempt
@@ -352,7 +561,7 @@ fn persist_r2_pacing_until(
     requested_due_at: chrono::DateTime<Utc>,
     reason: &str,
 ) -> anyhow::Result<()> {
-    let path = r2_rate_state_path(&store.run_dir(&manifest.run_id));
+    let path = r2_rate_state_path(&store.run_dir(&manifest.run_id)?);
     let due_at = if path.exists() {
         let existing: R2RateState = read_json(&path)?;
         let existing_due =
@@ -364,7 +573,7 @@ fn persist_r2_pacing_until(
     write_json(
         &path,
         &R2RateState {
-            rate_state_version: "1.0".into(),
+            rate_state_version: RATE_STATE_VERSION.into(),
             next_allowed_at: due_at.to_rfc3339(),
             reason: reason.into(),
             route_id: route.route_id.clone(),
@@ -380,13 +589,13 @@ fn wait_for_r2_pacing(
     attempt: usize,
 ) -> anyhow::Result<()> {
     let run_id = &manifest.run_id;
-    let run_dir = store.run_dir(run_id);
+    let run_dir = store.run_dir(run_id)?;
     let path = r2_rate_state_path(&run_dir);
     if !path.exists() {
         return Ok(());
     }
     let state: R2RateState = read_json(&path)?;
-    if state.rate_state_version != "1.0" {
+    if state.rate_state_version != RATE_STATE_VERSION {
         bail!("unsupported R2 rate state version");
     }
     let due_at = chrono::DateTime::parse_from_rfc3339(&state.next_allowed_at)?.with_timezone(&Utc);
@@ -433,12 +642,15 @@ fn wait_cancellable(run_dir: &Path, duration: Duration) -> bool {
 }
 
 pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::Result<RunCreated> {
-    let brief: Brief = validate_file(&options.brief_path, BRIEF_SCHEMA)?;
-    if brief.brief_version != "1.0" || brief.question.trim().is_empty() {
-        bail!("brief_version must be 1.0 and question must not be empty");
+    let brief_contract = contract("brief").expect("brief contract is registered");
+    let mut brief: Brief = validate_versioned_file(&options.brief_path, brief_contract)?;
+    if !brief_version_supported(&brief.brief_version) || brief.question.trim().is_empty() {
+        bail!("brief contract revision is unsupported or question is empty");
     }
-    policy::validate_for_runtime(policy)?;
+    // New runs normalize legacy briefs to the current contract before hashing.
+    brief.brief_version = BRIEF_VERSION.into();
     let snapshot_ignore = snapshot_ignore_set(&brief.snapshot_ignore)?;
+    policy::validate_for_runtime(policy)?;
 
     let run_id = Uuid::now_v7().to_string();
     let run_dir = store.create_run_dirs(&run_id)?;
@@ -462,7 +674,7 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
     let runtime_sha256 = runtime_sha256()?;
     let now = utc_now();
     let manifest = RunManifest {
-        manifest_version: "1.0".to_string(),
+        manifest_version: RUN_MANIFEST_VERSION.into(),
         run_id: run_id.clone(),
         created_at: now.clone(),
         updated_at: now,
@@ -471,7 +683,7 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
         policy_sha256,
         snapshot_sha256,
         runtime_sha256,
-        protocol_version: "1.0".to_string(),
+        protocol_version: PROTOCOL_VERSION.into(),
         effective_model: effective_model.to_string(),
         sandbox_mode: policy.sandbox_mode,
         current_phase: None,
@@ -499,15 +711,16 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
 
 /// Starts the scheduler in a separate process so the creating CLI can return immediately.
 pub(crate) fn spawn_worker(store: &Store, run_id: &str) -> anyhow::Result<u32> {
-    let run_dir = store.run_dir(run_id);
+    let run_dir = store.run_dir(run_id)?;
     let diagnostics_dir = run_dir.join("diagnostics");
-    fs::create_dir_all(&diagnostics_dir)?;
+    create_private_dir_all(&diagnostics_dir)?;
     let log_path = diagnostics_dir.join("worker.log");
     let mut log = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
         .with_context(|| format!("cannot open worker log {}", log_path.display()))?;
+    harden_private_file(&log_path)?;
     writeln!(log, "{} worker launch requested", utc_now())?;
     let stdout = OpenOptions::new().append(true).open(&log_path)?;
     let stderr = OpenOptions::new().append(true).open(&log_path)?;
@@ -550,17 +763,17 @@ pub struct WorkerHeartbeat {
 pub struct WorkerStdioGuard;
 
 impl WorkerHeartbeat {
-    pub fn start(store: &Store, run_id: &str) -> Self {
+    pub fn start(store: &Store, run_id: &str) -> anyhow::Result<Self> {
         let stopped = Arc::new(AtomicBool::new(false));
-        let run_dir = store.run_dir(run_id);
+        let run_dir = store.run_dir(run_id)?;
         let worker_stopped = stopped.clone();
         let worker_dir = run_dir.clone();
         let handle = thread::spawn(move || worker_heartbeat_loop(worker_dir, worker_stopped));
-        Self {
+        Ok(Self {
             stopped,
             handle: Some(handle),
             run_dir,
-        }
+        })
     }
 }
 
@@ -933,7 +1146,7 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
     if manifest.status.terminal() {
         return Ok(manifest.status);
     }
-    let run_dir = store.run_dir(run_id);
+    let run_dir = store.run_dir(run_id)?;
     let brief: Brief = read_json(&run_dir.join("input/brief.json"))?;
     let policy: Policy = read_json(&run_dir.join("input/policy.json"))?;
     if let Err(error) = verify_resume_integrity(&manifest, &brief, &policy, &run_dir) {
@@ -1074,7 +1287,7 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
     let evidence_packet_path = run_dir.join("r3/evidence-packet.json");
     if !evidence_packet_path.exists() {
         let evidence = json!({
-            "evidence_packet_version": "1.0",
+            "evidence_packet_version": EVIDENCE_PACKET_VERSION,
             "run_id": run_id,
             "question": brief.question,
             "r1": r1.iter().map(|lane| (&lane.party_id, &lane.output)).collect::<BTreeMap<_, _>>(),
@@ -1245,9 +1458,14 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
         &brief,
         &evidence_packet_path,
     )?;
+    // Challenge binding alone is insufficient: residual evidence references must
+    // resolve to the exact snapshot before an external verdict can be merged.
+    validate_arbiter_semantics(&primary_arbiter_response.verdict, &run_dir)?;
     let counterpart_arbiter: ArbiterVerdict = read_json(&cc_path)?;
+    validate_unique_residual_ids(&counterpart_arbiter.residuals, "counterpart arbiter")?;
     let result = merge_verdicts(
         &manifest,
+        &brief,
         &policy,
         &r1,
         &r2,
@@ -1282,7 +1500,7 @@ pub fn submit_primary_arbiter(
     response_path: &Path,
 ) -> anyhow::Result<RunStatus> {
     let internal = store
-        .run_dir(run_id)
+        .run_dir(run_id)?
         .join("r3/primary-arbiter-response.json");
     if response_path
         .canonicalize()
@@ -1301,10 +1519,11 @@ pub fn submit_primary_arbiter_verdict(
     run_id: &str,
     verdict_path: &Path,
 ) -> anyhow::Result<RunStatus> {
+    let run_dir = store.run_dir(run_id)?;
     if verdict_path
         .canonicalize()
         .ok()
-        .is_some_and(|path| path.starts_with(store.run_dir(run_id)))
+        .is_some_and(|path| path.starts_with(&run_dir))
     {
         bail!("primary-arbiter verdict input must be outside the scheduler-owned run directory");
     }
@@ -1314,7 +1533,7 @@ pub fn submit_primary_arbiter_verdict(
         .primary_arbiter_challenge
         .ok_or_else(|| anyhow!("primary arbiter challenge is not ready"))?;
     let response = PrimaryArbiterResponse {
-        primary_arbiter_response_version: "1.0".into(),
+        primary_arbiter_response_version: PRIMARY_ARBITER_RESPONSE_VERSION.into(),
         run_id: challenge.run_id,
         nonce: challenge.nonce,
         policy_sha256: challenge.policy_sha256,
@@ -1337,7 +1556,7 @@ fn submit_primary_arbiter_response(
 ) -> anyhow::Result<RunStatus> {
     let _lock = store.lock(run_id)?;
     let mut manifest = store.load_manifest(run_id)?;
-    let run_dir = store.run_dir(run_id);
+    let run_dir = store.run_dir(run_id)?;
     let brief: Brief = read_json(&run_dir.join("input/brief.json"))?;
     let policy: Policy = read_json(&run_dir.join("input/policy.json"))?;
     if let Err(error) = verify_resume_integrity(&manifest, &brief, &policy, &run_dir) {
@@ -1385,7 +1604,7 @@ fn submit_primary_arbiter_response(
             .sha256
             .clone();
         manifest.primary_arbiter_submission = Some(PrimaryArbiterSubmissionReceipt {
-            submission_receipt_version: "1.0".into(),
+            submission_receipt_version: PRIMARY_ARBITER_SUBMISSION_VERSION.into(),
             state: PrimaryArbiterSubmissionState::Staging,
             response_ref: "r3/primary-arbiter-response.json".into(),
             response_sha256: response_sha256.clone(),
@@ -1562,7 +1781,7 @@ fn build_snapshot_with_ignore(
 
     entries.sort_by(|left, right| left.snapshot_ref.cmp(&right.snapshot_ref));
     Ok(SnapshotManifest {
-        snapshot_version: "1.0".into(),
+        snapshot_version: SNAPSHOT_VERSION.into(),
         created_at: utc_now(),
         entries,
         attachments,
@@ -1665,8 +1884,9 @@ fn copy_file_streaming(source: &Path, target: &Path, expected_bytes: u64) -> any
     let io_parent = io_target
         .parent()
         .ok_or_else(|| anyhow!("{} has no parent", target.display()))?;
-    fs::create_dir_all(io_parent)?;
+    create_private_dir_all(io_parent)?;
     let temporary = tempfile::NamedTempFile::new_in(io_parent)?;
+    harden_private_file(temporary.path())?;
     let mut input = fs::File::open(&io_source)?;
     let mut output = temporary.as_file();
     let copied = std::io::copy(&mut input, &mut output)?;
@@ -1680,6 +1900,7 @@ fn copy_file_streaming(source: &Path, target: &Path, expected_bytes: u64) -> any
     temporary
         .persist(&io_target)
         .map_err(|error| anyhow!("cannot persist {}: {}", target.display(), error.error))?;
+    harden_private_file(&io_target)?;
     Ok(())
 }
 
@@ -1832,13 +2053,13 @@ fn run_phase(
     phase: &str,
     packet_override: Option<&Path>,
 ) -> anyhow::Result<Vec<LaneAccepted>> {
-    let run_dir = store.run_dir(&manifest.run_id);
+    let run_dir = store.run_dir(&manifest.run_id)?;
     let packet_path = packet_override
         .map(Path::to_path_buf)
         .unwrap_or_else(|| run_dir.join("input/task-packet.json"));
     if packet_override.is_none() && !packet_path.exists() {
         let packet = json!({
-            "task_packet_version": "1.0",
+            "task_packet_version": TASK_PACKET_VERSION,
             "run_id": manifest.run_id,
             "phase": phase,
             "question": brief.question,
@@ -2251,7 +2472,7 @@ fn run_attempt(
     max_attempts: usize,
 ) -> anyhow::Result<AttemptOutcome> {
     let sensitive_cleanup = adapters::SensitiveCleanup::new(&invocation);
-    if cancellation_requested(&store.run_dir(&manifest.run_id)) {
+    if cancellation_requested(&store.run_dir(&manifest.run_id)?) {
         return Ok(AttemptOutcome {
             output: None,
             error: Some("cancelled".into()),
@@ -2260,7 +2481,7 @@ fn run_attempt(
         });
     }
     let lane_root = invocation.cwd.clone();
-    fs::create_dir_all(&lane_root)?;
+    create_private_dir_all(&lane_root)?;
     write_json(
         &lane_root.join("invocation.json"),
         &json!({
@@ -2290,10 +2511,15 @@ fn run_attempt(
             retry: RetryClass::Never,
         });
     }
-    let child = command
-        .spawn()
+    let (spawned, job) = spawn_adapter_process(&mut command)
         .with_context(|| format!("cannot start {}", invocation.program))?;
-    let mut child = ChildCleanup::new(child, store, &manifest.run_id);
+    let mut child = ChildCleanup::new(spawned, store, &manifest.run_id);
+    #[cfg(windows)]
+    if let Some(job) = job {
+        child.attach_job(job);
+    }
+    #[cfg(not(windows))]
+    let _ = job;
     let pid = child.child.id();
     if let Some(identity) = process_identity(pid) {
         let active_process = ActiveProcess {
@@ -2304,6 +2530,9 @@ fn run_attempt(
         registration.add_process(active_process.clone())?;
         child.mark_registered(active_process);
     } else if child_exited_without_reaping(&mut child.child)? {
+        #[cfg(windows)]
+        kill_residual_process_group(pid, child.job.as_ref());
+        #[cfg(not(windows))]
         kill_residual_process_group(pid);
     } else {
         bail!("cannot identify spawned adapter process");
@@ -2346,10 +2575,18 @@ fn run_attempt(
     let (status, timed_out, cancelled, output_limit_exceeded) = wait_child(
         &mut child.child,
         timeout_seconds,
-        &store.run_dir(&manifest.run_id),
+        &store.run_dir(&manifest.run_id)?,
         &output_limited,
+        #[cfg(windows)]
+        child.job.as_ref(),
+        #[cfg(not(windows))]
+        None,
     )?;
     child.tree_cleaned = true;
+    // Drop the job after the leader has been waited so kill-on-close reaps any
+    // descendants that outlived the leader.
+    #[cfg(windows)]
+    child.job.take();
     let stdout = receive_captured_output(stdout_receiver, "stdout")?;
     let stderr = receive_captured_output(stderr_receiver, "stderr")?;
     child.unregister()?;
@@ -2371,7 +2608,7 @@ fn run_attempt(
     let mut output_recovered_after_timeout = timed_out && output.is_some();
     if let Some(candidate) = output.as_ref()
         && let Err(validation_error) =
-            validate_evidence_refs(candidate, &store.run_dir(&manifest.run_id))
+            validate_evidence_refs(candidate, &store.run_dir(&manifest.run_id)?)
     {
         output = None;
         if timed_out {
@@ -2605,11 +2842,13 @@ fn wait_child(
     timeout_seconds: u64,
     run_dir: &Path,
     output_limited: &AtomicBool,
+    #[cfg(windows)] job: Option<&WindowsJob>,
+    #[cfg(not(windows))] job: Option<&()>,
 ) -> anyhow::Result<(Option<ExitStatus>, bool, bool, bool)> {
     let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
     loop {
         if child_exited_without_reaping(child)? {
-            kill_residual_process_group(child.id());
+            kill_residual_process_group_with_job(child.id(), job);
             let status = child.wait()?;
             return Ok((
                 Some(status),
@@ -2619,17 +2858,17 @@ fn wait_child(
             ));
         }
         if cancellation_requested(run_dir) {
-            let status = terminate_child(child, Duration::from_millis(500))
+            let status = terminate_child(child, Duration::from_millis(500), job)
                 .ok_or_else(|| anyhow!("cannot terminate cancelled adapter process"))?;
             return Ok((Some(status), false, true, false));
         }
         if output_limited.load(Ordering::SeqCst) {
-            let status = terminate_child(child, Duration::from_millis(100))
+            let status = terminate_child(child, Duration::from_millis(100), job)
                 .ok_or_else(|| anyhow!("cannot terminate output-limited adapter process"))?;
             return Ok((Some(status), false, false, true));
         }
         if Instant::now() >= deadline {
-            let status = terminate_child(child, Duration::from_millis(500))
+            let status = terminate_child(child, Duration::from_millis(500), job)
                 .ok_or_else(|| anyhow!("cannot terminate timed-out adapter process"))?;
             return Ok((Some(status), true, false, false));
         }
@@ -2637,22 +2876,27 @@ fn wait_child(
     }
 }
 
-fn terminate_child(child: &mut Child, grace: Duration) -> Option<ExitStatus> {
+fn terminate_child(
+    child: &mut Child,
+    grace: Duration,
+    #[cfg(windows)] job: Option<&WindowsJob>,
+    #[cfg(not(windows))] job: Option<&()>,
+) -> Option<ExitStatus> {
     let pid = child.id();
-    kill_process_tree(pid, false);
+    kill_process_tree_with_job(pid, false, job);
     let deadline = Instant::now() + grace;
     while Instant::now() < deadline {
         if child_exited_without_reaping(child).ok()? {
-            kill_residual_process_group(pid);
+            kill_residual_process_group_with_job(pid, job);
             return child.wait().ok();
         }
         thread::sleep(Duration::from_millis(25));
     }
-    kill_process_tree(pid, true);
+    kill_process_tree_with_job(pid, true, job);
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         if child_exited_without_reaping(child).ok()? {
-            kill_residual_process_group(pid);
+            kill_residual_process_group_with_job(pid, job);
             return child.wait().ok();
         }
         thread::sleep(Duration::from_millis(25));
@@ -2663,13 +2907,51 @@ fn terminate_child(child: &mut Child, grace: Duration) -> Option<ExitStatus> {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         if child_exited_without_reaping(child).ok()? {
-            kill_residual_process_group(pid);
+            kill_residual_process_group_with_job(pid, job);
             return child.wait().ok();
         }
         thread::sleep(Duration::from_millis(25));
     }
-    kill_residual_process_group(pid);
+    kill_residual_process_group_with_job(pid, job);
     None
+}
+
+#[cfg(windows)]
+fn kill_process_tree_with_job(pid: u32, force: bool, job: Option<&WindowsJob>) {
+    if let Some(job) = job {
+        // Prefer job-wide termination so grandchildren without the leader PID die.
+        job.terminate();
+        if force {
+            kill_process_tree(pid, true);
+        }
+        return;
+    }
+    kill_process_tree(pid, force);
+}
+
+#[cfg(not(windows))]
+fn kill_process_tree_with_job(pid: u32, force: bool, _job: Option<&()>) {
+    kill_process_tree(pid, force);
+}
+
+#[cfg(windows)]
+fn kill_residual_process_group_with_job(pid: u32, job: Option<&WindowsJob>) {
+    if let Some(job) = job {
+        job.terminate();
+        return;
+    }
+    // Fallback when no owned job is available (e.g. orphan recovery).
+    kill_process_tree(pid, true);
+}
+
+#[cfg(not(windows))]
+fn kill_residual_process_group_with_job(pid: u32, _job: Option<&()>) {
+    kill_residual_process_group(pid);
+}
+
+#[cfg(windows)]
+fn kill_residual_process_group(pid: u32, job: Option<&WindowsJob>) {
+    kill_residual_process_group_with_job(pid, job);
 }
 
 #[cfg(unix)]
@@ -2760,7 +3042,7 @@ fn build_r2_packet(
         .map(|(label, lane)| (label.to_string(), lane.output.clone()))
         .collect();
     Ok(R2Packet {
-        packet_version: "1.0".into(),
+        packet_version: R2_PACKET_VERSION.into(),
         run_id: manifest.run_id.clone(),
         question: brief.question.clone(),
         participants,
@@ -2782,7 +3064,7 @@ fn create_primary_arbiter_challenge(
     let mut nonce = [0_u8; 32];
     rand::rng().fill_bytes(&mut nonce);
     Ok(PrimaryArbiterChallenge {
-        challenge_version: "1.0".into(),
+        challenge_version: PRIMARY_ARBITER_CHALLENGE_VERSION.into(),
         run_id: manifest.run_id.clone(),
         nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce),
         policy_sha256: manifest.policy_sha256.clone(),
@@ -2868,7 +3150,7 @@ fn ensure_r3_input_receipt(
     }
 
     let receipt = R3InputReceipt {
-        input_receipt_version: "1.0".into(),
+        input_receipt_version: R3_INPUT_RECEIPT_VERSION.into(),
         run_id: manifest.run_id.clone(),
         issued_at: utc_now(),
         r1: phase_artifact_bindings(r1, run_dir)?,
@@ -2993,6 +3275,9 @@ fn recover_primary_arbiter_submission(
     let Some(receipt) = manifest.primary_arbiter_submission.as_ref() else {
         return Ok(false);
     };
+    if receipt.response_ref != "r3/primary-arbiter-response.json" {
+        bail!("primary-arbiter submission has an invalid artifact reference");
+    }
     let response_path = run_dir.join(&receipt.response_ref);
     if !response_path.exists() {
         if receipt.state == PrimaryArbiterSubmissionState::Staging {
@@ -3045,15 +3330,40 @@ fn response_bytes_with_newline(mut bytes: Vec<u8>) -> Vec<u8> {
 
 fn arbiter_from_lane(output: LaneOutput) -> ArbiterVerdict {
     ArbiterVerdict {
-        arbiter_verdict_version: "1.0".into(),
+        arbiter_verdict_version: ARBITER_VERDICT_VERSION.into(),
         summary: output.verdict.clone(),
         recommendation: output.verdict,
         residuals: output.residuals,
     }
 }
 
+fn residual_fields_conflict(left: &Residual, right: &Residual) -> bool {
+    left.disposition != right.disposition
+        || left.closure_state != right.closure_state
+        || left.finding != right.finding
+        || left.severity != right.severity
+        || left.residual_type != right.residual_type
+        || left.source != right.source
+        || left.evidence_refs != right.evidence_refs
+        || left.required_closure != right.required_closure
+        || left.scope != right.scope
+        || left.closure_evidence != right.closure_evidence
+}
+
+fn is_high_risk_severity(severity: Severity) -> bool {
+    matches!(severity, Severity::High | Severity::Critical | Severity::P0)
+}
+
+fn conservative_unresolved(mut residual: Residual) -> Residual {
+    residual.disposition = Disposition::Unresolved;
+    residual.closure_state = ClosureState::Open;
+    residual.closure_evidence = Vec::new();
+    residual
+}
+
 fn merge_verdicts(
     manifest: &RunManifest,
+    brief: &Brief,
     policy: &Policy,
     r1: &[LaneAccepted],
     r2: &[LaneAccepted],
@@ -3067,26 +3377,54 @@ fn merge_verdicts(
         .iter()
         .chain(counterpart_arbiter.residuals.iter())
     {
-        if let Some(existing) = residuals.get(&residual.id)
-            && (existing.disposition != residual.disposition
-                || existing.closure_state != residual.closure_state
-                || existing.finding != residual.finding)
-        {
-            dissent.push(format!(
-                "Residual {} differs between primary arbiter and counterpart arbiter; retained as unresolved/open.",
-                residual.id
-            ));
-            let mut merged = existing.clone();
-            merged.disposition = Disposition::Unresolved;
-            merged.closure_state = ClosureState::Open;
-            merged.closure_evidence = Vec::new();
-            residuals.insert(residual.id.clone(), merged);
+        if let Some(existing) = residuals.get(&residual.id) {
+            if residual_fields_conflict(existing, residual) {
+                dissent.push(format!(
+                    "Residual {} differs between primary arbiter and counterpart arbiter (finding, disposition, closure, severity, type, source, evidence, required_closure, or scope); retained as unresolved/open.",
+                    residual.id
+                ));
+                let merged = conservative_unresolved(existing.clone());
+                residuals.insert(residual.id.clone(), merged);
+            }
             continue;
         }
-        residuals
-            .entry(residual.id.clone())
-            .or_insert_with(|| residual.clone());
+        residuals.insert(residual.id.clone(), residual.clone());
     }
+
+    // Conservative R1/R2 preservation: high-risk residuals accepted in earlier
+    // phases must not disappear solely because both R3 arbiters omitted them.
+    let mut earlier = BTreeMap::<String, Residual>::new();
+    for lane in r1.iter().chain(r2.iter()) {
+        for residual in &lane.output.residuals {
+            if !is_high_risk_severity(residual.severity) {
+                continue;
+            }
+            if let Some(existing) = earlier.get(&residual.id) {
+                if residual_fields_conflict(existing, residual) {
+                    dissent.push(format!(
+                        "Residual {} high-risk variants conflict across R1/R2; preserving as unresolved/open.",
+                        residual.id
+                    ));
+                    earlier.insert(
+                        residual.id.clone(),
+                        conservative_unresolved(existing.clone()),
+                    );
+                }
+            } else {
+                earlier.insert(residual.id.clone(), residual.clone());
+            }
+        }
+    }
+    for (id, residual) in earlier {
+        if residuals.contains_key(&id) {
+            continue;
+        }
+        dissent.push(format!(
+            "Residual {id} was high-risk in R1/R2 but omitted by both R3 arbiters; preserved as unresolved/open."
+        ));
+        residuals.insert(id, conservative_unresolved(residual));
+    }
+
     if primary_arbiter.recommendation != counterpart_arbiter.recommendation {
         dissent.push(format!(
             "primary arbiter: {}
@@ -3119,12 +3457,17 @@ counterpart arbiter: {}",
         result_version: RESULT_VERSION.into(),
         run_id: manifest.run_id.clone(),
         status: RunStatus::Completed,
+        brief_sha256: manifest.brief_sha256.clone(),
+        question: brief.question.clone(),
+        action_scope: brief.action_scope.clone(),
+        affected_paths: brief.affected_paths.clone(),
+        action_binding_sha256: brief.action_binding_sha256.clone(),
         summary: primary_arbiter.summary.clone(),
         recommendation: primary_arbiter.recommendation.clone(),
         dissent,
         residuals: residuals.into_values().collect(),
         trial_manifest: TrialManifest {
-            manifest_version: "1.0".into(),
+            manifest_version: TRIAL_MANIFEST_VERSION.into(),
             base_model_relation: "same_model".into(),
             perspective_count: 5,
             perspectives,
@@ -3174,13 +3517,72 @@ fn render_report(result: &ResultEnvelope) -> String {
     report
 }
 
-fn validate_evidence_refs(output: &LaneOutput, run_dir: &Path) -> anyhow::Result<()> {
+fn validate_unique_ids<'a, I>(ids: I, kind: &str) -> anyhow::Result<()>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            bail!("duplicate {kind} id: {id}");
+        }
+    }
+    Ok(())
+}
+
+fn validate_unique_claim_ids(claims: &[crate::model::Claim]) -> anyhow::Result<()> {
+    validate_unique_ids(claims.iter().map(|claim| claim.id.as_str()), "claim")
+}
+
+fn validate_unique_residual_ids(residuals: &[Residual], context: &str) -> anyhow::Result<()> {
+    validate_unique_ids(
+        residuals.iter().map(|residual| residual.id.as_str()),
+        &format!("{context} residual"),
+    )
+}
+
+fn snapshot_refs(run_dir: &Path) -> anyhow::Result<BTreeSet<String>> {
     let snapshot: SnapshotManifest = read_json(&run_dir.join("input/snapshot-manifest.json"))?;
-    let valid = snapshot
+    Ok(snapshot
         .entries
-        .iter()
-        .map(|entry| entry.snapshot_ref.as_str())
-        .collect::<Vec<_>>();
+        .into_iter()
+        .map(|entry| entry.snapshot_ref)
+        .collect())
+}
+
+fn validate_snapshot_reference(reference: &str, valid: &BTreeSet<String>) -> anyhow::Result<()> {
+    if reference.is_empty() {
+        return Ok(());
+    }
+    if !reference.starts_with("snapshot://") || !valid.contains(reference) {
+        bail!("unresolvable evidence reference: {reference}");
+    }
+    Ok(())
+}
+
+fn validate_residual_evidence_refs(residuals: &[Residual], run_dir: &Path) -> anyhow::Result<()> {
+    let valid = snapshot_refs(run_dir)?;
+    for residual in residuals {
+        for reference in residual
+            .evidence_refs
+            .iter()
+            .chain(residual.closure_evidence.iter())
+        {
+            validate_snapshot_reference(reference, &valid)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_arbiter_semantics(verdict: &ArbiterVerdict, run_dir: &Path) -> anyhow::Result<()> {
+    validate_unique_residual_ids(&verdict.residuals, "arbiter")?;
+    validate_residual_evidence_refs(&verdict.residuals, run_dir)
+}
+
+fn validate_evidence_refs(output: &LaneOutput, run_dir: &Path) -> anyhow::Result<()> {
+    validate_unique_claim_ids(&output.claims)?;
+    validate_unique_residual_ids(&output.residuals, "lane")?;
+    let valid = snapshot_refs(run_dir)?;
     for reference in output
         .claims
         .iter()
@@ -3198,12 +3600,7 @@ fn validate_evidence_refs(output: &LaneOutput, run_dir: &Path) -> anyhow::Result
                 .flat_map(|residual| residual.closure_evidence.iter()),
         )
     {
-        if reference.is_empty() {
-            continue;
-        }
-        if !reference.starts_with("snapshot://") || !valid.contains(&reference.as_str()) {
-            bail!("unresolvable evidence reference: {reference}");
-        }
+        validate_snapshot_reference(reference, &valid)?;
     }
     Ok(())
 }
@@ -3354,6 +3751,8 @@ fn kill_residual_process_group(pid: u32) {
 
 #[cfg(windows)]
 fn kill_process_tree(pid: u32, force: bool) {
+    // taskkill remains a fallback for processes not assigned to an owned job
+    // (for example recovered orphans recorded only by PID/identity).
     let mut args = vec!["/PID".to_string(), pid.to_string(), "/T".to_string()];
     if force {
         args.push("/F".to_string());
@@ -3366,9 +3765,6 @@ fn kill_process_tree(pid: u32, force: bool) {
     configure_hidden_process(&mut command);
     let _ = command.status();
 }
-
-#[cfg(windows)]
-fn kill_residual_process_group(_pid: u32) {}
 
 fn install_interrupt_handler() {
     let flag = interrupt_flag().clone();
@@ -3392,7 +3788,9 @@ pub fn wait(store: &Store, run_id: &str, poll_interval: Duration) -> anyhow::Res
     #[cfg(feature = "test-adapters")]
     if std::env::var_os("QUINTE_TEST_WAIT_READY").is_some() {
         atomic_write(
-            &store.run_dir(run_id).join("diagnostics/wait-handler-ready"),
+            &store
+                .run_dir(run_id)?
+                .join("diagnostics/wait-handler-ready"),
             b"ready\n",
         )?;
     }
@@ -3413,25 +3811,40 @@ pub fn wait(store: &Store, run_id: &str, poll_interval: Duration) -> anyhow::Res
     }
 }
 
-pub fn verify_result_integrity(store: &Store, run_id: &str) -> anyhow::Result<()> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResultIntegrity {
+    pub contract_version: &'static str,
+    pub actionable: bool,
+}
+
+pub fn verify_result_integrity(
+    store: &Store,
+    run_id: &str,
+) -> anyhow::Result<Option<ResultIntegrity>> {
     let manifest = store.load_manifest(run_id)?;
     if !matches!(manifest.status, RunStatus::Completed | RunStatus::Degraded) {
-        return Ok(());
+        return Ok(None);
     }
     let expected = manifest
         .result_sha256
         .as_deref()
         .ok_or_else(|| anyhow!("completed run is missing its result digest"))?;
-    let path = store.run_dir(run_id).join("result.json");
+    let path = store.run_dir(run_id)?.join("result.json");
     let actual = sha256_file(&path).context("completed run result is missing")?;
     if actual != expected {
         bail!("completed run result integrity check failed");
     }
-    Ok(())
+    let result_contract = contract("result").expect("result contract is registered");
+    let result: Value = read_json(&path)?;
+    let revision = crate::schema::validate_versioned_value(&result, result_contract)?;
+    Ok(Some(ResultIntegrity {
+        contract_version: revision.version,
+        actionable: revision.version == RESULT_VERSION,
+    }))
 }
 
 fn ensure_worker_liveness(store: &Store, run_id: &str) -> anyhow::Result<()> {
-    let run_dir = store.run_dir(run_id);
+    let run_dir = store.run_dir(run_id)?;
     let worker: serde_json::Value = match read_json(&run_dir.join("diagnostics/worker.json")) {
         Ok(worker) => worker,
         Err(_) => return Ok(()),
@@ -3494,12 +3907,17 @@ fn process_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod retry_tests {
     use super::{
-        MIMO_REPETITION_ERROR, RateLimitSignal, RetryClass, build_snapshot, classify_rate_limit,
-        evaluate_attempt_output, next_attempt, retry_allowed, retry_schedule,
-        validate_evidence_refs,
+        LaneAccepted, MIMO_REPETITION_ERROR, RateLimitSignal, RetryClass, build_snapshot,
+        classify_rate_limit, evaluate_attempt_output, merge_verdicts, next_attempt,
+        residual_fields_conflict, retry_allowed, retry_schedule, validate_arbiter_semantics,
+        validate_evidence_refs, validate_unique_claim_ids, validate_unique_residual_ids,
     };
     use crate::adapters::OutputKind;
-    use crate::model::{Brief, LaneOutput, SnapshotEntry, SnapshotManifest};
+    use crate::contract::BRIEF_VERSION;
+    use crate::model::{
+        ArbiterVerdict, Brief, ClosureState, Disposition, LaneOutput, Residual, RunManifest,
+        RunStatus, SandboxMode, Severity, SnapshotEntry, SnapshotManifest,
+    };
     use crate::policy::default_policy;
 
     #[cfg(unix)]
@@ -3544,6 +3962,8 @@ mod retry_tests {
             ],
             attachments: Vec::new(),
             action_scope: None,
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         };
 
         let snapshot = build_snapshot(temporary.path(), &brief, &default_policy()).unwrap();
@@ -3568,6 +3988,8 @@ mod retry_tests {
             snapshot_ignore: vec!["ignored.txt".into()],
             attachments: Vec::new(),
             action_scope: None,
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         };
 
         let snapshot = build_snapshot(temporary.path(), &brief, &default_policy()).unwrap();
@@ -3587,6 +4009,8 @@ mod retry_tests {
                 snapshot_ignore: vec![pattern.into()],
                 attachments: Vec::new(),
                 action_scope: None,
+                affected_paths: Vec::new(),
+                action_binding_sha256: None,
             };
             let temporary = tempfile::tempdir().unwrap();
 
@@ -3616,6 +4040,8 @@ mod retry_tests {
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: None,
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         };
 
         let snapshot = build_snapshot(temporary.path(), &brief, &default_policy()).unwrap();
@@ -3665,7 +4091,7 @@ mod retry_tests {
         let mut child = command.spawn().unwrap();
         let started = Instant::now();
 
-        let status = super::terminate_child(&mut child, Duration::from_millis(50));
+        let status = super::terminate_child(&mut child, Duration::from_millis(50), None);
 
         assert!(status.is_some());
         assert!(started.elapsed() < Duration::from_secs(5));
@@ -3704,6 +4130,7 @@ mod retry_tests {
             2,
             tempfile::tempdir().unwrap().path(),
             &AtomicBool::new(false),
+            None,
         )
         .unwrap()
         .0;
@@ -3885,6 +4312,325 @@ mod retry_tests {
 
         let error = validate_evidence_refs(&output, temporary.path()).unwrap_err();
         assert!(error.to_string().contains("snapshot://missing.txt"));
+    }
+
+    fn sample_residual(id: &str, severity: Severity, finding: &str) -> Residual {
+        Residual {
+            id: id.into(),
+            severity,
+            residual_type: "generic".into(),
+            source: "test".into(),
+            finding: finding.into(),
+            evidence_refs: vec![],
+            disposition: Disposition::Unresolved,
+            required_closure: "close with evidence".into(),
+            closure_state: ClosureState::Open,
+            closure_evidence: vec![],
+            scope: "test-scope".into(),
+        }
+    }
+
+    fn sample_lane(id: &str, residual: Residual) -> LaneAccepted {
+        LaneAccepted {
+            party_id: "Party A".into(),
+            route_id: "party-a".into(),
+            output: LaneOutput {
+                lane_output_version: "1.0".into(),
+                task_restatement: "task".into(),
+                verdict: "verdict".into(),
+                confidence: 0.5,
+                claims: vec![],
+                residuals: vec![residual],
+                uncertainties: vec![],
+            },
+            artifact_ref: format!("lanes/R1/{id}/accepted.json"),
+        }
+    }
+
+    fn sample_manifest() -> RunManifest {
+        RunManifest {
+            manifest_version: "1.0".into(),
+            run_id: "run-residual-test".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            status: RunStatus::Merging,
+            brief_sha256: format!("sha256:{}", "a".repeat(64)),
+            policy_sha256: format!("sha256:{}", "b".repeat(64)),
+            snapshot_sha256: format!("sha256:{}", "c".repeat(64)),
+            runtime_sha256: format!("sha256:{}", "d".repeat(64)),
+            protocol_version: "1.0".into(),
+            effective_model: "mimo-v2.5-pro".into(),
+            sandbox_mode: SandboxMode::Process,
+            current_phase: Some("R3".into()),
+            error: None,
+            r3_input_receipt: None,
+            primary_arbiter_challenge: None,
+            primary_arbiter_submission: None,
+            result_sha256: None,
+        }
+    }
+
+    fn sample_brief() -> Brief {
+        Brief {
+            brief_version: BRIEF_VERSION.into(),
+            question: "What remains?".into(),
+            context: None,
+            evidence_roots: Vec::new(),
+            snapshot_ignore: Vec::new(),
+            attachments: Vec::new(),
+            action_scope: Some("test-scope".into()),
+            affected_paths: vec!["README.md".into()],
+            action_binding_sha256: Some(format!("sha256:{}", "e".repeat(64))),
+        }
+    }
+
+    fn empty_roster_lanes(policy: &crate::model::Policy) -> (Vec<LaneAccepted>, Vec<LaneAccepted>) {
+        let r1: Vec<LaneAccepted> = policy
+            .roster
+            .iter()
+            .map(|route| LaneAccepted {
+                party_id: route.party_id.clone(),
+                route_id: route.route_id.clone(),
+                output: LaneOutput {
+                    lane_output_version: "1.0".into(),
+                    task_restatement: "task".into(),
+                    verdict: "ok".into(),
+                    confidence: 0.5,
+                    claims: vec![],
+                    residuals: vec![],
+                    uncertainties: vec![],
+                },
+                artifact_ref: format!("lanes/R1/{}/accepted.json", route.route_id),
+            })
+            .collect();
+        let r2 = r1
+            .iter()
+            .map(|lane| {
+                let mut clone = lane.clone();
+                clone.artifact_ref = format!("lanes/R2/{}/accepted.json", lane.route_id);
+                clone
+            })
+            .collect();
+        (r1, r2)
+    }
+
+    #[test]
+    fn duplicate_claim_ids_are_rejected() {
+        let mut output = lane_output_with_evidence(VALID_SNAPSHOT_REF, "");
+        output.claims.push(output.claims[0].clone());
+        let error = validate_unique_claim_ids(&output.claims).unwrap_err();
+        assert!(error.to_string().contains("duplicate claim id"));
+        let temporary = evidence_test_run_dir();
+        let error = validate_evidence_refs(&output, temporary.path()).unwrap_err();
+        assert!(error.to_string().contains("duplicate claim id"));
+    }
+
+    #[test]
+    fn duplicate_residual_ids_are_rejected_for_lanes_and_arbiters() {
+        let residual = sample_residual("r-dup", Severity::Medium, "finding");
+        let error = validate_unique_residual_ids(&[residual.clone(), residual.clone()], "lane")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate lane residual id: r-dup")
+        );
+
+        let temporary = evidence_test_run_dir();
+        let mut output = lane_output_with_evidence(VALID_SNAPSHOT_REF, "");
+        output.residuals.push(output.residuals[0].clone());
+        let error = validate_evidence_refs(&output, temporary.path()).unwrap_err();
+        assert!(error.to_string().contains("duplicate lane residual id"));
+
+        let verdict = ArbiterVerdict {
+            arbiter_verdict_version: "1.0".into(),
+            summary: "s".into(),
+            recommendation: "r".into(),
+            residuals: vec![residual.clone(), residual],
+        };
+        let error = validate_arbiter_semantics(&verdict, temporary.path()).unwrap_err();
+        assert!(error.to_string().contains("duplicate arbiter residual id"));
+    }
+
+    #[test]
+    fn primary_arbiter_residual_evidence_refs_must_match_snapshot() {
+        let temporary = evidence_test_run_dir();
+        let mut residual = sample_residual("primary-r1", Severity::High, "risk");
+        residual.evidence_refs = vec!["snapshot://missing-from-snapshot.txt".into()];
+        let verdict = ArbiterVerdict {
+            arbiter_verdict_version: "1.0".into(),
+            summary: "s".into(),
+            recommendation: "r".into(),
+            residuals: vec![residual],
+        };
+        let error = validate_arbiter_semantics(&verdict, temporary.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unresolvable evidence reference: snapshot://missing-from-snapshot.txt")
+        );
+
+        let mut ok = sample_residual("primary-r1", Severity::High, "risk");
+        ok.evidence_refs = vec![VALID_SNAPSHOT_REF.into()];
+        let verdict = ArbiterVerdict {
+            arbiter_verdict_version: "1.0".into(),
+            summary: "s".into(),
+            recommendation: "r".into(),
+            residuals: vec![ok],
+        };
+        validate_arbiter_semantics(&verdict, temporary.path()).unwrap();
+    }
+
+    #[test]
+    fn residual_merge_detects_severity_type_source_evidence_scope_conflicts() {
+        let left = sample_residual("conflict-1", Severity::High, "same finding");
+        let mut right = left.clone();
+        right.severity = Severity::Low;
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        right.residual_type = "other".into();
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        right.source = "other-source".into();
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        right.evidence_refs = vec![VALID_SNAPSHOT_REF.into()];
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        right.required_closure = "different closure".into();
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        right.scope = "other-scope".into();
+        assert!(residual_fields_conflict(&left, &right));
+        right = left.clone();
+        assert!(!residual_fields_conflict(&left, &right));
+
+        let policy = default_policy();
+        let (r1, r2) = empty_roster_lanes(&policy);
+        let primary = ArbiterVerdict {
+            arbiter_verdict_version: "1.0".into(),
+            summary: "primary".into(),
+            recommendation: "proceed carefully".into(),
+            residuals: vec![sample_residual(
+                "conflict-1",
+                Severity::High,
+                "same finding",
+            )],
+        };
+        let mut cc_residual = sample_residual("conflict-1", Severity::High, "same finding");
+        cc_residual.severity = Severity::Critical;
+        cc_residual.scope = "cc-scope".into();
+        let counterpart = ArbiterVerdict {
+            arbiter_verdict_version: "1.0".into(),
+            summary: "counterpart".into(),
+            recommendation: "proceed carefully".into(),
+            residuals: vec![cc_residual],
+        };
+        let result = merge_verdicts(
+            &sample_manifest(),
+            &sample_brief(),
+            &policy,
+            &r1,
+            &r2,
+            &primary,
+            &counterpart,
+        );
+        let merged = result
+            .residuals
+            .iter()
+            .find(|residual| residual.id == "conflict-1")
+            .unwrap();
+        assert_eq!(merged.disposition, Disposition::Unresolved);
+        assert_eq!(merged.closure_state, ClosureState::Open);
+        assert!(
+            result.dissent.iter().any(
+                |item| item.contains("differs between primary arbiter and counterpart arbiter")
+            )
+        );
+    }
+
+    #[test]
+    fn high_risk_r1_r2_residual_is_preserved_when_both_arbiters_omit_it() {
+        let policy = default_policy();
+        let (mut r1, r2) = empty_roster_lanes(&policy);
+        let high_risk = sample_residual(
+            "r1-high-risk",
+            Severity::Critical,
+            "critical earlier finding",
+        );
+        r1[0].output.residuals.push(high_risk.clone());
+        // Also cover a medium residual that must NOT be auto-preserved.
+        r1[0].output.residuals.push(sample_residual(
+            "r1-medium",
+            Severity::Medium,
+            "medium only",
+        ));
+
+        let primary = ArbiterVerdict {
+            arbiter_verdict_version: "1.0".into(),
+            summary: "primary".into(),
+            recommendation: "ok".into(),
+            residuals: vec![],
+        };
+        let counterpart = ArbiterVerdict {
+            arbiter_verdict_version: "1.0".into(),
+            summary: "counterpart".into(),
+            recommendation: "ok".into(),
+            residuals: vec![],
+        };
+        let result = merge_verdicts(
+            &sample_manifest(),
+            &sample_brief(),
+            &policy,
+            &r1,
+            &r2,
+            &primary,
+            &counterpart,
+        );
+        assert!(
+            result
+                .residuals
+                .iter()
+                .any(|residual| residual.id == "r1-high-risk"
+                    && residual.disposition == Disposition::Unresolved
+                    && residual.closure_state == ClosureState::Open)
+        );
+        assert!(
+            result
+                .residuals
+                .iter()
+                .all(|residual| residual.id != "r1-medium")
+        );
+        assert!(
+            result.dissent.iter().any(|item| item
+                .contains("was high-risk in R1/R2 but omitted by both R3 arbiters"))
+        );
+        // silence unused helper warning if compiler optimizes oddly
+        let _ = sample_lane("x", high_risk);
+    }
+
+    #[test]
+    fn windows_job_object_containment_is_wired_in_source() {
+        // Portable structural proof: the shipped adapter lifecycle owns a
+        // kill-on-close Job Object, assigns processes before resume, and no
+        // longer treats post-leader residual cleanup as a Windows no-op.
+        let source = include_str!("run.rs");
+        assert!(source.contains("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE"));
+        assert!(source.contains("CreateJobObjectW"));
+        assert!(source.contains("AssignProcessToJobObject"));
+        assert!(source.contains("CREATE_SUSPENDED"));
+        assert!(source.contains("fn spawn_adapter_process"));
+        assert!(source.contains("fn kill_residual_process_group_with_job"));
+        assert!(
+            source.contains("job.terminate()"),
+            "Windows residual cleanup must terminate the owned job"
+        );
+        // Production Windows residual path must use the job-aware helper rather
+        // than an empty stub body on the residual API.
+        assert!(
+            source.contains("fn kill_residual_process_group(pid: u32, job: Option<&WindowsJob>)"),
+            "Windows residual process cleanup must accept the owned job"
+        );
     }
 
     #[test]

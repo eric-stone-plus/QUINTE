@@ -1,13 +1,13 @@
 ---
 name: quinte
-description: Run or continue a QUINTE v0.1 adversarial review through the quinte CLI, including fixed five-party R1/R2 analysis, run inspection and recovery, and the required Primary Arbiter R3 handshake. Use when the user explicitly asks for QUINTE, a five-party structured review, cross-examination, residual exposure, or continuation or inspection of an existing QUINTE run. Do not use it as a generic delegator or to run one QUINTE party.
+description: Run or continue a QUINTE adversarial review through the quinte CLI, including fixed five-party R1/R2 analysis, run inspection and recovery, and the required Primary Arbiter R3 handshake. Use when the user explicitly asks for QUINTE, a five-party structured review, cross-examination, residual exposure, or continuation or inspection of an existing QUINTE run. Do not use it as a generic delegator or to run one QUINTE party.
 ---
 
 # QUINTE CLI
 
 Use `quinte` as the sole execution authority. Do not recreate its phases with
-manual agent calls, `delegate_task`, shell loops, or the legacy Python phase
-dispatcher. Do not run, replace, or skip an individual party.
+manual agent calls, `delegate_task`, or shell loops. Do not run, replace, or
+skip an individual party.
 
 R2 anti-429 handling is CLI-owned. The fixed scheduler serializes starts with
 10-second pacing, makes at most three same-route attempts, and applies typed
@@ -52,7 +52,7 @@ Use `quinte resume <run-id> --json` after an interrupted scheduler process,
 `quinte cancel <run-id> --json` only for an explicit cancellation. Ctrl-C on
 `wait` returns `130` without cancelling the run.
 
-QUINTE output is evidence, not authorization for a protected action. v0.1 uses
+QUINTE output is evidence, not authorization for a protected action. The runtime uses
 process/config isolation but does not provide an OS filesystem or network
 sandbox.
 

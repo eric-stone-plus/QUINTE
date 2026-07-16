@@ -68,3 +68,7 @@ if [ ! -f "${QUINTE_HOME:-${HOME}/.quinte}/policy.json" ]; then
   "${INSTALL_DIR}/quinte" init
 fi
 echo "quinte: run 'quinte doctor' to verify the fixed agent environment"
+if [ "$os" = "apple-darwin" ]; then
+  echo "quinte: provision Keychain service xiaomi-mimo-token-plan-api-key for the login account, then run 'quinte credential status'"
+fi
+echo "quinte: ANTHROPIC_API_KEY remains a non-isolated fallback only"

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/primary-arbiter-response.schema.json",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/primary-arbiter-response/1.0/schema.json",
   "title": "QUINTE Primary Arbiter Response",
   "type": "object",
   "additionalProperties": false,
@@ -24,7 +24,7 @@
         "arbiter_verdict_version": { "const": "1.0" },
         "summary": { "type": "string", "minLength": 1, "maxLength": 20000 },
         "recommendation": { "type": "string", "minLength": 1, "maxLength": 20000 },
-        "residuals": { "type": "array", "maxItems": 100, "items": { "$ref": "lane-output.schema.json#/$defs/residual" } }
+        "residuals": { "type": "array", "maxItems": 100, "items": { "$ref": "https://github.com/eric-stone-plus/QUINTE/contracts/lane-output/1.0/schema.json#/$defs/residual" } }
       }
     }
   }

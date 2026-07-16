@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/r3-input-receipt.schema.json",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/r3-input-receipt/1.0/schema.json",
   "title": "QUINTE R3 Input Receipt",
   "type": "object",
   "additionalProperties": false,

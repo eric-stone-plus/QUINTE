@@ -4,10 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: &str = "1.0";
-pub const BRIEF_VERSION: &str = "1.0";
-pub const RESULT_VERSION: &str = "1.0";
-pub const POLICY_VERSION: &str = "1.0";
+pub use crate::contract::{BRIEF_VERSION, POLICY_VERSION, PROTOCOL_VERSION, RESULT_VERSION};
 pub const TEXT_MODEL: &str = "mimo-v2.5-pro";
 pub const MULTIMODAL_MODEL: &str = "mimo-v2.5";
 
@@ -26,6 +23,10 @@ pub struct Brief {
     pub attachments: Vec<PathBuf>,
     #[serde(default)]
     pub action_scope: Option<String>,
+    #[serde(default)]
+    pub affected_paths: Vec<String>,
+    #[serde(default)]
+    pub action_binding_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -108,6 +109,7 @@ pub enum RunStatus {
     R2Running,
     R2Gate,
     R3Cc,
+    #[serde(alias = "waiting_hm")]
     WaitingPrimaryArbiter,
     Merging,
     Completed,
@@ -145,7 +147,9 @@ pub struct RunManifest {
     pub current_phase: Option<String>,
     pub error: Option<RunError>,
     pub r3_input_receipt: Option<ArtifactBinding>,
+    #[serde(alias = "hm_challenge")]
     pub primary_arbiter_challenge: Option<PrimaryArbiterChallenge>,
+    #[serde(alias = "hm_submission")]
     pub primary_arbiter_submission: Option<PrimaryArbiterSubmissionReceipt>,
     pub result_sha256: Option<String>,
 }
@@ -305,6 +309,7 @@ pub struct PrimaryArbiterChallenge {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrimaryArbiterResponse {
+    #[serde(alias = "hm_response_version")]
     pub primary_arbiter_response_version: String,
     pub run_id: String,
     pub nonce: String,
@@ -340,6 +345,11 @@ pub struct ResultEnvelope {
     pub result_version: String,
     pub run_id: String,
     pub status: RunStatus,
+    pub brief_sha256: String,
+    pub question: String,
+    pub action_scope: Option<String>,
+    pub affected_paths: Vec<String>,
+    pub action_binding_sha256: Option<String>,
     pub summary: String,
     pub recommendation: String,
     pub dissent: Vec<String>,
@@ -381,7 +391,7 @@ pub struct CliEnvelope<T: Serialize> {
 impl<T: Serialize> CliEnvelope<T> {
     pub fn ok(data: T) -> Self {
         Self {
-            cli_envelope_version: "1.0",
+            cli_envelope_version: crate::contract::CLI_ENVELOPE_VERSION,
             ok: true,
             data,
         }

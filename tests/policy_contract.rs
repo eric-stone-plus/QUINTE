@@ -112,3 +112,30 @@ fn policy_rejects_invalid_counterpart_arbiter_and_phase_limits() {
     output_limit.max_output_bytes = 1024;
     assert!(validate(&output_limit).is_err());
 }
+
+#[test]
+fn policy_rejects_route_tuple_drift_and_path_unsafe_ids() {
+    for mutate in [
+        |policy: &mut quinte::model::Policy| policy.roster[0].route_id = "other".into(),
+        |policy: &mut quinte::model::Policy| policy.roster[0].executable = "other".into(),
+        |policy: &mut quinte::model::Policy| policy.counterpart_arbiter.route_id = "other".into(),
+        |policy: &mut quinte::model::Policy| policy.counterpart_arbiter.executable = "other".into(),
+    ] {
+        let mut policy = default_policy();
+        mutate(&mut policy);
+        assert!(validate(&policy).is_err());
+    }
+
+    for route_id in ["../escape", "a/b", r"a\b", ".", "UPPER", "two words", ""] {
+        let mut policy = default_policy();
+        policy.roster[0].route_id = route_id.into();
+        assert!(
+            validate(&policy).is_err(),
+            "accepted unsafe route_id {route_id:?}"
+        );
+    }
+
+    let mut duplicate = default_policy();
+    duplicate.counterpart_arbiter.route_id = duplicate.roster[0].route_id.clone();
+    assert!(validate(&duplicate).is_err());
+}

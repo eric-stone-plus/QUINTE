@@ -113,7 +113,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
-    fs::create_dir_all(parent)?;
+    create_private_dir_all(parent)?;
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
@@ -124,10 +124,271 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         let mut file = options.open(&temporary)?;
+        harden_private_file(&temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
     }
     replace_file(&temporary, path)?;
+    harden_private_file(path)?;
+    Ok(())
+}
+
+pub fn create_private_dir_all(path: &Path) -> anyhow::Result<()> {
+    if path.file_name().is_none() {
+        bail!("refusing to treat a filesystem root as a private directory");
+    }
+
+    let mut missing = Vec::new();
+    let mut cursor = path;
+    loop {
+        match fs::symlink_metadata(cursor) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_dir() {
+                    bail!(
+                        "private directory path is not a directory: {}",
+                        cursor.display()
+                    );
+                }
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(cursor.to_path_buf());
+                cursor = cursor.parent().ok_or_else(|| {
+                    anyhow!(
+                        "private directory has no existing ancestor: {}",
+                        path.display()
+                    )
+                })?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    for directory in missing.iter().rev() {
+        match create_private_dir(directory) {
+            Ok(()) => harden_private_dir(directory)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let metadata = fs::symlink_metadata(directory)?;
+                if !metadata.file_type().is_dir() {
+                    bail!(
+                        "private directory path was replaced during creation: {}",
+                        directory.display()
+                    );
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_dir() {
+        bail!(
+            "private directory leaf is not a directory: {}",
+            path.display()
+        );
+    }
+    harden_private_dir(path)
+}
+
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700).create(path)
+    }
+    #[cfg(not(unix))]
+    fs::create_dir(path)
+}
+
+fn harden_private_dir(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(windows)]
+    harden_windows_path(path, true)?;
+    Ok(())
+}
+
+pub fn harden_private_file(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(windows)]
+    harden_windows_path(path, false)?;
+    Ok(())
+}
+
+pub fn verify_private_file(path: &Path) -> anyhow::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        bail!("private authorization is not a regular file");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.mode() & 0o077 != 0 {
+            bail!("private authorization permissions must be 0600");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+struct WindowsHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for WindowsHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+        }
+    }
+}
+
+#[cfg(windows)]
+struct LocalAllocation(*mut core::ffi::c_void);
+
+#[cfg(windows)]
+impl Drop for LocalAllocation {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { windows_sys::Win32::Foundation::LocalFree(self.0) };
+        }
+    }
+}
+
+#[cfg(windows)]
+struct WindowsTokenUser {
+    _token: WindowsHandle,
+    buffer: Vec<usize>,
+}
+
+#[cfg(windows)]
+impl WindowsTokenUser {
+    fn current() -> anyhow::Result<Self> {
+        use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError};
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        let mut raw_token = std::ptr::null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw_token) } == 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("cannot open current process token for private ACL");
+        }
+        let token = WindowsHandle(raw_token);
+        let mut required = 0_u32;
+        let first = unsafe {
+            GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut required)
+        };
+        if first != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER || required == 0 {
+            bail!("cannot determine current token SID buffer size");
+        }
+        let word = std::mem::size_of::<usize>();
+        let mut buffer = vec![0_usize; (required as usize).div_ceil(word)];
+        if unsafe {
+            GetTokenInformation(
+                token.0,
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error()).context("cannot read current token SID");
+        }
+        if required as usize > buffer.len() * word
+            || buffer.len() * word < std::mem::size_of::<TOKEN_USER>()
+        {
+            bail!("current token returned an invalid user SID buffer");
+        }
+        let result = Self {
+            _token: token,
+            buffer,
+        };
+        if unsafe { windows_sys::Win32::Security::IsValidSid(result.sid()) } == 0 {
+            bail!("current process token contains an invalid user SID");
+        }
+        Ok(result)
+    }
+
+    fn sid(&self) -> windows_sys::Win32::Security::PSID {
+        let user = unsafe {
+            &*self
+                .buffer
+                .as_ptr()
+                .cast::<windows_sys::Win32::Security::TOKEN_USER>()
+        };
+        user.User.Sid
+    }
+}
+
+#[cfg(windows)]
+fn harden_windows_path(path: &Path, directory: bool) -> anyhow::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Security::Authorization::{
+        EXPLICIT_ACCESS_W, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW, SetNamedSecurityInfoW,
+        TRUSTEE_IS_SID, TRUSTEE_IS_USER,
+    };
+    use windows_sys::Win32::Security::{
+        CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
+        PROTECTED_DACL_SECURITY_INFORMATION, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+    let user = WindowsTokenUser::current()?;
+    let inheritance = if directory {
+        OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+    } else {
+        0
+    };
+    let trustee = TRUSTEE_W {
+        TrusteeForm: TRUSTEE_IS_SID,
+        TrusteeType: TRUSTEE_IS_USER,
+        ptstrName: user.sid().cast(),
+        ..Default::default()
+    };
+    let access = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: FILE_ALL_ACCESS,
+        grfAccessMode: SET_ACCESS,
+        grfInheritance: inheritance,
+        Trustee: trustee,
+    };
+    let mut raw_acl = std::ptr::null_mut();
+    let code = unsafe { SetEntriesInAclW(1, &access, std::ptr::null(), &mut raw_acl) };
+    // Some Win32 APIs may return an allocation alongside an error; own any
+    // non-null result before inspecting the status code.
+    let acl = LocalAllocation(raw_acl.cast());
+    if code != ERROR_SUCCESS {
+        bail!("cannot build private Windows ACL: OS error {code}");
+    }
+    let mut wide_path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let code = unsafe {
+        SetNamedSecurityInfoW(
+            wide_path.as_mut_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            acl.0.cast(),
+            std::ptr::null(),
+        )
+    };
+    if code != ERROR_SUCCESS {
+        bail!("cannot apply private Windows ACL: OS error {code}");
+    }
     Ok(())
 }
 
@@ -183,8 +444,9 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> 
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("{} has no parent", path.display()))?;
-    fs::create_dir_all(parent)?;
+    create_private_dir_all(parent)?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    harden_private_file(path)?;
     let mut record = serde_json::to_vec(value)?;
     record.push(b'\n');
     file.write_all(&record)?;
@@ -832,6 +1094,38 @@ pub fn relative_slash(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn private_directory_creation_preserves_ancestors_and_hardens_new_components() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let existing = temporary.path().join("existing");
+        std::fs::create_dir(&existing).unwrap();
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let nested = existing.join("new/deep/leaf");
+
+        super::create_private_dir_all(&nested).unwrap();
+
+        assert_eq!(std::fs::metadata(&existing).unwrap().mode() & 0o777, 0o755);
+        for path in [
+            existing.join("new"),
+            existing.join("new/deep"),
+            nested.clone(),
+        ] {
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().mode() & 0o777,
+                0o700,
+                "{} was not private",
+                path.display()
+            );
+        }
+
+        std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o755)).unwrap();
+        super::create_private_dir_all(&nested).unwrap();
+        assert_eq!(std::fs::metadata(&nested).unwrap().mode() & 0o777, 0o700);
+    }
+
     #[cfg(windows)]
     #[test]
     fn resolves_windows_npm_shim_without_batch_argument_parsing() {
@@ -890,6 +1184,122 @@ exit $ret
         );
         std::fs::remove_file(temporary.path().join("agent.ps1")).unwrap();
         assert!(super::resolve_command_with_path("agent", Some(&search_path)).is_none());
+    }
+
+    #[test]
+    fn windows_acl_implementation_uses_the_current_token_sid() {
+        let source = include_str!("util.rs");
+        let implementation = source.split("#[cfg(test)]").next().unwrap();
+        for required in [
+            "OpenProcessToken",
+            "GetCurrentProcess",
+            "GetTokenInformation",
+            "TokenUser",
+            "TRUSTEE_IS_SID",
+            "PROTECTED_DACL_SECURITY_INFORMATION",
+        ] {
+            assert!(
+                implementation.contains(required),
+                "missing Windows ACL primitive {required}"
+            );
+        }
+        for forbidden in ["GetUserNameW", "TRUSTEE_IS_NAME"] {
+            assert!(
+                !implementation.contains(forbidden),
+                "Windows ACL still depends on ambiguous name lookup {forbidden}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_private_acl_is_protected_and_grants_only_the_current_token_sid() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+        use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+            CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
+            GetSecurityDescriptorControl, OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR, PSID,
+            SE_DACL_PROTECTED,
+        };
+        use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+        unsafe fn assert_acl(path: &std::path::Path, expected_flags: u32) {
+            let mut path = path
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>();
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            let code = unsafe {
+                GetNamedSecurityInfoW(
+                    path.as_mut_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut dacl,
+                    std::ptr::null_mut(),
+                    &mut descriptor,
+                )
+            };
+            assert_eq!(code, ERROR_SUCCESS);
+            assert!(!descriptor.is_null());
+            struct Descriptor(PSECURITY_DESCRIPTOR);
+            impl Drop for Descriptor {
+                fn drop(&mut self) {
+                    unsafe { LocalFree(self.0) };
+                }
+            }
+            let _descriptor = Descriptor(descriptor);
+
+            let mut control = 0_u16;
+            let mut revision = 0_u32;
+            assert_ne!(
+                unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) },
+                0
+            );
+            assert_ne!(control & SE_DACL_PROTECTED, 0);
+            assert!(!dacl.is_null());
+
+            let mut info = ACL_SIZE_INFORMATION::default();
+            assert_ne!(
+                unsafe {
+                    GetAclInformation(
+                        dacl,
+                        (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+                        std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                        AclSizeInformation,
+                    )
+                },
+                0
+            );
+            assert_eq!(info.AceCount, 1);
+            let mut raw_ace = std::ptr::null_mut();
+            assert_ne!(unsafe { GetAce(dacl, 0, &mut raw_ace) }, 0);
+            let ace = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
+            assert_eq!(ace.Header.AceType, 0, "expected ACCESS_ALLOWED_ACE");
+            assert_eq!(u32::from(ace.Header.AceFlags), expected_flags);
+            assert_eq!(ace.Mask & FILE_ALL_ACCESS, FILE_ALL_ACCESS);
+            let current = super::WindowsTokenUser::current().unwrap();
+            let ace_sid: PSID = (&ace.SidStart as *const u32).cast_mut().cast();
+            assert_ne!(unsafe { EqualSid(current.sid(), ace_sid) }, 0);
+        }
+
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path().join("private");
+        super::create_private_dir_all(&directory).unwrap();
+        let file = directory.join("secret");
+        std::fs::write(&file, b"secret").unwrap();
+        super::harden_private_file(&file).unwrap();
+
+        unsafe {
+            assert_acl(&directory, OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE);
+            assert_acl(&file, 0);
+        }
+        assert_eq!(std::fs::read(&file).unwrap(), b"secret");
     }
 
     #[cfg(windows)]

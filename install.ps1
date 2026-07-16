@@ -51,7 +51,7 @@ try {
         & (Join-Path $InstallDir "quinte.exe") init
     }
     Write-Host "quinte: run 'quinte doctor' to verify the fixed agent environment"
-    Write-Host "quinte: prefer isolated Claude credentials via 'quinte credential set' (Windows Credential Manager)"
+    Write-Host "quinte: provision target xiaomi-mimo-token-plan-api-key.quinte in Windows Credential Manager, then run 'quinte credential status'"
     Write-Host "quinte: ANTHROPIC_API_KEY remains a non-isolated fallback only"
 } finally {
     Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue

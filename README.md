@@ -7,7 +7,7 @@
 **A protocol-enforcing CLI for five-party adversarial review**
 
 [![Protocol](https://img.shields.io/badge/protocol-current-blue?style=flat)](specs/PROTOCOL.md)
-[![CLI](https://img.shields.io/badge/CLI-v0.1-orange?style=flat)](specs/CLI.md)
+[![CLI](https://img.shields.io/badge/CLI-contract-orange?style=flat)](specs/CLI.md)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
 
 </div>
@@ -22,11 +22,11 @@ The protocol has three rounds:
 - **R2:** the same five parties cross-review anonymized R1 outputs.
 - **R3:** the Primary Arbiter and the Counterpart Arbiter produce the dual verdict.
 
-The v0.1 Rust CLI owns the run state machine, fixed roster, typed output gates,
+The Rust CLI owns the run state machine, fixed roster, typed output gates,
 retry boundary, artifacts, and Primary Arbiter handshake. The host invokes the CLI; it
 does not recreate QUINTE by launching the parties itself.
 
-## v0.1 Boundary
+## Runtime Boundary
 
 The default policy binds the protocol roles to these native routes:
 
@@ -90,6 +90,11 @@ on its fixed native agent roster and existing token-plan credentials. Run
 `quinte doctor` to check CodeWhale, OpenCode, Kilo, MiMo, OMP, Claude Code, and
 their credential sources. The installer never downloads those tools or creates
 credentials silently.
+
+Provision the Claude/MiMo token with Keychain Access on macOS or Windows
+Credential Manager on Windows, then verify it with `quinte credential status`.
+QUINTE exposes no secret-writing command; see the CLI contract for the exact
+account/service or target identity.
 
 Source builds remain available to contributors with `cargo build --release`.
 
@@ -187,13 +192,13 @@ each attempt.
 
 ## Isolation and Authorization
 
-v0.1 uses per-lane working directories, isolated HOME/config directories,
+The runtime uses per-lane working directories, isolated HOME/config directories,
 cleared environments, adapter tool restrictions, output schemas, and process
 tree supervision. These are process and configuration controls. **They are not
 a kernel-enforced filesystem or network sandbox.** A child executable still
 runs with the operating-system authority of the user who started QUINTE.
 
-Do not treat v0.1 as a containment boundary for an untrusted executable. Run
+Do not treat process isolation as a containment boundary for an untrusted executable. Run
 the CLI under an external sandbox, VM, container, or restricted OS account when
 that threat model applies.
 
@@ -204,18 +209,12 @@ that authority.
 ## Repository Contracts
 
 - [Protocol specification](specs/PROTOCOL.md) defines the debate invariants.
-- [CLI specification](specs/CLI.md) defines the v0.1 executable boundary.
-- [Dispatch specification](specs/DISPATCH.md) documents the earlier phase-only
-  manifest and ledger compatibility layer.
+- [CLI specification](specs/CLI.md) defines the executable boundary.
 - [Windows PowerShell development log](docs/windows-powershell-development-log.md)
   records the native process-launch design and regression boundary.
 - [JSON schemas](schemas/) define accepted brief, lane, primary-arbiter response, result,
   and compatibility artifacts.
 - [QUINTE skill](skills/SKILL.md) is a thin host entry point to the CLI.
-
-The scripts under `bin/` remain phase-dispatch compatibility tools. They are
-not the normal full-run host interface and do not replace the Rust state
-machine.
 
 ## License
 

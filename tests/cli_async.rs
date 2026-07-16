@@ -282,7 +282,7 @@ fn run_returns_queued_immediately_and_worker_reaches_waiting_primary_arbiter() {
         .output()
         .unwrap();
     let manifest = store.load_manifest(&run_id).unwrap();
-    let run_dir = store.run_dir(&run_id);
+    let run_dir = store.run_dir(&run_id).unwrap();
     let events = fs::read_to_string(run_dir.join("events.jsonl")).unwrap_or_default();
     let worker_log = fs::read_to_string(run_dir.join("diagnostics/worker.log")).unwrap_or_default();
     assert!(
@@ -297,6 +297,7 @@ fn run_returns_queued_immediately_and_worker_reaches_waiting_primary_arbiter() {
     assert!(
         Store::new(fixture.home.clone())
             .run_dir(&run_id)
+            .unwrap()
             .join("diagnostics/worker.json")
             .is_file()
     );
@@ -328,6 +329,7 @@ fn sigint_interrupts_wait_without_cancelling_run() {
         .unwrap();
     let ready = store
         .run_dir(&created.run_id)
+        .unwrap()
         .join("diagnostics/wait-handler-ready");
     wait_for_file(&mut waiter, &ready, Duration::from_secs(10));
     let signal = StdCommand::new("kill")
@@ -339,11 +341,13 @@ fn sigint_interrupts_wait_without_cancelling_run() {
     assert_eq!(status.code(), Some(130));
 
     let manifest =
-        read_json::<quinte::model::RunManifest>(&store.manifest_path(&created.run_id)).unwrap();
+        read_json::<quinte::model::RunManifest>(&store.manifest_path(&created.run_id).unwrap())
+            .unwrap();
     assert_eq!(manifest.status, RunStatus::Queued);
     assert!(
         !store
             .run_dir(&created.run_id)
+            .unwrap()
             .join("cancel.requested")
             .exists()
     );
@@ -368,6 +372,7 @@ fn wait_reports_a_dead_background_worker() {
     write_json(
         &store
             .run_dir(&created.run_id)
+            .unwrap()
             .join("diagnostics/worker.json"),
         &serde_json::json!({"pid": 2_147_483_647_u32, "started_at": "2026-01-01T00:00:00Z"}),
     )
@@ -408,6 +413,7 @@ fn wait_accepts_a_durable_waiting_primary_arbiter_state_after_worker_exit() {
     write_json(
         &store
             .run_dir(&created.run_id)
+            .unwrap()
             .join("diagnostics/worker.json"),
         &serde_json::json!({"pid": 2_147_483_647_u32, "started_at": "2026-01-01T00:00:00Z"}),
     )

@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use chrono::{Duration as ChronoDuration, Utc};
 use quinte::model::{
-    ArbiterVerdict, Brief, Policy, PrimaryArbiterResponse, PrimaryArbiterSubmissionReceipt,
-    PrimaryArbiterSubmissionState, RunStatus, SandboxMode, TEXT_MODEL,
+    ArbiterVerdict, BRIEF_VERSION, Brief, Policy, PrimaryArbiterResponse,
+    PrimaryArbiterSubmissionReceipt, PrimaryArbiterSubmissionState, RunStatus, SandboxMode,
+    TEXT_MODEL,
 };
 use quinte::run::{self, RunOptions};
 use quinte::store::Store;
@@ -143,13 +144,15 @@ fn create_waiting_run(
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "What remains unresolved?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
@@ -163,8 +166,13 @@ fn create_waiting_run(
         .unwrap()
         .primary_arbiter_challenge
         .unwrap();
-    let counterpart_arbiter: ArbiterVerdict =
-        read_json(&store.run_dir(&created.run_id).join("r3/cc-response.json")).unwrap();
+    let counterpart_arbiter: ArbiterVerdict = read_json(
+        &store
+            .run_dir(&created.run_id)
+            .unwrap()
+            .join("r3/cc-response.json"),
+    )
+    .unwrap();
     let response = PrimaryArbiterResponse {
         primary_arbiter_response_version: "1.0".into(),
         run_id: challenge.run_id,
@@ -191,7 +199,7 @@ fn invalid_snapshot_ignore_does_not_create_an_orphan_run_directory() {
     fs::write(
         &brief_path,
         r#"{
-            "brief_version": "1.0",
+            "brief_version": "1.1",
             "question": "What remains unresolved?",
             "snapshot_ignore": ["[invalid"]
         }"#,
@@ -209,6 +217,49 @@ fn invalid_snapshot_ignore_does_not_create_an_orphan_run_directory() {
 }
 
 #[test]
+fn legacy_brief_is_normalized_before_persistence_and_hashing() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let store = Store::new(temporary.path().join("home"));
+    fs::create_dir_all(store.home()).unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let policy = fake_policy(&executable);
+    let brief_path = temporary.path().join("legacy-brief.json");
+    fs::write(
+        &brief_path,
+        r#"{"brief_version":"1.0","question":"Normalize this legacy brief"}"#,
+    )
+    .unwrap();
+
+    let created = run::create(
+        &store,
+        &policy,
+        &RunOptions {
+            brief_path: brief_path.clone(),
+        },
+    )
+    .unwrap();
+    let persisted: Brief = read_json(
+        &store
+            .run_dir(&created.run_id)
+            .unwrap()
+            .join("input/brief.json"),
+    )
+    .unwrap();
+    let manifest = store.load_manifest(&created.run_id).unwrap();
+
+    assert_eq!(persisted.brief_version, "1.1");
+    assert_eq!(
+        manifest.brief_sha256,
+        quinte::util::sha256_bytes(&serde_json::to_vec(&persisted).unwrap())
+    );
+    assert_eq!(
+        fs::read_to_string(&brief_path).unwrap(),
+        r#"{"brief_version":"1.0","question":"Normalize this legacy brief"}"#
+    );
+}
+
+#[test]
 fn full_fake_run_reaches_primary_arbiter_then_completes() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
@@ -221,13 +272,15 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
     let evidence = temporary.path().join("evidence.txt");
     fs::write(&evidence, "bounded evidence\n").unwrap();
     let brief = Brief {
-        brief_version: "1.0".into(),
+        brief_version: BRIEF_VERSION.into(),
         question: "What remains unresolved?".into(),
         context: None,
         evidence_roots: vec![evidence],
         snapshot_ignore: Vec::new(),
         attachments: Vec::new(),
         action_scope: Some("test only".into()),
+        affected_paths: Vec::new(),
+        action_binding_sha256: None,
     };
     let brief_path = temporary.path().join("brief.json");
     write_json(&brief_path, &brief).unwrap();
@@ -247,8 +300,13 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
         .unwrap()
         .primary_arbiter_challenge
         .unwrap();
-    let counterpart_arbiter: ArbiterVerdict =
-        read_json(&store.run_dir(&created.run_id).join("r3/cc-response.json")).unwrap();
+    let counterpart_arbiter: ArbiterVerdict = read_json(
+        &store
+            .run_dir(&created.run_id)
+            .unwrap()
+            .join("r3/cc-response.json"),
+    )
+    .unwrap();
     let response = PrimaryArbiterResponse {
         primary_arbiter_response_version: "1.0".into(),
         run_id: challenge.run_id,
@@ -265,8 +323,20 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
         run::submit_primary_arbiter(&store, &created.run_id, &response_path).unwrap(),
         RunStatus::Completed
     );
-    assert!(store.run_dir(&created.run_id).join("result.json").is_file());
-    assert!(store.run_dir(&created.run_id).join("report.md").is_file());
+    assert!(
+        store
+            .run_dir(&created.run_id)
+            .unwrap()
+            .join("result.json")
+            .is_file()
+    );
+    assert!(
+        store
+            .run_dir(&created.run_id)
+            .unwrap()
+            .join("report.md")
+            .is_file()
+    );
     assert!(
         store
             .load_manifest(&created.run_id)
@@ -274,12 +344,17 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
             .result_sha256
             .is_some()
     );
-    run::verify_result_integrity(&store, &created.run_id).unwrap();
+    let integrity = run::verify_result_integrity(&store, &created.run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(integrity.contract_version, "2.0");
+    assert!(integrity.actionable);
     for phase in ["R1", "R2"] {
         for index in 0..5 {
             assert!(
                 store
                     .run_dir(&created.run_id)
+                    .unwrap()
                     .join(format!("lanes/{phase}/fake-{index}/accepted.json"))
                     .is_file()
             );
@@ -300,8 +375,79 @@ fn completed_result_tampering_is_rejected() {
         run::submit_primary_arbiter(&store, &run_id, &response_path).unwrap(),
         RunStatus::Completed
     );
-    fs::write(store.run_dir(&run_id).join("result.json"), b"{}\n").unwrap();
+    fs::write(store.run_dir(&run_id).unwrap().join("result.json"), b"{}\n").unwrap();
     assert!(run::verify_result_integrity(&store, &run_id).is_err());
+}
+
+#[test]
+fn legacy_completed_result_is_verified_read_only_without_contract_rewrite() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = Store::new(temporary.path().join("home"));
+    let run_id = "019bf52a-73b0-7000-8000-000000000001";
+    store.create_run_dirs(run_id).unwrap();
+    let parties = ["Party A", "Party B", "Party C", "Party D", "Party E"];
+    let legacy_result = serde_json::json!({
+        "result_version": "1.0",
+        "run_id": run_id,
+        "status": "completed",
+        "summary": "legacy",
+        "recommendation": "archive",
+        "dissent": [],
+        "residuals": [],
+        "trial_manifest": {
+            "manifest_version": "1.0",
+            "base_model_relation": "same_model",
+            "perspective_count": 5,
+            "perspectives": parties.iter().enumerate().map(|(index, party)| serde_json::json!({
+                "party_id": party,
+                "route_id": format!("legacy-{index}"),
+                "r1_artifact": format!("lanes/R1/legacy-{index}/accepted.json"),
+                "r2_artifact": format!("lanes/R2/legacy-{index}/accepted.json"),
+                "independent_first_pass": true
+            })).collect::<Vec<_>>(),
+            "perturbation_axes": [],
+            "independence_controls": [],
+            "contamination_risks": [],
+            "wall_time_seconds": null
+        }
+    });
+    let result_path = store.run_dir(run_id).unwrap().join("result.json");
+    write_json(&result_path, &legacy_result).unwrap();
+    let original_result = fs::read(&result_path).unwrap();
+    let now = "2026-07-13T00:00:00.000Z";
+    let manifest = quinte::model::RunManifest {
+        manifest_version: "1.0".into(),
+        run_id: run_id.into(),
+        created_at: now.into(),
+        updated_at: now.into(),
+        status: RunStatus::Completed,
+        brief_sha256: format!("sha256:{}", "a".repeat(64)),
+        policy_sha256: format!("sha256:{}", "b".repeat(64)),
+        snapshot_sha256: format!("sha256:{}", "c".repeat(64)),
+        runtime_sha256: format!("sha256:{}", "d".repeat(64)),
+        protocol_version: "1.0".into(),
+        effective_model: "mimo-v2.5-pro".into(),
+        sandbox_mode: SandboxMode::Process,
+        current_phase: Some("R3".into()),
+        error: None,
+        r3_input_receipt: None,
+        primary_arbiter_challenge: None,
+        primary_arbiter_submission: None,
+        result_sha256: Some(sha256_file(&result_path).unwrap()),
+    };
+    store.save_manifest(&manifest).unwrap();
+    let original_manifest = fs::read(store.manifest_path(run_id).unwrap()).unwrap();
+
+    let integrity = run::verify_result_integrity(&store, run_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(integrity.contract_version, "1.0");
+    assert!(!integrity.actionable);
+    assert_eq!(fs::read(&result_path).unwrap(), original_result);
+    assert_eq!(
+        fs::read(store.manifest_path(run_id).unwrap()).unwrap(),
+        original_manifest
+    );
 }
 
 #[test]
@@ -321,6 +467,7 @@ fn verdict_submission_constructs_scheduler_owned_binding_envelope() {
     let owned: PrimaryArbiterResponse = read_json(
         &store
             .run_dir(&run_id)
+            .unwrap()
             .join("r3/primary-arbiter-response.json"),
     )
     .unwrap();
@@ -342,6 +489,7 @@ fn preplaced_primary_arbiter_response_cannot_bypass_scheduler_acceptance() {
     write_json(
         &store
             .run_dir(&run_id)
+            .unwrap()
             .join("r3/primary-arbiter-response.json"),
         &response,
     )
@@ -353,7 +501,7 @@ fn preplaced_primary_arbiter_response_cannot_bypass_scheduler_acceptance() {
     );
     let manifest = store.load_manifest(&run_id).unwrap();
     assert!(manifest.primary_arbiter_submission.is_none());
-    assert!(!store.run_dir(&run_id).join("result.json").exists());
+    assert!(!store.run_dir(&run_id).unwrap().join("result.json").exists());
 }
 
 #[test]
@@ -371,7 +519,7 @@ fn r3_receipt_blocks_tampering_of_every_accepted_input() {
     for (index, target) in targets.iter().enumerate() {
         let (store, run_id, _) =
             create_waiting_run(temporary.path(), &executable, &format!("tamper-{index}"));
-        fs::write(store.run_dir(&run_id).join(target), b"{}\n").unwrap();
+        fs::write(store.run_dir(&run_id).unwrap().join(target), b"{}\n").unwrap();
 
         assert_eq!(
             run::advance(&store, &run_id).unwrap(),
@@ -379,7 +527,7 @@ fn r3_receipt_blocks_tampering_of_every_accepted_input() {
         );
         let manifest = store.load_manifest(&run_id).unwrap();
         assert_eq!(manifest.error.unwrap().code, "integrity_drift");
-        assert!(!store.run_dir(&run_id).join("result.json").exists());
+        assert!(!store.run_dir(&run_id).unwrap().join("result.json").exists());
     }
 }
 
@@ -419,6 +567,7 @@ fn primary_arbiter_staged_file_is_recovered_without_resubmission() {
         create_waiting_run(temporary.path(), &executable, "staged-file");
     let response_path = store
         .run_dir(&run_id)
+        .unwrap()
         .join("r3/primary-arbiter-response.json");
     write_json(&response_path, &response).unwrap();
     let mut manifest = store.load_manifest(&run_id).unwrap();
@@ -454,6 +603,7 @@ fn accepted_primary_arbiter_submission_resumes_after_expiry_and_is_idempotent() 
         create_waiting_run(temporary.path(), &executable, "accepted-crash");
     let internal_response = store
         .run_dir(&run_id)
+        .unwrap()
         .join("r3/primary-arbiter-response.json");
     let external_response = temporary.path().join("accepted-crash-response.json");
     write_json(&internal_response, &response).unwrap();
@@ -510,13 +660,15 @@ fn cancelling_active_workers_is_terminal_and_cannot_be_overwritten_by_failure() 
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Can an active run be cancelled safely?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
@@ -571,13 +723,15 @@ fn invalid_early_r1_lane_still_drains_all_workers() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Do failed parallel lanes retain scheduler ownership?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
@@ -588,11 +742,13 @@ fn invalid_early_r1_lane_still_drains_all_workers() {
         RunStatus::Failed
     );
     assert!(store.active_pids(&created.run_id).unwrap().is_empty());
-    let events = fs::read_to_string(store.run_dir(&created.run_id).join("events.jsonl")).unwrap();
+    let events =
+        fs::read_to_string(store.run_dir(&created.run_id).unwrap().join("events.jsonl")).unwrap();
     for index in 1..5 {
         assert!(
             store
                 .run_dir(&created.run_id)
+                .unwrap()
                 .join(format!("lanes/R1/fake-{index}/attempt-1/stdout.bin"))
                 .is_file()
         );
@@ -626,13 +782,15 @@ fn output_limit_caps_captured_memory_and_fails_the_lane() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Does QUINTE cap child output while reading it?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
@@ -644,9 +802,11 @@ fn output_limit_caps_captured_memory_and_fails_the_lane() {
     );
     let stdout = store
         .run_dir(&created.run_id)
+        .unwrap()
         .join("lanes/R1/fake-0/attempt-1/stdout.bin");
     assert!(fs::metadata(stdout).unwrap().len() <= policy.max_output_bytes as u64);
-    let events = fs::read_to_string(store.run_dir(&created.run_id).join("events.jsonl")).unwrap();
+    let events =
+        fs::read_to_string(store.run_dir(&created.run_id).unwrap().join("events.jsonl")).unwrap();
     assert!(events.contains("adapter output exceeds policy limit"));
     assert!(store.active_pids(&created.run_id).unwrap().is_empty());
 }
@@ -676,13 +836,15 @@ fn r2_rate_limit_retries_same_route_with_persisted_scheduler_events() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Does the scheduler recover a typed R2 rate limit?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
@@ -695,6 +857,7 @@ fn r2_rate_limit_retries_same_route_with_persisted_scheduler_events() {
     assert!(
         store
             .run_dir(&created.run_id)
+            .unwrap()
             .join("lanes/R2/fake-0/attempt-2/stdout.bin")
             .is_file()
     );
@@ -704,7 +867,8 @@ fn r2_rate_limit_retries_same_route_with_persisted_scheduler_events() {
             .trim(),
         "2"
     );
-    let events = fs::read_to_string(store.run_dir(&created.run_id).join("events.jsonl")).unwrap();
+    let events =
+        fs::read_to_string(store.run_dir(&created.run_id).unwrap().join("events.jsonl")).unwrap();
     assert!(events.contains("lane.retry_scheduled"));
     assert!(events.contains("\"failure_class\":\"rate_limit\""));
     assert!(events.contains("lane.retry_started"));
@@ -734,13 +898,15 @@ fn typed_mimo_repetition_error_retries_and_preserves_the_real_error() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Does a typed MiMo repetition failure recover?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
@@ -753,12 +919,14 @@ fn typed_mimo_repetition_error_retries_and_preserves_the_real_error() {
     assert!(
         store
             .run_dir(&created.run_id)
+            .unwrap()
             .join("lanes/R1/fake-3/attempt-2/stdout.bin")
             .is_file()
     );
     assert!(
         store
             .run_dir(&created.run_id)
+            .unwrap()
             .join("lanes/R1/fake-3/accepted.json")
             .is_file()
     );
@@ -821,13 +989,15 @@ fn typed_mimo_repetition_stops_after_the_bounded_attempts() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Does bounded retry stop?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
@@ -840,12 +1010,14 @@ fn typed_mimo_repetition_stops_after_the_bounded_attempts() {
     assert!(
         store
             .run_dir(&created.run_id)
+            .unwrap()
             .join("lanes/R1/fake-3/attempt-2/stdout.bin")
             .is_file()
     );
     assert!(
         !store
             .run_dir(&created.run_id)
+            .unwrap()
             .join("lanes/R1/fake-3/attempt-3")
             .exists()
     );
@@ -895,13 +1067,15 @@ fn timeout_recovers_a_flushed_valid_output_without_retrying() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Can a complete output be recovered at timeout?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
@@ -911,7 +1085,10 @@ fn timeout_recovers_a_flushed_valid_output_without_retrying() {
         run::advance(&store, &created.run_id).unwrap(),
         RunStatus::WaitingPrimaryArbiter
     );
-    let lane_dir = store.run_dir(&created.run_id).join("lanes/R1/fake-0");
+    let lane_dir = store
+        .run_dir(&created.run_id)
+        .unwrap()
+        .join("lanes/R1/fake-0");
     assert!(lane_dir.join("accepted.json").is_file());
     assert!(!lane_dir.join("attempt-2").exists());
     let events = store.events(&created.run_id).unwrap();
@@ -953,13 +1130,15 @@ fn invalid_evidence_is_rejected_before_lane_finished_is_recorded_as_accepted() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Can invalid evidence be marked accepted?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
@@ -1017,13 +1196,15 @@ fn completed_codewhale_with_a_truncated_final_candidate_retries_on_the_same_rout
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Does a completed CodeWhale stream retry a truncated final candidate?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
@@ -1078,13 +1259,15 @@ fn r3_counterpart_arbiter_timeout_uses_the_same_bounded_retry_policy() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Does the R3 counterpart arbiter recover from a transient timeout?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
@@ -1113,6 +1296,7 @@ fn r3_counterpart_arbiter_timeout_uses_the_same_bounded_retry_policy() {
     assert!(
         store
             .run_dir(&created.run_id)
+            .unwrap()
             .join("r3/cc-response.json")
             .is_file()
     );
@@ -1135,18 +1319,20 @@ fn resume_consumes_existing_attempt_directories_in_r1_and_r3() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Does resume preserve the attempt budget?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
     let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
-    let run_dir = store.run_dir(&created.run_id);
+    let run_dir = store.run_dir(&created.run_id).unwrap();
 
     // A crash after creating an attempt directory still consumes that attempt.
     fs::create_dir_all(run_dir.join("lanes/R1/fake-0/attempt-1")).unwrap();
@@ -1196,18 +1382,20 @@ fn resume_honors_a_persisted_r1_retry_deadline_before_starting_the_next_attempt(
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Does resume preserve a pending retry cooldown?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
     let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
-    let run_dir = store.run_dir(&created.run_id);
+    let run_dir = store.run_dir(&created.run_id).unwrap();
     let lane_dir = run_dir.join("lanes/R1/fake-0");
     fs::create_dir_all(lane_dir.join("attempt-1")).unwrap();
     let due_at = Utc::now() + ChronoDuration::milliseconds(10_000);
@@ -1266,18 +1454,20 @@ fn resume_honors_a_persisted_r3_retry_deadline_before_starting_the_counterpart_a
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Does resume preserve the counterpart arbiter retry cooldown?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
     let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
-    let run_dir = store.run_dir(&created.run_id);
+    let run_dir = store.run_dir(&created.run_id).unwrap();
     let lane_dir = run_dir.join("lanes/R3/cc");
     fs::create_dir_all(lane_dir.join("attempt-1")).unwrap();
     // R1/R2 run before R3 is reached, so keep this deadline comfortably ahead.
@@ -1336,18 +1526,23 @@ fn resume_fails_closed_when_an_existing_attempt_consumed_the_budget() {
     write_json(
         &brief_path,
         &Brief {
-            brief_version: "1.0".into(),
+            brief_version: BRIEF_VERSION.into(),
             question: "Can resume bypass an exhausted attempt budget?".into(),
             context: None,
             evidence_roots: vec![evidence],
             snapshot_ignore: Vec::new(),
             attachments: Vec::new(),
             action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
         },
     )
     .unwrap();
     let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
-    let lane_dir = store.run_dir(&created.run_id).join("lanes/R1/fake-0");
+    let lane_dir = store
+        .run_dir(&created.run_id)
+        .unwrap()
+        .join("lanes/R1/fake-0");
     fs::create_dir_all(lane_dir.join("attempt-1")).unwrap();
 
     assert_eq!(
@@ -1376,15 +1571,17 @@ fn valid_model_prose_containing_429_never_triggers_retry() {
     assert!(
         store
             .run_dir(&run_id)
+            .unwrap()
             .join("lanes/R1/fake-0/accepted.json")
             .is_file()
     );
     assert!(
         !store
             .run_dir(&run_id)
+            .unwrap()
             .join("lanes/R1/fake-0/attempt-2")
             .exists()
     );
-    let events = fs::read_to_string(store.run_dir(&run_id).join("events.jsonl")).unwrap();
+    let events = fs::read_to_string(store.run_dir(&run_id).unwrap().join("events.jsonl")).unwrap();
     assert!(!events.contains("lane.retry_scheduled"));
 }

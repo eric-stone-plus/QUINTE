@@ -4,16 +4,13 @@ use anyhow::{Context, bail};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+pub use crate::contract::{
+    BRIEF_SCHEMA, LANE_OUTPUT_SCHEMA, LEGACY_BRIEF_SCHEMA, LEGACY_RESULT_SCHEMA,
+    PRIMARY_ARBITER_RESPONSE_SCHEMA, R3_INPUT_RECEIPT_SCHEMA, RESULT_SCHEMA, RUN_EVENT_SCHEMA,
+    RUN_MANIFEST_SCHEMA,
+};
+use crate::contract::{CONTRACT_REGISTRY, ContractRevision, ContractSpec};
 use crate::util::read_json;
-
-pub const BRIEF_SCHEMA: &str = include_str!("../schemas/brief.schema.json");
-pub const LANE_OUTPUT_SCHEMA: &str = include_str!("../schemas/lane-output.schema.json");
-pub const PRIMARY_ARBITER_RESPONSE_SCHEMA: &str =
-    include_str!("../schemas/primary-arbiter-response.schema.json");
-pub const R3_INPUT_RECEIPT_SCHEMA: &str = include_str!("../schemas/r3-input-receipt.schema.json");
-pub const RESULT_SCHEMA: &str = include_str!("../schemas/result.schema.json");
-pub const RUN_MANIFEST_SCHEMA: &str = include_str!("../schemas/run-manifest.schema.json");
-pub const RUN_EVENT_SCHEMA: &str = include_str!("../schemas/run-event.schema.json");
 
 pub fn schema_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("schemas")
@@ -32,19 +29,88 @@ pub fn validate_file<T: DeserializeOwned>(path: &Path, schema: &str) -> anyhow::
     serde_json::from_value(value).context("payload does not match typed contract")
 }
 
+pub fn parse_versioned<T: DeserializeOwned>(
+    bytes: &[u8],
+    contract: &'static ContractSpec,
+) -> anyhow::Result<T> {
+    let text = std::str::from_utf8(bytes).context("payload is not strict UTF-8")?;
+    let value: Value = serde_json::from_str(text).context("payload is not valid JSON")?;
+    validate_versioned_value(&value, contract)?;
+    serde_json::from_value(value).context("payload does not match typed contract")
+}
+
+pub fn validate_versioned_file<T: DeserializeOwned>(
+    path: &Path,
+    contract: &'static ContractSpec,
+) -> anyhow::Result<T> {
+    let value: Value = read_json(path)?;
+    validate_versioned_value(&value, contract)?;
+    serde_json::from_value(value).context("payload does not match typed contract")
+}
+
+pub fn validate_versioned_value(
+    value: &Value,
+    contract: &'static ContractSpec,
+) -> anyhow::Result<&'static ContractRevision> {
+    let version = value
+        .get(contract.version_field)
+        .and_then(Value::as_str)
+        .with_context(|| {
+            format!(
+                "{} payload has no string {}",
+                contract.name, contract.version_field
+            )
+        })?;
+    let revision = crate::contract::revision(contract, version).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unsupported {} contract revision in {}: {}",
+            contract.name,
+            contract.version_field,
+            version
+        )
+    })?;
+    if !crate::contract::version_supported(contract, version) {
+        bail!("unsupported {} contract revision: {version}", contract.name);
+    }
+    validate_value(value, revision.schema)?;
+    Ok(revision)
+}
+
 pub fn validate_value(value: &Value, schema: &str) -> anyhow::Result<()> {
     let schema: Value = serde_json::from_str(schema).context("embedded JSON schema is invalid")?;
     // External references are resolved only from this embedded registry. Validation never
     // performs network or filesystem retrieval, so schema behavior is reproducible offline.
-    let lane_schema: Value =
-        serde_json::from_str(LANE_OUTPUT_SCHEMA).context("lane schema is invalid")?;
-    let lane_id = lane_schema
-        .get("$id")
-        .and_then(Value::as_str)
-        .context("lane schema has no $id")?;
-    let registry = jsonschema::Registry::new()
-        .add(lane_id, &lane_schema)
-        .context("cannot register lane schema")?
+    let mut embedded = Vec::new();
+    for contract in CONTRACT_REGISTRY {
+        for revision in contract.revisions {
+            let document: Value = serde_json::from_str(revision.schema).with_context(|| {
+                format!("{} {} schema is invalid", contract.name, revision.version)
+            })?;
+            let id = document
+                .get("$id")
+                .and_then(Value::as_str)
+                .with_context(|| {
+                    format!("{} {} schema has no $id", contract.name, revision.version)
+                })?
+                .to_string();
+            let expected = crate::contract::schema_id(contract, revision);
+            if id != expected {
+                bail!(
+                    "{} {} schema $id does not match its contract revision: expected {expected}, got {id}",
+                    contract.name,
+                    revision.version
+                );
+            }
+            embedded.push((id, document));
+        }
+    }
+    let mut registry = jsonschema::Registry::new();
+    for (id, document) in &embedded {
+        registry = registry
+            .add(id.as_str(), document)
+            .with_context(|| format!("cannot register schema {id}"))?;
+    }
+    let registry = registry
         .prepare()
         .context("cannot prepare schema registry")?;
     let validator = jsonschema::options()

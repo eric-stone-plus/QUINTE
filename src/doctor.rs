@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::adapters;
+use crate::contract::DOCTOR_VERSION;
 use crate::model::{Policy, SandboxMode};
 use crate::util::command_exists;
 
@@ -32,7 +33,7 @@ pub fn run(policy: &Policy) -> DoctorReport {
         "name": "os_sandbox",
         "ok": false,
         "severity": "warning",
-        "message": "v0.1 isolates cwd/HOME/state and tool permissions but does not yet provide a kernel-enforced filesystem/network sandbox"
+        "message": "process mode isolates cwd/HOME/state and tool permissions but does not provide a kernel-enforced filesystem/network sandbox"
     }));
     checks.push(serde_json::json!({
         "name": "git",
@@ -58,7 +59,7 @@ pub fn run(policy: &Policy) -> DoctorReport {
         }));
     }
     DoctorReport {
-        doctor_version: "1.0",
+        doctor_version: DOCTOR_VERSION,
         ok: required_ok && sandbox_ok,
         platform: std::env::consts::OS.to_string(),
         checks,

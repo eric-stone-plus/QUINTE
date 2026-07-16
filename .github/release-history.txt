@@ -1,0 +1,7 @@
+# Burned QUINTE package versions. Entries are permanent, whether an attempt
+# succeeded, failed, was cancelled, was deleted, or reused a tag.
+0.1.0 released
+0.1.1 attempted
+0.1.2 attempted-reused
+0.1.3 attempted-side-lineage
+0.1.4 attempted-cancelled-deleted

@@ -1,6 +1,6 @@
 [package]
 name = "quinte"
-version = "0.1.2"
+version = "0.1.5"
 edition = "2024"
 description = "Protocol-enforcing CLI for QUINTE adversarial review"
 license = "MIT"
@@ -41,8 +41,16 @@ walkdir = "2.5"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-keyring = "3"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Credentials",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 assert_cmd = "2.2"

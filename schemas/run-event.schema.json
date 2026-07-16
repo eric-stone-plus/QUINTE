@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eric-stone-plus/QUINTE/schemas/run-event.schema.json",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/run-event/1.0/schema.json",
   "title": "QUINTE Run Event",
   "type": "object",
   "additionalProperties": false,

@@ -97,7 +97,7 @@ them `Participant A` through `Participant E`. The mapping is deterministic for
 the run but route identities are absent from the R2 packet. The same five
 fixed routes review that packet.
 
-R2 is serial and scheduler-paced. The v0.1 fixed policy leaves at least ten
+R2 is serial and scheduler-paced. The fixed policy leaves at least ten
 seconds between transport starts, including starts on different routes. The
 next permitted start time is persisted under run diagnostics and remains in
 force after scheduler restart. A route must classify material findings with
@@ -230,10 +230,3 @@ answer.
 8. Resume reuses only accepted artifacts whose run bindings still match.
 9. A run never changes route or model after creation.
 10. A result never grants authorization outside QUINTE.
-
-## Compatibility Layer
-
-`bin/quinte-dispatch-phase.py` and the dispatch manifest/ledger schemas remain
-available for historical host integrations. Their ledgers may be useful as
-evidence, but they do not create or advance a Rust CLI run and must not be
-called by the host QUINTE skill. New integrations use the public CLI only.

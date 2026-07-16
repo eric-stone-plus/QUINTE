@@ -1,4 +1,4 @@
-use std::fs;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer};
 use crate::model::{
     MULTIMODAL_MODEL, POLICY_VERSION, Policy, RoutePolicy, SandboxMode, TEXT_MODEL,
 };
-use crate::util::{read_json, write_json};
+use crate::util::{create_private_dir_all, read_json, write_json};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -151,27 +151,43 @@ fn validate_with_options(policy: &Policy, allow_fake: bool) -> anyhow::Result<()
     if policy.roster.len() != 5 {
         bail!("QUINTE policy must contain exactly five R1/R2 parties");
     }
-    let expected = ["Party A", "Party B", "Party C", "Party D", "Party E"];
+    let expected = [
+        ("Party A", "codewhale", "codewhale", "codewhale"),
+        ("Party B", "opencode", "opencode", "opencode"),
+        ("Party C", "kilo", "kilo", "kilo"),
+        ("Party D", "mimo", "mimo", "mimo"),
+        ("Party E", "omp", "omp", "omp"),
+    ];
+    let mut route_ids = BTreeSet::new();
     for (index, route) in policy.roster.iter().enumerate() {
-        if route.party_id != expected[index] || !route.required {
+        let (party_id, route_id, adapter, executable) = expected[index];
+        if route.party_id != party_id || !route.required {
             bail!("roster must bind required Party A through Party E in order");
         }
-        if route.executable.trim().is_empty() || route.adapter.trim().is_empty() {
-            bail!("{} has an empty executable or adapter", route.party_id);
+        validate_route_id(&route.route_id)?;
+        if !route_ids.insert(route.route_id.as_str()) {
+            bail!("route_id values must be globally unique");
         }
-        let expected_adapters = ["codewhale", "opencode", "kilo", "mimo", "omp"];
-        if route.adapter != expected_adapters[index]
-            && !(allow_fake
-                && matches!(
-                    route.adapter.as_str(),
-                    "fake" | "fake_mimo" | "fake_codewhale"
-                ))
+        let fake = allow_fake
+            && matches!(
+                route.adapter.as_str(),
+                "fake" | "fake_mimo" | "fake_codewhale"
+            );
+        if !fake
+            && (route.route_id != route_id
+                || route.adapter != adapter
+                || route.executable != executable)
         {
             bail!(
-                "{} must use the fixed {} adapter",
-                route.party_id,
-                expected_adapters[index]
+                "{} must use fixed route/adapter/executable tuple ({route_id}, {adapter}, {executable})",
+                route.party_id
             );
+        }
+        if fake && route.executable.trim().is_empty() {
+            bail!("{} has an empty test executable", route.party_id);
+        }
+        if fake {
+            validate_fake_executable(&route.executable)?;
         }
     }
     if policy.counterpart_arbiter.party_id != "Counterpart Arbiter"
@@ -179,14 +195,29 @@ fn validate_with_options(policy: &Policy, allow_fake: bool) -> anyhow::Result<()
     {
         bail!("policy must bind required Counterpart Arbiter");
     }
-    if policy.counterpart_arbiter.adapter != "claude"
-        && !(allow_fake
-            && matches!(
-                policy.counterpart_arbiter.adapter.as_str(),
-                "fake" | "fake_arbiter"
-            ))
+    validate_route_id(&policy.counterpart_arbiter.route_id)?;
+    if !route_ids.insert(policy.counterpart_arbiter.route_id.as_str()) {
+        bail!("route_id values must be globally unique");
+    }
+    let fake_arbiter = allow_fake
+        && matches!(
+            policy.counterpart_arbiter.adapter.as_str(),
+            "fake" | "fake_arbiter"
+        );
+    if !fake_arbiter
+        && (policy.counterpart_arbiter.route_id != "cc"
+            || policy.counterpart_arbiter.adapter != "claude"
+            || policy.counterpart_arbiter.executable != "claude")
     {
-        bail!("Counterpart Arbiter must use the fixed claude adapter");
+        bail!(
+            "Counterpart Arbiter must use fixed route/adapter/executable tuple (cc, claude, claude)"
+        );
+    }
+    if fake_arbiter && policy.counterpart_arbiter.executable.trim().is_empty() {
+        bail!("Counterpart Arbiter has an empty test executable");
+    }
+    if fake_arbiter {
+        validate_fake_executable(&policy.counterpart_arbiter.executable)?;
     }
     if policy.text_model != TEXT_MODEL || policy.multimodal_model != MULTIMODAL_MODEL {
         bail!("model routing is fixed to {TEXT_MODEL} and {MULTIMODAL_MODEL}");
@@ -228,8 +259,42 @@ fn validate_with_options(policy: &Policy, allow_fake: bool) -> anyhow::Result<()
     Ok(())
 }
 
+fn validate_fake_executable(executable: &str) -> anyhow::Result<()> {
+    let path = Path::new(executable);
+    if path
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        bail!("test executable must not contain parent traversal");
+    }
+    let resolved = crate::util::resolve_command(executable)
+        .ok_or_else(|| anyhow::anyhow!("test executable is not a resolvable regular executable"))?;
+    if !resolved.program.is_file() || !resolved.source.is_file() {
+        bail!("test executable must resolve to regular files");
+    }
+    Ok(())
+}
+
+fn validate_route_id(route_id: &str) -> anyhow::Result<()> {
+    let valid = !route_id.is_empty()
+        && route_id.len() <= 64
+        && route_id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+        && route_id
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric);
+    if !valid {
+        bail!(
+            "route_id {route_id:?} must be 1-64 lowercase ASCII letters, digits, '-' or '_', and start with a letter or digit"
+        );
+    }
+    Ok(())
+}
+
 pub fn initialize(home: &Path, force: bool) -> anyhow::Result<PathBuf> {
-    fs::create_dir_all(home).with_context(|| format!("cannot create {}", home.display()))?;
+    create_private_dir_all(home).with_context(|| format!("cannot create {}", home.display()))?;
     let policy_path = home.join("policy.json");
     if policy_path.exists() && !force {
         bail!(
@@ -238,6 +303,6 @@ pub fn initialize(home: &Path, force: bool) -> anyhow::Result<PathBuf> {
         );
     }
     write_json(&policy_path, &default_policy())?;
-    fs::create_dir_all(home.join("runs"))?;
+    create_private_dir_all(&home.join("runs"))?;
     Ok(policy_path)
 }
