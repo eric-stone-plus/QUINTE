@@ -20,6 +20,15 @@ pub fn run(policy: &Policy) -> DoctorReport {
         "message": "per-lane process tree termination is available"
     }));
     checks.push(serde_json::json!({
+        "name": "silent_child_launch",
+        "ok": true,
+        "message": if cfg!(windows) {
+            "Windows CREATE_NO_WINDOW is applied to every non-interactive helper and lane process"
+        } else {
+            "Unix child processes do not create console windows; no CREATE_NO_WINDOW equivalent required"
+        }
+    }));
+    checks.push(serde_json::json!({
         "name": "os_sandbox",
         "ok": false,
         "severity": "warning",

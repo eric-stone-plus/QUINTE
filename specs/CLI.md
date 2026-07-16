@@ -430,3 +430,27 @@ has the OS credentials of the `quinte` process.
 Use an external OS sandbox, container, VM, or restricted account for hostile
 code, secrets, or network containment. Do not describe v0.1 `process` isolation
 as a security sandbox.
+
+## Credential Commands
+
+### `credential set`
+
+Store the Claude / MiMo token-plan secret in the platform protected store:
+
+- macOS: Keychain service `xiaomi-mimo-token-plan-api-key`
+- Windows: Windows Credential Manager target under service name
+  `xiaomi-mimo-token-plan-api-key` (keyring entry `quinte` / service)
+
+```bash
+quinte credential set --from-file /path/to/token
+quinte credential status --json
+```
+
+`ANTHROPIC_API_KEY` remains a legacy non-isolated fallback. Doctor reports
+`credential_source` and `credential_isolated` for the Claude route.
+
+### `__credential-helper` (hidden)
+
+Internal Claude Code `apiKeyHelper` entrypoint. Requires
+`QUINTE_CREDENTIAL_HELPER_ALLOWED=1` and `QUINTE_LANE_ROOT` set by the adapter.
+User hosts must not invoke it directly.

@@ -3,6 +3,7 @@ compile_error!("the test-adapters feature cannot be included in release builds")
 
 pub mod adapters;
 pub mod cli;
+pub mod credential;
 pub mod doctor;
 pub mod error;
 pub mod model;
