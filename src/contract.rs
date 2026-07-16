@@ -16,6 +16,7 @@ pub const R2_PACKET_VERSION: &str = "1.0";
 pub const R3_INPUT_RECEIPT_VERSION: &str = "1.0";
 pub const PRIMARY_ARBITER_CHALLENGE_VERSION: &str = "1.0";
 pub const PRIMARY_ARBITER_RESPONSE_VERSION: &str = "1.0";
+pub const LEGACY_HM_RESPONSE_VERSION: &str = "1.0";
 pub const PRIMARY_ARBITER_SUBMISSION_VERSION: &str = "1.0";
 pub const ARBITER_VERDICT_VERSION: &str = "1.0";
 pub const TRIAL_MANIFEST_VERSION: &str = "1.0";
@@ -31,6 +32,8 @@ pub const LEGACY_BRIEF_SCHEMA: &str = include_str!("../schemas/legacy/brief-1.0.
 pub const LANE_OUTPUT_SCHEMA: &str = include_str!("../schemas/lane-output.schema.json");
 pub const PRIMARY_ARBITER_RESPONSE_SCHEMA: &str =
     include_str!("../schemas/primary-arbiter-response.schema.json");
+pub const LEGACY_HM_RESPONSE_SCHEMA: &str =
+    include_str!("../schemas/legacy/hm-response-1.0.schema.json");
 pub const R3_INPUT_RECEIPT_SCHEMA: &str = include_str!("../schemas/r3-input-receipt.schema.json");
 pub const RESULT_SCHEMA: &str = include_str!("../schemas/result.schema.json");
 pub const LEGACY_RESULT_SCHEMA: &str = include_str!("../schemas/legacy/result-1.0.schema.json");
@@ -68,6 +71,10 @@ const LANE_OUTPUT_REVISIONS: &[ContractRevision] = &[ContractRevision {
 const PRIMARY_ARBITER_RESPONSE_REVISIONS: &[ContractRevision] = &[ContractRevision {
     version: PRIMARY_ARBITER_RESPONSE_VERSION,
     schema: PRIMARY_ARBITER_RESPONSE_SCHEMA,
+}];
+const LEGACY_HM_RESPONSE_REVISIONS: &[ContractRevision] = &[ContractRevision {
+    version: LEGACY_HM_RESPONSE_VERSION,
+    schema: LEGACY_HM_RESPONSE_SCHEMA,
 }];
 const R3_INPUT_RECEIPT_REVISIONS: &[ContractRevision] = &[ContractRevision {
     version: R3_INPUT_RECEIPT_VERSION,
@@ -113,6 +120,13 @@ pub const CONTRACT_REGISTRY: &[ContractSpec] = &[
         current_version: PRIMARY_ARBITER_RESPONSE_VERSION,
         accepted_versions: &[PRIMARY_ARBITER_RESPONSE_VERSION],
         revisions: PRIMARY_ARBITER_RESPONSE_REVISIONS,
+    },
+    ContractSpec {
+        name: "legacy_hm_response",
+        version_field: "hm_response_version",
+        current_version: LEGACY_HM_RESPONSE_VERSION,
+        accepted_versions: &[LEGACY_HM_RESPONSE_VERSION],
+        revisions: LEGACY_HM_RESPONSE_REVISIONS,
     },
     ContractSpec {
         name: "r3_input_receipt",

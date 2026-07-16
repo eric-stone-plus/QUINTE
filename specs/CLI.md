@@ -294,6 +294,11 @@ primary-arbiter acceptance signal. Directly placing `primary-arbiter-response.js
 an unsupported internal operation and cannot bypass challenge validation;
 host integrations must use the handshake command.
 
+Runs staged by the earlier HM-named runtime remain resumable: the scheduler
+validates `r3/hm-response.json` against its exact historical schema and receipt
+binding without rewriting it or synthesizing a current response artifact. New
+submissions remain current-only and always use the Primary Arbiter contract.
+
 The challenge is a state-integrity and replay control, not cryptographic user
 authentication. QUINTE does not sign the response or prove the operating-system
 identity of the process that wrote it. Protect access to the state root and use

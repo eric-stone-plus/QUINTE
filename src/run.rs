@@ -37,8 +37,8 @@ use crate::model::{
 };
 use crate::policy;
 use crate::schema::{
-    LANE_OUTPUT_SCHEMA, PRIMARY_ARBITER_RESPONSE_SCHEMA, R3_INPUT_RECEIPT_SCHEMA, RESULT_SCHEMA,
-    validate_file, validate_value, validate_versioned_file,
+    LANE_OUTPUT_SCHEMA, LEGACY_HM_RESPONSE_SCHEMA, PRIMARY_ARBITER_RESPONSE_SCHEMA,
+    R3_INPUT_RECEIPT_SCHEMA, RESULT_SCHEMA, validate_file, validate_value, validate_versioned_file,
 };
 use crate::store::{ActiveProcess, Store};
 #[cfg(windows)]
@@ -1395,7 +1395,6 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
         );
     }
 
-    let primary_arbiter_response_path = run_dir.join("r3/primary-arbiter-response.json");
     if manifest.primary_arbiter_submission.is_none() {
         if manifest.primary_arbiter_challenge.is_none() {
             let challenge =
@@ -1448,10 +1447,7 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
     {
         return Ok(RunStatus::Cancelled);
     }
-    let primary_arbiter_response: PrimaryArbiterResponse = validate_file(
-        &primary_arbiter_response_path,
-        PRIMARY_ARBITER_RESPONSE_SCHEMA,
-    )?;
+    let primary_arbiter_response = read_owned_primary_arbiter_response(&manifest, &run_dir)?;
     validate_primary_arbiter_response_binding(
         &manifest,
         &primary_arbiter_response,
@@ -3275,9 +3271,6 @@ fn recover_primary_arbiter_submission(
     let Some(receipt) = manifest.primary_arbiter_submission.as_ref() else {
         return Ok(false);
     };
-    if receipt.response_ref != "r3/primary-arbiter-response.json" {
-        bail!("primary-arbiter submission has an invalid artifact reference");
-    }
     let response_path = run_dir.join(&receipt.response_ref);
     if !response_path.exists() {
         if receipt.state == PrimaryArbiterSubmissionState::Staging {
@@ -3295,8 +3288,7 @@ fn recover_primary_arbiter_submission(
     if receipt.input_receipt_sha256 != input_receipt.sha256 {
         bail!("primary arbiter submission does not bind the accepted R3 inputs");
     }
-    let response: PrimaryArbiterResponse =
-        validate_file(&response_path, PRIMARY_ARBITER_RESPONSE_SCHEMA)?;
+    let response = read_owned_primary_arbiter_response(manifest, run_dir)?;
     validate_primary_arbiter_response_binding(
         manifest,
         &response,
@@ -3321,6 +3313,30 @@ fn recover_primary_arbiter_submission(
         bail!("accepted primary arbiter receipt has an unconsumed challenge");
     }
     Ok(true)
+}
+
+fn read_owned_primary_arbiter_response(
+    manifest: &RunManifest,
+    run_dir: &Path,
+) -> anyhow::Result<PrimaryArbiterResponse> {
+    let receipt = manifest
+        .primary_arbiter_submission
+        .as_ref()
+        .ok_or_else(|| anyhow!("primary-arbiter submission receipt is missing"))?;
+    let (schema, unexpected_ref) = match receipt.response_ref.as_str() {
+        "r3/primary-arbiter-response.json" => {
+            (PRIMARY_ARBITER_RESPONSE_SCHEMA, "r3/hm-response.json")
+        }
+        "r3/hm-response.json" => (
+            LEGACY_HM_RESPONSE_SCHEMA,
+            "r3/primary-arbiter-response.json",
+        ),
+        _ => bail!("primary-arbiter submission has an invalid artifact reference"),
+    };
+    if run_dir.join(unexpected_ref).exists() {
+        bail!("primary-arbiter submission has ambiguous response artifacts");
+    }
+    validate_file(&run_dir.join(&receipt.response_ref), schema)
 }
 
 fn response_bytes_with_newline(mut bytes: Vec<u8>) -> Vec<u8> {

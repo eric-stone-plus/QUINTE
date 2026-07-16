@@ -595,6 +595,93 @@ fn primary_arbiter_staged_file_is_recovered_without_resubmission() {
 }
 
 #[test]
+fn legacy_hm_staged_file_is_recovered_without_rewrite() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, response) =
+        create_waiting_run(temporary.path(), &executable, "legacy-hm-staged-file");
+    let response_path = store.run_dir(&run_id).unwrap().join("r3/hm-response.json");
+    let mut legacy = serde_json::to_value(&response).unwrap();
+    let version = legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("primary_arbiter_response_version")
+        .unwrap();
+    legacy
+        .as_object_mut()
+        .unwrap()
+        .insert("hm_response_version".into(), version);
+    write_json(&response_path, &legacy).unwrap();
+    let response_bytes = fs::read(&response_path).unwrap();
+    let mut manifest = store.load_manifest(&run_id).unwrap();
+    manifest.primary_arbiter_submission = Some(PrimaryArbiterSubmissionReceipt {
+        submission_receipt_version: "1.0".into(),
+        state: PrimaryArbiterSubmissionState::Staging,
+        response_ref: "r3/hm-response.json".into(),
+        response_sha256: sha256_file(&response_path).unwrap(),
+        input_receipt_sha256: manifest.r3_input_receipt.as_ref().unwrap().sha256.clone(),
+        staged_at: manifest.updated_at.clone(),
+        accepted_at: None,
+    });
+    store.save_manifest(&manifest).unwrap();
+
+    assert_eq!(run::advance(&store, &run_id).unwrap(), RunStatus::Completed);
+    assert_eq!(fs::read(&response_path).unwrap(), response_bytes);
+    assert!(
+        !store
+            .run_dir(&run_id)
+            .unwrap()
+            .join("r3/primary-arbiter-response.json")
+            .exists()
+    );
+    assert_eq!(
+        store
+            .load_manifest(&run_id)
+            .unwrap()
+            .primary_arbiter_submission
+            .unwrap()
+            .response_ref,
+        "r3/hm-response.json"
+    );
+}
+
+#[test]
+fn primary_arbiter_recovery_rejects_ambiguous_current_and_legacy_files() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, response) =
+        create_waiting_run(temporary.path(), &executable, "ambiguous-arbiter-files");
+    let run_dir = store.run_dir(&run_id).unwrap();
+    let current_path = run_dir.join("r3/primary-arbiter-response.json");
+    let legacy_path = run_dir.join("r3/hm-response.json");
+    write_json(&current_path, &response).unwrap();
+    write_json(&legacy_path, &serde_json::to_value(&response).unwrap()).unwrap();
+    let mut manifest = store.load_manifest(&run_id).unwrap();
+    manifest.primary_arbiter_submission = Some(PrimaryArbiterSubmissionReceipt {
+        submission_receipt_version: "1.0".into(),
+        state: PrimaryArbiterSubmissionState::Staging,
+        response_ref: "r3/primary-arbiter-response.json".into(),
+        response_sha256: sha256_file(&current_path).unwrap(),
+        input_receipt_sha256: manifest.r3_input_receipt.as_ref().unwrap().sha256.clone(),
+        staged_at: manifest.updated_at.clone(),
+        accepted_at: None,
+    });
+    store.save_manifest(&manifest).unwrap();
+
+    assert_eq!(
+        run::advance(&store, &run_id).unwrap(),
+        RunStatus::FailedPolicy
+    );
+    assert_eq!(
+        store.load_manifest(&run_id).unwrap().error.unwrap().code,
+        "integrity_drift"
+    );
+    assert!(!run_dir.join("result.json").exists());
+}
+
+#[test]
 fn accepted_primary_arbiter_submission_resumes_after_expiry_and_is_idempotent() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();

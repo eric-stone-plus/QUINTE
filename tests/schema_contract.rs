@@ -3,8 +3,9 @@ mod common;
 use quinte::contract::{CONTRACT_REGISTRY, contract, schema_id, version_supported};
 use quinte::model::{Brief, LaneOutput};
 use quinte::schema::{
-    BRIEF_SCHEMA, LANE_OUTPUT_SCHEMA, LEGACY_RESULT_SCHEMA, RESULT_SCHEMA, parse_and_validate,
-    parse_versioned, validate_value, validate_versioned_value,
+    BRIEF_SCHEMA, LANE_OUTPUT_SCHEMA, LEGACY_HM_RESPONSE_SCHEMA, LEGACY_RESULT_SCHEMA,
+    PRIMARY_ARBITER_RESPONSE_SCHEMA, RESULT_SCHEMA, parse_and_validate, parse_versioned,
+    validate_value, validate_versioned_value,
 };
 
 #[test]
@@ -208,6 +209,33 @@ fn result_revisions_are_strict_and_legacy_is_non_actionable_by_shape() {
     let mut forged = legacy;
     forged["brief_sha256"] = serde_json::json!(format!("sha256:{}", "c".repeat(64)));
     assert!(validate_versioned_value(&forged, result).is_err());
+}
+
+#[test]
+fn primary_arbiter_response_shapes_do_not_cross_accept() {
+    let binding = serde_json::json!({
+        "run_id": "019f5866-2c6e-7b71-9b89-dc4f6c401d99",
+        "nonce": "n".repeat(32),
+        "policy_sha256": format!("sha256:{}", "a".repeat(64)),
+        "evidence_packet_sha256": format!("sha256:{}", "b".repeat(64)),
+        "input_receipt_sha256": format!("sha256:{}", "c".repeat(64)),
+        "action_scope": null,
+        "verdict": {
+            "arbiter_verdict_version": "1.0",
+            "summary": "summary",
+            "recommendation": "recommendation",
+            "residuals": []
+        }
+    });
+    let mut current = binding.clone();
+    current["primary_arbiter_response_version"] = serde_json::json!("1.0");
+    let mut legacy = binding;
+    legacy["hm_response_version"] = serde_json::json!("1.0");
+
+    assert!(validate_value(&current, PRIMARY_ARBITER_RESPONSE_SCHEMA).is_ok());
+    assert!(validate_value(&legacy, LEGACY_HM_RESPONSE_SCHEMA).is_ok());
+    assert!(validate_value(&current, LEGACY_HM_RESPONSE_SCHEMA).is_err());
+    assert!(validate_value(&legacy, PRIMARY_ARBITER_RESPONSE_SCHEMA).is_err());
 }
 
 #[test]

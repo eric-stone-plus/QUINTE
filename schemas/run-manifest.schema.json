@@ -72,7 +72,7 @@
           "properties": {
             "submission_receipt_version": { "const": "1.0" },
             "state": { "enum": ["staging", "accepted"] },
-            "response_ref": { "const": "r3/primary-arbiter-response.json" },
+            "response_ref": { "enum": ["r3/primary-arbiter-response.json", "r3/hm-response.json"] },
             "response_sha256": { "$ref": "#/$defs/digest" },
             "input_receipt_sha256": { "$ref": "#/$defs/digest" },
             "staged_at": { "type": "string", "format": "date-time" },
