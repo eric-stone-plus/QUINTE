@@ -4,7 +4,8 @@ Date: 2026-07-13
 
 ## Scope
 
-This record documents the Windows process-launch fixes made after QUINTE 0.1.0
+This non-normative historical record documents Windows process-launch fixes
+made after the initial release
 could discover its fixed agents during `quinte doctor` but could not start four
 of them during R1. It intentionally excludes host-specific paths, run IDs,
 credentials, and runtime artifacts.
