@@ -26,6 +26,23 @@ The Rust CLI owns the run state machine, fixed roster, typed output gates,
 retry boundary, artifacts, and Primary Arbiter handshake. The host invokes the CLI; it
 does not recreate QUINTE by launching the parties itself.
 
+## Design Vocabulary
+
+QUINTE names its two layers deliberately:
+
+- **Scenario-oriented prompt layer (面向情景).** The seven protocol roles are
+  scripted scenario positions, not objects with encapsulated behavior. A role
+  is a constructed situation — brief, evidence packet, output schema, and
+  constraints — inside which a model improvises an analysis. The protocol does
+  not program behavior; it stages situations and gates what returns.
+- **Contract-oriented orchestration layer.** Everything outside the scenario —
+  roster, rounds, state machine, typed output gates, retry boundary, and
+  SHA-256 artifact bindings — is deterministic and closed-schema. Scenario
+  text never advances the state machine; only typed artifacts do.
+
+Object-oriented programming encapsulated behavior in objects. QUINTE induces
+behavior in scenarios and arbitrates it with contracts.
+
 ## Runtime Boundary
 
 The default policy binds the protocol roles to these native routes:
