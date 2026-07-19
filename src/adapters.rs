@@ -942,6 +942,45 @@ fn has_truncated_final_candidate(content: &str) -> bool {
     })
 }
 
+/// Returns true when a JsonEvents stream (opencode/kilo/mimo family) reached a
+/// terminal step but its final text payload ends mid LaneOutput candidate, or
+/// when a raw-JSON stream (OmpJson) is itself cut mid candidate. The provider
+/// stopped the response early, which is transient and worth a bounded retry.
+pub fn events_completed_with_truncated_final_candidate(stdout: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(stdout) else {
+        return false;
+    };
+    let mut content = String::new();
+    let mut saw_terminal_step = false;
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            // A line that is not valid JSON (for example a raw-JSON adapter
+            // truncated mid payload) makes the whole stream the candidate.
+            return has_truncated_final_candidate(text);
+        };
+        match value.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(chunk) = value
+                    .get("part")
+                    .and_then(|part| part.get("text"))
+                    .and_then(Value::as_str)
+                {
+                    content.push_str(chunk);
+                }
+            }
+            Some("step_finish") => {
+                saw_terminal_step = value
+                    .get("part")
+                    .and_then(|part| part.get("reason"))
+                    .and_then(Value::as_str)
+                    == Some("stop");
+            }
+            _ => {}
+        }
+    }
+    saw_terminal_step && !content.is_empty() && has_truncated_final_candidate(&content)
+}
+
 fn extract_json_from_text(stdout: &[u8]) -> anyhow::Result<LaneOutput> {
     let text = std::str::from_utf8(stdout).context("adapter output is not strict UTF-8")?;
     if let Some(output) = parse_candidate(text) {
@@ -2381,6 +2420,83 @@ mod tests {
         assert!(codewhale_completed_with_retryable_content(
             truncated.as_bytes()
         ));
+    }
+
+    #[test]
+    fn events_truncated_final_text_requires_terminal_step_and_eof_candidate() {
+        let truncated = format!(
+            "{}\n{}\n{}\n{}\n",
+            serde_json::json!({"type": "step_start", "part": {"id": "p1"}}),
+            serde_json::json!({"type": "text", "part": {"text": "Now I have all the evidence."}}),
+            serde_json::json!({"type": "text", "part": {"text": "```json\n{\"lane_output_version\":\"1.0\",\"verdict\":\"cut off mid sent"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(events_completed_with_truncated_final_candidate(
+            truncated.as_bytes()
+        ));
+
+        // A truncated key prefix is also a truncation, not a permanent failure.
+        let truncated_key = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": "{\"lane_output_vers"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(events_completed_with_truncated_final_candidate(
+            truncated_key.as_bytes()
+        ));
+
+        // No terminal stop step: do not classify as a completed-truncated turn.
+        let no_terminal = format!(
+            "{}\n",
+            serde_json::json!({"type": "text", "part": {"text": "{\"lane_output_vers"}})
+        );
+        assert!(!events_completed_with_truncated_final_candidate(
+            no_terminal.as_bytes()
+        ));
+
+        // Complete fenced JSON parses fine and is not a truncation.
+        let complete = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": "```json\n{}\n```"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(!events_completed_with_truncated_final_candidate(
+            complete.as_bytes()
+        ));
+
+        // Complete but schema-invalid JSON is a permanent failure, not a retry.
+        let schema_invalid = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": "{\"lane_output_version\":\"1.0\",\"task_restatement\":\"missing fields\"}"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(!events_completed_with_truncated_final_candidate(
+            schema_invalid.as_bytes()
+        ));
+
+        // Prose-only output with no JSON candidate is not a truncation.
+        let prose_only = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": "plain analysis, no payload"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(!events_completed_with_truncated_final_candidate(
+            prose_only.as_bytes()
+        ));
+
+        // Raw-JSON adapters (OmpJson) truncated mid payload retry as well.
+        assert!(events_completed_with_truncated_final_candidate(
+            b"{\"lane_output_version\":\"1.0\",\"verdict\":\"cut"
+        ));
+        // A raw candidate that is complete but invalid is not a truncation.
+        assert!(!events_completed_with_truncated_final_candidate(
+            b"{\"lane_output_version\":\"1.0\"}"
+        ));
+        // Non-UTF8 and empty streams are never truncation candidates.
+        assert!(!events_completed_with_truncated_final_candidate(&[
+            0xff, 0xfe
+        ]));
+        assert!(!events_completed_with_truncated_final_candidate(b""));
     }
 
     #[test]

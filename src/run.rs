@@ -2732,9 +2732,13 @@ fn evaluate_attempt_output(
     match adapters::parse_output_with_limit(output_kind, stdout, max_output_bytes) {
         Ok(output) => (Some(output), None, RetryClass::Never),
         Err(parse_error) => {
-            let retry = if matches!(adapter, "codewhale" | "fake_codewhale")
+            let truncated_completion = matches!(adapter, "codewhale" | "fake_codewhale")
                 && adapters::codewhale_completed_with_retryable_content(stdout)
-            {
+                || matches!(
+                    output_kind,
+                    adapters::OutputKind::JsonEvents | adapters::OutputKind::OmpJson
+                ) && adapters::events_completed_with_truncated_final_candidate(stdout);
+            let retry = if truncated_completion {
                 RetryClass::TransientAdapter
             } else {
                 RetryClass::Never
@@ -4798,6 +4802,66 @@ mod retry_tests {
             false,
             4096,
         );
+        assert_eq!(retry, RetryClass::Never);
+    }
+
+    #[test]
+    fn truncated_opencode_final_text_is_transient_adapter() {
+        let stdout = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": "Now I have all the evidence."}}),
+            serde_json::json!({"type": "text", "part": {"text": "```json\n{\"lane_output_version\":\"1.0\",\"verdict\":\"cut off mid sent"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        let (output, error, retry) = evaluate_attempt_output(
+            "opencode",
+            OutputKind::JsonEvents,
+            stdout.as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert!(error.unwrap().contains("no valid LaneOutput"));
+        assert_eq!(retry, RetryClass::TransientAdapter);
+
+        // Without a terminal stop step the same truncated payload is permanent.
+        let no_terminal =
+            serde_json::json!({"type": "text", "part": {"text": "{\"lane_output_vers"}});
+        let (_, _, retry) = evaluate_attempt_output(
+            "opencode",
+            OutputKind::JsonEvents,
+            no_terminal.to_string().as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert_eq!(retry, RetryClass::Never);
+
+        // Complete but schema-invalid JSON stays permanent.
+        let schema_invalid = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": "{\"lane_output_version\":\"1.0\",\"task_restatement\":\"missing fields\"}"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        let (_, error, retry) = evaluate_attempt_output(
+            "opencode",
+            OutputKind::JsonEvents,
+            schema_invalid.as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(error.unwrap().contains("no valid LaneOutput"));
         assert_eq!(retry, RetryClass::Never);
     }
 
