@@ -2737,7 +2737,7 @@ fn evaluate_attempt_output(
                 || matches!(
                     output_kind,
                     adapters::OutputKind::JsonEvents | adapters::OutputKind::OmpJson
-                ) && adapters::events_completed_with_truncated_final_candidate(stdout);
+                ) && adapters::events_completed_with_unusable_final_candidate(stdout);
             let retry = if truncated_completion {
                 RetryClass::TransientAdapter
             } else {
@@ -4843,6 +4843,28 @@ mod retry_tests {
             4096,
         );
         assert_eq!(retry, RetryClass::Never);
+
+        // Brace-complete but unparseable payload (unescaped inner quote) is
+        // also transient generation corruption, not a contract violation.
+        let malformed = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": "{\"lane_output_version\":\"1.0\",\"verdict\":\"方案将\"单模型分析\"改造为流水线\",\"confidence\":0.8}"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        let (output, error, retry) = evaluate_attempt_output(
+            "mimo",
+            OutputKind::JsonEvents,
+            malformed.as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert!(error.unwrap().contains("no valid LaneOutput"));
+        assert_eq!(retry, RetryClass::TransientAdapter);
 
         // Complete but schema-invalid JSON stays permanent.
         let schema_invalid = format!(

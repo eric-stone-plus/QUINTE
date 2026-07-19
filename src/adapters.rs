@@ -920,10 +920,16 @@ pub fn codewhale_completed_with_retryable_content(stdout: &[u8]) -> bool {
     }
     completed
         && done
-        && (!contains_json_candidate(&content) || has_truncated_final_candidate(&content))
+        && (!contains_json_candidate(&content) || has_unusable_final_candidate(&content))
 }
 
-fn has_truncated_final_candidate(content: &str) -> bool {
+/// Returns true when the final LaneOutput-shaped candidate in `content`
+/// (unterminated object block, trailing key prefix, or unclosed fence) is not
+/// even well-formed JSON — truncated by the provider or syntactically malformed
+/// (for example an unescaped quote inside a string). A candidate that parses
+/// cleanly but violates the typed schema is well-formed and therefore NOT
+/// unusable; it stays a permanent, non-retryable contract failure.
+fn has_unusable_final_candidate(content: &str) -> bool {
     let blocks = lane_output_object_blocks(content);
     let unresolved = blocks
         .last()
@@ -934,19 +940,27 @@ fn has_truncated_final_candidate(content: &str) -> bool {
     if let Some(fence) = fence
         .filter(|fence| unresolved.is_none_or(|(candidate_start, _)| fence.start > candidate_start))
     {
-        return !fence.closed
-            && serde_json::from_str::<Value>(fence.body).is_err_and(|error| error.is_eof());
+        return !fence.closed && serde_json::from_str::<Value>(fence.body).is_err();
     }
-    unresolved.is_some_and(|(_, candidate)| {
-        serde_json::from_str::<Value>(candidate).is_err_and(|error| error.is_eof())
-    })
+    if let Some((_, candidate)) = unresolved {
+        return serde_json::from_str::<Value>(candidate).is_err();
+    }
+    // Balanced braces with a parse failure mean corrupt quoting desynced the
+    // block scan; the "closed" payload is unusable all the same.
+    if let Some(block) = blocks.last()
+        && let Some(end) = block.end
+    {
+        return serde_json::from_str::<Value>(&content[block.start..end]).is_err();
+    }
+    false
 }
 
 /// Returns true when a JsonEvents stream (opencode/kilo/mimo family) reached a
-/// terminal step but its final text payload ends mid LaneOutput candidate, or
-/// when a raw-JSON stream (OmpJson) is itself cut mid candidate. The provider
-/// stopped the response early, which is transient and worth a bounded retry.
-pub fn events_completed_with_truncated_final_candidate(stdout: &[u8]) -> bool {
+/// terminal step but its final text payload ends in an unusable LaneOutput
+/// candidate, or when a raw-JSON stream (OmpJson) is itself unusable. The
+/// provider cut or corrupted the response, which is transient and worth a
+/// bounded retry.
+pub fn events_completed_with_unusable_final_candidate(stdout: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(stdout) else {
         return false;
     };
@@ -956,7 +970,7 @@ pub fn events_completed_with_truncated_final_candidate(stdout: &[u8]) -> bool {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             // A line that is not valid JSON (for example a raw-JSON adapter
             // truncated mid payload) makes the whole stream the candidate.
-            return has_truncated_final_candidate(text);
+            return has_unusable_final_candidate(text);
         };
         match value.get("type").and_then(Value::as_str) {
             Some("text") => {
@@ -978,7 +992,7 @@ pub fn events_completed_with_truncated_final_candidate(stdout: &[u8]) -> bool {
             _ => {}
         }
     }
-    saw_terminal_step && !content.is_empty() && has_truncated_final_candidate(&content)
+    saw_terminal_step && !content.is_empty() && has_unusable_final_candidate(&content)
 }
 
 fn extract_json_from_text(stdout: &[u8]) -> anyhow::Result<LaneOutput> {
@@ -2355,7 +2369,9 @@ mod tests {
             serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
             serde_json::json!({"type": "done"})
         );
-        assert!(!codewhale_completed_with_retryable_content(
+        // The fence closes but the payload inside is cut off: corruption,
+        // transient. Only well-formed typed-contract violations stay permanent.
+        assert!(codewhale_completed_with_retryable_content(
             malformed_closed_fence.as_bytes()
         ));
 
@@ -2368,7 +2384,11 @@ mod tests {
             serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
             serde_json::json!({"type": "done"})
         );
-        assert!(!codewhale_completed_with_retryable_content(
+        // Amended contract: brace-complete but unparseable final payloads
+        // (missing comma, unescaped quote) are generation corruption and
+        // retry transiently, exactly like truncated payloads. Only
+        // well-formed typed-contract violations stay permanent.
+        assert!(codewhale_completed_with_retryable_content(
             malformed_unclosed.as_bytes()
         ));
 
@@ -2431,7 +2451,7 @@ mod tests {
             serde_json::json!({"type": "text", "part": {"text": "```json\n{\"lane_output_version\":\"1.0\",\"verdict\":\"cut off mid sent"}}),
             serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
         );
-        assert!(events_completed_with_truncated_final_candidate(
+        assert!(events_completed_with_unusable_final_candidate(
             truncated.as_bytes()
         ));
 
@@ -2441,8 +2461,19 @@ mod tests {
             serde_json::json!({"type": "text", "part": {"text": "{\"lane_output_vers"}}),
             serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
         );
-        assert!(events_completed_with_truncated_final_candidate(
+        assert!(events_completed_with_unusable_final_candidate(
             truncated_key.as_bytes()
+        ));
+
+        // Syntactically malformed JSON (unescaped inner quote, observed from
+        // mimo and assembled CodeWhale content) is equally transient.
+        let malformed = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": "{\"lane_output_version\":\"1.0\",\"verdict\":\"方案将\"单模型分析\"改造为流水线\",\"confidence\":0.8}"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(events_completed_with_unusable_final_candidate(
+            malformed.as_bytes()
         ));
 
         // No terminal stop step: do not classify as a completed-truncated turn.
@@ -2450,7 +2481,7 @@ mod tests {
             "{}\n",
             serde_json::json!({"type": "text", "part": {"text": "{\"lane_output_vers"}})
         );
-        assert!(!events_completed_with_truncated_final_candidate(
+        assert!(!events_completed_with_unusable_final_candidate(
             no_terminal.as_bytes()
         ));
 
@@ -2460,7 +2491,7 @@ mod tests {
             serde_json::json!({"type": "text", "part": {"text": "```json\n{}\n```"}}),
             serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
         );
-        assert!(!events_completed_with_truncated_final_candidate(
+        assert!(!events_completed_with_unusable_final_candidate(
             complete.as_bytes()
         ));
 
@@ -2470,7 +2501,7 @@ mod tests {
             serde_json::json!({"type": "text", "part": {"text": "{\"lane_output_version\":\"1.0\",\"task_restatement\":\"missing fields\"}"}}),
             serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
         );
-        assert!(!events_completed_with_truncated_final_candidate(
+        assert!(!events_completed_with_unusable_final_candidate(
             schema_invalid.as_bytes()
         ));
 
@@ -2480,23 +2511,23 @@ mod tests {
             serde_json::json!({"type": "text", "part": {"text": "plain analysis, no payload"}}),
             serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
         );
-        assert!(!events_completed_with_truncated_final_candidate(
+        assert!(!events_completed_with_unusable_final_candidate(
             prose_only.as_bytes()
         ));
 
         // Raw-JSON adapters (OmpJson) truncated mid payload retry as well.
-        assert!(events_completed_with_truncated_final_candidate(
+        assert!(events_completed_with_unusable_final_candidate(
             b"{\"lane_output_version\":\"1.0\",\"verdict\":\"cut"
         ));
         // A raw candidate that is complete but invalid is not a truncation.
-        assert!(!events_completed_with_truncated_final_candidate(
+        assert!(!events_completed_with_unusable_final_candidate(
             b"{\"lane_output_version\":\"1.0\"}"
         ));
         // Non-UTF8 and empty streams are never truncation candidates.
-        assert!(!events_completed_with_truncated_final_candidate(&[
+        assert!(!events_completed_with_unusable_final_candidate(&[
             0xff, 0xfe
         ]));
-        assert!(!events_completed_with_truncated_final_candidate(b""));
+        assert!(!events_completed_with_unusable_final_candidate(b""));
     }
 
     #[test]
