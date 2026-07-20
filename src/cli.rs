@@ -6,7 +6,6 @@ use crate::run::{self, RunOptions};
 use crate::store::Store;
 use crate::ui::{self, BoardModel, Tone};
 use crate::util::{read_json, user_home};
-use crate::wolf;
 use anyhow::{Context, bail};
 use clap::{Args, Parser, Subcommand, error::ErrorKind};
 use serde::Serialize;
@@ -728,12 +727,11 @@ fn format_status(run_id: &str, status: RunStatus) -> String {
     )
 }
 fn human_init(home: &std::path::Path, policy_path: &std::path::Path) -> String {
-    let mut out = wolf::render_wolf();
-    out.push_str(&format!(
+    let mut out = format!(
         "{} {}\n",
-        ui::paint_bold(Tone::Gold, "QUINTE"),
-        ui::paint(Tone::Dim, "· LUPA · 五席母狼已就位")
-    ));
+        ui::paint_bold(Tone::Gold, "QUINTE · LUPA"),
+        ui::paint(Tone::Dim, "五席母狼已就位")
+    );
     out.push_str(&format!(
         "{} Initialized QUINTE at {}\n",
         ui::paint(Tone::Ok, ui::mark_ok()),

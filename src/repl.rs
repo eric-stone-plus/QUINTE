@@ -15,7 +15,6 @@ use clap::Parser;
 use crate::cli::{self, Cli};
 use crate::store::Store;
 use crate::ui::{self, Tone};
-use crate::wolf;
 
 // ---------------------------------------------------------------------------
 // 终端（stty raw + 恢复）
@@ -497,13 +496,9 @@ pub(crate) fn run(home: &Path) -> anyhow::Result<i32> {
     let mut history_pos: Option<usize> = None;
     let mut history_stash = String::new();
 
-    // 欢迎屏
+    // 欢迎屏（codex 式纯文字横幅，无像素画）
     {
         let mut out = io::stdout();
-        let art = wolf::render_wolf();
-        if !art.is_empty() {
-            let _ = out.write_all(art.as_bytes());
-        }
         // 版本取自 clap 运行时（守护测试禁止源码引用 cargo 产品版本宏）
         let version = <Cli as clap::CommandFactory>::command()
             .get_version()
@@ -511,9 +506,14 @@ pub(crate) fn run(home: &Path) -> anyhow::Result<i32> {
             .unwrap_or_default();
         let _ = writeln!(
             out,
-            "{} {}",
-            ui::paint_bold(Tone::Gold, "QUINTE"),
-            ui::paint(Tone::Dim, &format!("· LUPA · v{version}"))
+            "{}",
+            ui::paint_bold(Tone::Gold, &format!("QUINTE · LUPA · v{version}"))
+        );
+        let _ = writeln!(out, "{}", ui::paint(Tone::Dim, "五席元老院 · 协议裁决 CLI"));
+        let _ = writeln!(
+            out,
+            "{}",
+            ui::paint(Tone::Gold, "──────────────────────────────")
         );
         let _ = writeln!(
             out,

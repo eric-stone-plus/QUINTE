@@ -138,36 +138,6 @@ pub fn pad_right(s: &str, width: usize) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 半块像素画渲染器（▀ fg=上 bg=下）
-// ---------------------------------------------------------------------------
-
-/// 把索引网格渲染成半块行；colors 为 truecolor RGB 表。
-/// 降级模式返回空串（省略像素画）。
-pub fn render_half_blocks(grid: &[Vec<u8>], colors: &[(u8, u8, u8)], indent: &str) -> String {
-    if !color_enabled() {
-        return String::new();
-    }
-    let mut out = String::new();
-    let mut y = 0;
-    while y < grid.len() {
-        out.push_str(indent);
-        let upper = &grid[y];
-        let lower = grid.get(y + 1);
-        for (x, &top) in upper.iter().enumerate() {
-            let bottom = lower.and_then(|row| row.get(x).copied()).unwrap_or(0);
-            let (tr, tg, tb) = colors[top as usize];
-            let (br, bg, bb) = colors[bottom as usize];
-            out.push_str(&format!(
-                "\x1b[38;2;{tr};{tg};{tb}m\x1b[48;2;{br};{bg};{bb}m▀"
-            ));
-        }
-        out.push_str("\x1b[0m\n");
-        y += 2;
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,14 +150,6 @@ mod tests {
         assert_eq!(mark_ok(), "PASS");
         assert_eq!(mark_warn(), "WARN");
         assert_eq!(mark_fail(), "FAIL");
-    }
-
-    #[test]
-    fn half_blocks_degrade_to_empty() {
-        force_no_color();
-        let grid = vec![vec![1u8, 1], vec![2u8, 2]];
-        let colors = [(0, 0, 0), (1, 1, 1), (2, 2, 2)];
-        assert_eq!(render_half_blocks(&grid, &colors, ""), "");
     }
 
     #[test]

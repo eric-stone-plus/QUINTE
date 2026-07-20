@@ -17,4 +17,3 @@ pub mod schema;
 pub mod store;
 pub mod ui;
 pub mod util;
-pub mod wolf;
