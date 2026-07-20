@@ -509,7 +509,6 @@ pub(crate) fn run(home: &Path) -> anyhow::Result<i32> {
             "{}",
             ui::paint_bold(Tone::Gold, &format!("QUINTE · LUPA · v{version}"))
         );
-        let _ = writeln!(out, "{}", ui::paint(Tone::Dim, "五席元老院 · 协议裁决 CLI"));
         let _ = writeln!(
             out,
             "{}",
