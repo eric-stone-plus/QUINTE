@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""quinte-progress: compact one-line progress summary for a QUINTE run.
+
+Usage:
+  quinte-progress <run-id>              one-shot status line
+  quinte-progress <run-id> --json       one-shot machine-readable summary
+  quinte-progress <run-id> --watch [s]  reprint every s seconds (default 20)
+                                        until the run reaches a terminal state
+
+Designed so agent hosts never need a long silent blocking call: poll the
+one-shot form every 30-60 s and narrate the line to the user.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+TERMINAL = {"completed", "degraded", "failed", "failed_policy", "cancelled",
+            "waiting_primary_arbiter"}
+ROUTE_ORDER = ["codewhale", "opencode", "kilo", "mimo", "omp"]
+GLYPH = {"ok": "\u2713", "run": "\u25b8", "wait": "\u21bb", "fail": "\u2717", "none": "\u00b7"}
+PHASES = ("R1", "R2")
+
+
+def run_cli(args):
+    p = subprocess.run(["quinte"] + args + ["--json"], capture_output=True, text=True)
+    try:
+        env = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return None, "quinte %s: no JSON on stdout (exit %d): %s" % (
+            " ".join(args), p.returncode, p.stderr.strip()[:200])
+    if not env.get("ok"):
+        return None, "quinte %s: %s" % (" ".join(args), json.dumps(env.get("error"))[:300])
+    return env.get("data"), None
+
+
+def parse_ts(s):
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def fmt_dur(seconds):
+    seconds = max(0, int(seconds))
+    return "%d:%02d" % divmod(seconds, 60) if seconds < 3600 else "%dh%02dm" % divmod(seconds, 3600)
+
+
+def summarize(run_id):
+    st, err = run_cli(["status", run_id])
+    if err:
+        return None, err
+    insp, err = run_cli(["inspect", run_id])
+    if err:
+        return None, err
+    events = insp.get("events", []) if isinstance(insp, dict) else []
+
+    party_route = {}
+    lanes = {}  # route -> phase -> [state, attempt]
+
+    def slot(route, phase):
+        return lanes.setdefault(route, {}).setdefault(phase, ["none", 0])
+
+    for e in events:
+        t = e.get("event_type")
+        ph = e.get("phase")
+        pid = e.get("party_id")
+        d = e.get("data") or {}
+        if t == "lane.started":
+            route = os.path.basename(d.get("adapter") or "") or pid or "?"
+            if pid:
+                party_route[pid] = route
+            slot(route, ph)[:] = ["run", e.get("attempt") or 1]
+        elif t == "lane.retry_scheduled":
+            route = d.get("route_id") or party_route.get(pid) or pid or "?"
+            cur = slot(route, ph)
+            cur[:] = ["wait", cur[1] + 1]
+        elif t == "lane.retry_started":
+            route = d.get("route_id") or party_route.get(pid) or pid or "?"
+            slot(route, ph)[:] = ["run", e.get("attempt") or 2]
+        elif t == "lane.finished":
+            route = party_route.get(pid) or d.get("route_id") or pid or "?"
+            cur = slot(route, ph)
+            cur[:] = ["ok" if d.get("accepted") else "fail", max(cur[1], e.get("attempt") or 1)]
+        elif t == "lane.accepted":
+            route = d.get("route_id") or party_route.get(pid) or pid or "?"
+            cur = slot(route, ph)
+            cur[:] = ["ok", max(cur[1], e.get("attempt") or 1)]
+
+    now = datetime.now(timezone.utc)
+    created = parse_ts(st["created_at"]) if st.get("created_at") else now
+    updated = parse_ts(st["updated_at"]) if st.get("updated_at") else now
+    status = st.get("status", "unknown")
+    return {
+        "run_id": run_id,
+        "status": status,
+        "phase": st.get("current_phase"),
+        "elapsed_s": int((now - created).total_seconds()),
+        "updated_ago_s": int((now - updated).total_seconds()),
+        "error": st.get("error"),
+        "lanes": lanes,
+        "terminal": status in TERMINAL,
+    }, None
+
+
+def render(s):
+    routes = [r for r in ROUTE_ORDER if r in s["lanes"]] + \
+             sorted(r for r in s["lanes"] if r not in ROUTE_ORDER)
+    parts = []
+    for r in routes:
+        marks = ""
+        for ph in PHASES:
+            state, attempt = s["lanes"][r].get(ph, ["none", 0])
+            marks += GLYPH.get(state, "?")
+            if attempt > 1 and state in ("run", "wait"):
+                marks += str(attempt)
+        parts.append("%s:%s" % (r, marks))
+    lanes_txt = " ".join(parts) if parts else "(no lanes yet)"
+    line = "[%s] %s %-24s %s  upd %ss ago" % (
+        fmt_dur(s["elapsed_s"]), s["phase"] or "-", s["status"], lanes_txt, s["updated_ago_s"])
+    if s["status"] == "waiting_primary_arbiter":
+        line += "\n-> R3 handoff needed: quinte primary-arbiter request %s --json" % s["run_id"]
+    elif s["status"] in ("completed", "degraded"):
+        tag = "done" if s["status"] == "completed" else "done (degraded)"
+        line += "\n-> %s: quinte inspect %s --json" % (tag, s["run_id"])
+    elif s["status"] in ("failed", "failed_policy", "cancelled"):
+        err = s["error"]
+        if isinstance(err, dict):
+            err = err.get("message") or json.dumps(err, ensure_ascii=False)
+        line += "\n-> %s: %s" % (s["status"], (err or "")[:300])
+    return line
+
+
+def main(argv):
+    args = [a for a in argv if not a.startswith("--")]
+    if not args:
+        print(__doc__.strip())
+        return 2
+    run_id = args[0]
+    as_json = "--json" in argv
+    watch = "--watch" in argv
+    interval = 20
+    if watch:
+        i = argv.index("--watch")
+        if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            try:
+                interval = max(5, int(argv[i + 1]))
+            except ValueError:
+                pass
+
+    while True:
+        s, err = summarize(run_id)
+        if err:
+            print("quinte-progress: %s" % err, file=sys.stderr)
+            return 2
+        print(json.dumps(s, ensure_ascii=False) if as_json else render(s), flush=True)
+        if not watch or s["terminal"]:
+            return 0
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

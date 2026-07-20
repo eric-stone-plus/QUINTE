@@ -21,11 +21,28 @@ the host skill.
    exit. Never use `--force` without an explicit reason.
 2. Write a Brief v1 JSON file containing the question and only the evidence
    roots, attachments, context, and action scope the user placed in scope.
-3. Run `quinte run --brief <file> --wait --json` and parse stdout separately
-   from stderr. For intentionally detached operation, omit `--wait`, retain the
-   returned run id, then call `quinte wait <run-id> --json`.
-4. Branch on the returned `status`, not the exit code alone. A default detached
-   run returns `queued`; exit `0` with `waiting_primary_arbiter` is a handoff, not completion.
+   Schema-valid minimal examples ship at `examples/brief.json` and, after
+   `quinte init`, at `~/.quinte/canary/brief.json`; copy their field set
+   instead of probing the schema by trial and error.
+3. Start the run detached: `quinte run --brief <file> --json`, and record the
+   returned run id. In an interactive session never use `quinte run --wait`
+   and never observe with a bare `quinte wait <run-id>`: a run takes minutes,
+   emits no intermediate stdout, and presents as a frozen session.
+4. Track progress with short, non-blocking calls: `quinte-progress <run-id>`
+   (shipped in `scripts/`) prints one compact line (phase, per-party lane
+   state, elapsed time, age of last state update). Poll it every 30-60 s as
+   separate tool calls and narrate a one-line progress note to the user after
+   each poll. Do not wrap polling in a single shell loop with sleeps
+   (`for i in $(seq ...) ...`); to the host that is again one long silent
+   blocking command. When the host streams command stdout, use
+   `quinte-run --brief <file>` instead: it starts a detached run and streams
+   the same progress line every 15 s; exit 0 is completion, exit 10 is the
+   R3 handoff. For a human at a terminal, `quinte-progress <run-id> --watch`
+   streams the same line.
+5. Branch on the returned `status`, not the exit code alone. A default detached
+   run returns `queued`; `waiting_primary_arbiter` is a handoff, not completion.
+   Expected duration: R1 about 1-3 min in parallel, R2 about 3-8 min with
+   serial pacing, then the R3 handoff.
 
 ## Primary Arbiter Handoff
 
@@ -48,7 +65,7 @@ Never write into the run directory or edit run artifacts to advance state. Ignor
 only the scheduler state and `primary-arbiter submit` handshake control progression.
 
 Use `quinte resume <run-id> --json` after an interrupted scheduler process,
-`quinte wait <run-id> --json` only to observe, and
+`quinte-progress <run-id>` to observe, and
 `quinte cancel <run-id> --json` only for an explicit cancellation. Ctrl-C on
 `wait` returns `130` without cancelling the run.
 

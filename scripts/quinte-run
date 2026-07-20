@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""quinte-run: start a QUINTE run and stream progress until a terminal state.
+
+Usage:
+  quinte-run --brief <file> [--interval N]
+
+Prints one progress line every N seconds (default 15) so the caller —
+a human at a terminal or an agent host that streams command stdout —
+always sees the run advancing. Never sits silent for minutes.
+
+Exit codes:
+  0   run completed (possibly degraded)
+  10  run reached waiting_primary_arbiter (R3 handoff required)
+  1   run failed or was cancelled
+  2   startup error (brief rejected, quinte not initialized, ...)
+  130 interrupted with Ctrl-C; the run itself is NOT cancelled —
+      resume watching with: quinte-progress <run-id> --watch
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROGRESS = os.path.join(HERE, "quinte-progress")
+
+
+def progress_line(run_id):
+    p = subprocess.run([PROGRESS, run_id], capture_output=True, text=True)
+    if p.returncode != 0:
+        return None, p.stderr.strip()
+    return p.stdout.strip(), None
+
+
+def status_of(run_id):
+    p = subprocess.run(["quinte", "status", run_id, "--json"], capture_output=True, text=True)
+    try:
+        env = json.loads(p.stdout)
+        if env.get("ok"):
+            return env["data"].get("status", "unknown")
+    except (json.JSONDecodeError, KeyError):
+        pass
+    return "unknown"
+
+
+def main(argv):
+    brief = None
+    interval = 15
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--brief" and i + 1 < len(argv):
+            brief = argv[i + 1]
+            i += 2
+        elif a == "--interval" and i + 1 < len(argv):
+            interval = max(5, int(argv[i + 1]))
+            i += 2
+        elif not a.startswith("--") and brief is None:
+            brief = a
+            i += 1
+        else:
+            i += 1
+    if not brief:
+        print(__doc__.strip())
+        return 2
+
+    p = subprocess.run(["quinte", "run", "--brief", brief, "--json"],
+                       capture_output=True, text=True)
+    try:
+        env = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        print("quinte run produced no JSON (exit %d): %s" % (p.returncode, p.stderr.strip()[:300]),
+              file=sys.stderr)
+        return 2
+    if not env.get("ok"):
+        print("quinte run rejected: %s" % json.dumps(env.get("error"), ensure_ascii=False)[:400],
+              file=sys.stderr)
+        return 2
+    data = env.get("data") or {}
+    run_id = data.get("run_id") or (data.get("manifest") or {}).get("run_id")
+    if not run_id:
+        print("quinte run returned no run_id: %s" % json.dumps(data)[:300], file=sys.stderr)
+        return 2
+
+    print("run started: %s  (brief %s)" % (run_id, os.path.basename(brief)), flush=True)
+    print("Ctrl-C detaches without cancelling; resume: quinte-progress %s --watch" % run_id,
+          flush=True)
+
+    last = None
+    try:
+        while True:
+            line, err = progress_line(run_id)
+            if line is None:
+                print("progress poll failed: %s" % err, file=sys.stderr)
+            elif line != last:
+                print(line, flush=True)
+                last = line
+            st = status_of(run_id)
+            if st in ("completed", "degraded"):
+                tag = "COMPLETED" if st == "completed" else "COMPLETED (degraded)"
+                print("%s: quinte inspect %s --json" % (tag, run_id), flush=True)
+                return 0
+            if st == "waiting_primary_arbiter":
+                print("HANDOFF REQUIRED: quinte primary-arbiter request %s --json" % run_id,
+                      flush=True)
+                return 10
+            if st in ("failed", "failed_policy", "cancelled"):
+                print("RUN %s: quinte status %s --json for detail" % (st.upper(), run_id),
+                      flush=True)
+                return 1
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("detached; run %s still active. Resume: quinte-progress %s --watch"
+              % (run_id, run_id), flush=True)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
