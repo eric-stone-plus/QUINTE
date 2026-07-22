@@ -582,6 +582,21 @@ fn persist_r2_pacing_until(
     )
 }
 
+/// Inter-start delay for R1 parallel fan-out. Zero under fake-adapter tests.
+fn r1_start_stagger() -> Duration {
+    if std::env::var_os("QUINTE_ALLOW_FAKE_ADAPTERS").is_some() {
+        return Duration::ZERO;
+    }
+    match std::env::var("QUINTE_R1_STAGGER_MS") {
+        Ok(raw) if raw.trim() == "0" => Duration::ZERO,
+        Ok(raw) => {
+            let ms = raw.trim().parse::<u64>().unwrap_or(2_000).min(10_000);
+            Duration::from_millis(ms)
+        }
+        Err(_) => Duration::from_millis(2_000),
+    }
+}
+
 fn wait_for_r2_pacing(
     store: &Store,
     manifest: &mut RunManifest,
@@ -2103,8 +2118,22 @@ fn run_phase(
             prepared.push((route, attempt, invocation));
         }
 
+        // Soft-stagger R1 starts so five same-family model routes do not all
+        // hit the provider in the same second (primary 429 source). Total lag
+        // is (n-1)*stagger and is recovered many times over when a single 429
+        // retry is avoided. Fake-adapter tests set QUINTE_ALLOW_FAKE_ADAPTERS
+        // and skip the sleep so e2e stays fast.
+        let r1_stagger = r1_start_stagger();
         let mut jobs = Vec::new();
-        for (route, attempt, invocation) in prepared {
+        let mut spawn_cancelled = false;
+        for (index, (route, attempt, invocation)) in prepared.into_iter().enumerate() {
+            if index > 0 && !r1_stagger.is_zero() {
+                if wait_cancellable(&run_dir, r1_stagger) {
+                    let _ = cancel_run(store, manifest);
+                    spawn_cancelled = true;
+                    break;
+                }
+            }
             let job_store = Store::new(store.home().to_path_buf());
             let job_manifest = manifest.clone();
             let party_id = route.party_id.clone();
@@ -2133,8 +2162,8 @@ fn run_phase(
             });
         }
 
-        // Always join every R1 lane before interpreting any output. In particular, an
-        // invalid early lane must not orphan the remaining children or their credentials.
+        // Always join every spawned R1 lane before interpreting any output. In
+        // particular, an invalid early lane must not orphan remaining children.
         let mut finished = Vec::new();
         let mut join_errors = Vec::new();
         for job in jobs {
@@ -2143,6 +2172,9 @@ fn run_phase(
                 Ok(Err(error)) => join_errors.push(format!("{}: {error:#}", job.route.party_id)),
                 Err(_) => join_errors.push(format!("{}: lane worker panicked", job.route.party_id)),
             }
+        }
+        if spawn_cancelled {
+            bail!("run cancelled");
         }
         if !join_errors.is_empty() {
             bail!("R1 lane execution failed: {}", join_errors.join("; "));

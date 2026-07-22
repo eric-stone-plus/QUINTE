@@ -57,7 +57,10 @@ pub fn default_policy() -> Policy {
         max_parallel_r1: 5,
         max_parallel_r2: 1,
         max_attempts: 3,
-        timeout_seconds: 600,
+        // Hang recovery: real R1 lanes typically finish in 1–4 min. 300s fails
+        // stuck adapters faster without starving healthy long reviews; R2 stays
+        // serial with fixed 10s pacing so this does not increase 429 pressure.
+        timeout_seconds: 300,
         retry_backoff_seconds: 15,
         retry_backoff_max_seconds: 120,
         r2_min_interval_seconds: 10,

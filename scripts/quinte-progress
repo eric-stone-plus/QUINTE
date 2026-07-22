@@ -4,11 +4,14 @@
 Usage:
   quinte-progress <run-id>              one-shot status line
   quinte-progress <run-id> --json       one-shot machine-readable summary
-  quinte-progress <run-id> --watch [s]  reprint every s seconds (default 20)
+  quinte-progress <run-id> --watch [s]  reprint every s seconds (default 15)
                                         until the run reaches a terminal state
 
 Designed so agent hosts never need a long silent blocking call: poll the
 one-shot form every 30-60 s and narrate the line to the user.
+
+Activity age prefers worker-heartbeat / events.jsonl mtime over manifest
+updated_at, so long R1/R2 lanes do not look frozen while still working.
 """
 import json
 import os
@@ -16,6 +19,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 TERMINAL = {"completed", "degraded", "failed", "failed_policy", "cancelled",
             "waiting_primary_arbiter"}
@@ -45,14 +49,90 @@ def fmt_dur(seconds):
     return "%d:%02d" % divmod(seconds, 60) if seconds < 3600 else "%dh%02dm" % divmod(seconds, 3600)
 
 
+def runs_home():
+    return Path(os.environ.get("QUINTE_HOME") or (Path.home() / ".quinte"))
+
+
+def load_events_from_disk(run_id):
+    """Prefer events.jsonl on disk (cheap, always fresh) over inspect envelope."""
+    path = runs_home() / "runs" / run_id / "events.jsonl"
+    if not path.is_file():
+        return [], None
+    events = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        return events, path.stat().st_mtime
+    except OSError:
+        return [], None
+
+
+def activity_epoch(run_id, manifest_updated_at):
+    """Newest signal among heartbeat, events file, and manifest updated_at."""
+    base = runs_home() / "runs" / run_id
+    candidates = []
+    if manifest_updated_at:
+        try:
+            candidates.append(parse_ts(manifest_updated_at).timestamp())
+        except Exception:
+            pass
+    for rel in ("diagnostics/worker-heartbeat", "events.jsonl", "active-pids.json"):
+        p = base / rel
+        try:
+            if p.is_file() and p.stat().st_size >= 0:
+                candidates.append(p.stat().st_mtime)
+                if rel == "diagnostics/worker-heartbeat":
+                    # Heartbeat content is an ISO timestamp; prefer that if parseable.
+                    raw = p.read_text(encoding="utf-8", errors="replace").strip()
+                    if raw:
+                        try:
+                            candidates.append(parse_ts(raw).timestamp())
+                        except Exception:
+                            pass
+        except OSError:
+            continue
+    return max(candidates) if candidates else time.time()
+
+
+def count_active_sibling_runs(current_id):
+    """How many other non-terminal runs exist (host stacking → 429 / thrash)."""
+    root = runs_home() / "runs"
+    if not root.is_dir():
+        return 0
+    n = 0
+    for d in root.iterdir():
+        if not d.is_dir() or d.name == current_id:
+            continue
+        man = d / "manifest.json"
+        if not man.is_file():
+            continue
+        try:
+            st = json.loads(man.read_text(encoding="utf-8")).get("status")
+        except Exception:
+            continue
+        if st and st not in TERMINAL:
+            n += 1
+    return n
+
+
 def summarize(run_id):
     st, err = run_cli(["status", run_id])
     if err:
         return None, err
-    insp, err = run_cli(["inspect", run_id])
-    if err:
-        return None, err
-    events = insp.get("events", []) if isinstance(insp, dict) else []
+
+    events, _ = load_events_from_disk(run_id)
+    if not events:
+        insp, err = run_cli(["inspect", run_id])
+        if err:
+            return None, err
+        events = insp.get("events", []) if isinstance(insp, dict) else []
 
     party_route = {}
     lanes = {}  # route -> phase -> [state, attempt]
@@ -67,6 +147,9 @@ def summarize(run_id):
         d = e.get("data") or {}
         if t == "lane.started":
             route = os.path.basename(d.get("adapter") or "") or pid or "?"
+            # Prefer route_id when present in later events; normalize tui names.
+            if route.endswith("-tui"):
+                route = route[: -len("-tui")]
             if pid:
                 party_route[pid] = route
             slot(route, ph)[:] = ["run", e.get("attempt") or 1]
@@ -88,17 +171,19 @@ def summarize(run_id):
 
     now = datetime.now(timezone.utc)
     created = parse_ts(st["created_at"]) if st.get("created_at") else now
-    updated = parse_ts(st["updated_at"]) if st.get("updated_at") else now
+    activity_ts = activity_epoch(run_id, st.get("updated_at"))
     status = st.get("status", "unknown")
+    siblings = count_active_sibling_runs(run_id) if status not in TERMINAL else 0
     return {
         "run_id": run_id,
         "status": status,
         "phase": st.get("current_phase"),
         "elapsed_s": int((now - created).total_seconds()),
-        "updated_ago_s": int((now - updated).total_seconds()),
+        "updated_ago_s": max(0, int(time.time() - activity_ts)),
         "error": st.get("error"),
         "lanes": lanes,
         "terminal": status in TERMINAL,
+        "active_siblings": siblings,
     }, None
 
 
@@ -115,8 +200,10 @@ def render(s):
                 marks += str(attempt)
         parts.append("%s:%s" % (r, marks))
     lanes_txt = " ".join(parts) if parts else "(no lanes yet)"
-    line = "[%s] %s %-24s %s  upd %ss ago" % (
+    line = "[%s] %s %-24s %s  act %ss ago" % (
         fmt_dur(s["elapsed_s"]), s["phase"] or "-", s["status"], lanes_txt, s["updated_ago_s"])
+    if s.get("active_siblings"):
+        line += "  WARN +%d other active run(s)" % s["active_siblings"]
     if s["status"] == "waiting_primary_arbiter":
         line += "\n-> R3 handoff needed: quinte primary-arbiter request %s --json" % s["run_id"]
     elif s["status"] in ("completed", "degraded"):
@@ -138,7 +225,7 @@ def main(argv):
     run_id = args[0]
     as_json = "--json" in argv
     watch = "--watch" in argv
-    interval = 20
+    interval = 15
     if watch:
         i = argv.index("--watch")
         if i + 1 < len(argv) and not argv[i + 1].startswith("--"):

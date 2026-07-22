@@ -710,8 +710,10 @@ fn codewhale_args(
         codewhale_allowed_tools(has_attachments).into(),
         "--disallowed-tools".into(),
         "write_file,exec_shell,apply_patch,web_search".into(),
+        // Compact LaneOutput needs packet read + emit, not long tool thrash.
+        // Fewer turns cuts wall time and token burn without relaxing schema gates.
         "--max-turns".into(),
-        "12".into(),
+        "8".into(),
         "--append-system-prompt".into(),
         ROLE_CONTRACT.into(),
         prompt,
@@ -1766,7 +1768,7 @@ fn write_open_family_config(root: &Path, family: &str, model: &str) -> anyhow::R
                 "mode": "primary",
                 "model": provider_model(family, model),
                 "variant": "max",
-                "steps": 12,
+                "steps": 8,
                 "prompt": ROLE_CONTRACT,
                 "permission": {
                     "*": "deny", "read": "allow", "glob": "allow", "grep": "allow", "list": "allow",
@@ -1794,7 +1796,7 @@ fn write_mimo_config(root: &Path, model: &str) -> anyhow::Result<()> {
         "agent": {
             "quinte": {
                 "description": "Execute one bounded QUINTE lane and return LaneOutput JSON.",
-                "mode": "primary", "model": provider_model("mimo", model), "steps": 12,
+                "mode": "primary", "model": provider_model("mimo", model), "steps": 8,
                 "prompt": ROLE_CONTRACT, "tool_allowlist": ["read", "grep", "glob", "list"],
                 "permission": {
                     "*": "deny", "read": "allow", "grep": "allow", "glob": "allow", "list": "allow",
