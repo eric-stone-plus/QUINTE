@@ -84,36 +84,28 @@ are empty or exactly match snapshot refs in the run's snapshot manifest.
 
 ## Quick Start
 
-Install a checksum-verified release binary on macOS or Linux without Rust:
+Build from source (prebuilt GitHub Releases are not published):
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://raw.githubusercontent.com/eric-stone-plus/QUINTE/main/install.sh | sh
+git clone https://github.com/eric-stone-plus/QUINTE.git
+cd QUINTE
+cargo build --release
+install -m 0755 target/release/quinte ~/.local/bin/quinte   # or copy onto PATH
+# optional host helpers (progress polling for interactive agents):
+# install -m 0755 scripts/quinte-progress scripts/quinte-run ~/.local/bin/
+quinte init   # first time only
+quinte doctor
 ```
-
-On Windows PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/eric-stone-plus/QUINTE/main/install.ps1 | iex
-```
-
-The installer verifies the selected release archive against `SHA256SUMS`, puts
-the single binary on the user `PATH`, and initializes `~/.quinte` on first
-install. It does not require Cargo, Rust, a source checkout, a daemon, or a
-container.
 
 The CLI executable is self-contained, but a complete run intentionally depends
 on its fixed native agent roster and existing token-plan credentials. Run
 `quinte doctor` to check CodeWhale, OpenCode, Kilo, MiMo, OMP, Claude Code, and
-their credential sources. The installer never downloads those tools or creates
-credentials silently.
+their credential sources.
 
 Provision the Claude/MiMo token with Keychain Access on macOS or Windows
 Credential Manager on Windows, then verify it with `quinte credential status`.
 QUINTE exposes no secret-writing command; see the CLI contract for the exact
 account/service or target identity.
-
-Source builds remain available to contributors with `cargo build --release`.
 
 Create a brief such as `brief.json`:
 
