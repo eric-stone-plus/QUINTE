@@ -30,7 +30,7 @@ does not recreate QUINTE by launching the parties itself.
 
 QUINTE names its two layers deliberately:
 
-- **Scenario-oriented prompt layer (面向情景).** The seven protocol roles are
+- **Scenario-oriented prompt layer.** The seven protocol roles are
   scripted scenario positions, not objects with encapsulated behavior. A role
   is a constructed situation — brief, evidence packet, output schema, and
   constraints — inside which a model improvises an analysis. The protocol does
