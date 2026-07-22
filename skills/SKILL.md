@@ -12,6 +12,23 @@ Do not run, replace, or skip an individual party.
 Do not read `shimei-host-overlay.json` or any archive overlay as a dispatch
 source. Commands come only from the installed `quinte` CLI.
 
+## Install prerequisites (host must verify)
+
+QUINTE is **source-built only** (no GitHub prebuilt Releases). Before the first
+run in a session, confirm the host environment:
+
+1. `quinte --version` resolves on PATH to the binary built from this checkout
+   (`cargo build --release` → install/copy onto PATH).
+2. `quinte-progress` and `quinte-run` are on PATH (from repo `scripts/`;
+   symlink into `~/.local/bin` preferred so pulls stay in sync).
+3. `quinte doctor --json` is green after install, rebuild, or `git pull`.
+4. This skill file matches the repo copy at `skills/SKILL.md` (Hermes live
+   paths under `~/.hermes` are not version-controlled — re-sync after pull).
+
+If progress helpers are missing, do not fall back to `quinte run --wait` or a
+sleeping shell loop; install the scripts first. See the repository README
+Quick Start for full install and update steps.
+
 R2 anti-429 handling is CLI-owned. The scheduler keeps R2 serial with 10-second
 pacing, soft-staggers R1 starts, makes at most three same-route attempts, and
 applies typed 15-to-120-second bounded backoff. Do not add sleeps, retries, or

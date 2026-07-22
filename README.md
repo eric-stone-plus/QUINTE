@@ -84,26 +84,79 @@ are empty or exactly match snapshot refs in the run's snapshot manifest.
 
 ## Quick Start
 
-Build from source (prebuilt GitHub Releases are not published):
+Build from source (prebuilt GitHub Releases are not published). Source on
+`main` is the only install channel, so a rebuild is how you stay current with
+upstream.
+
+### macOS / Linux
 
 ```bash
 git clone https://github.com/eric-stone-plus/QUINTE.git
 cd QUINTE
 cargo build --release
-install -m 0755 target/release/quinte ~/.local/bin/quinte   # or copy onto PATH
-# optional host helpers (progress polling for interactive agents):
-# install -m 0755 scripts/quinte-progress scripts/quinte-run ~/.local/bin/
-quinte init   # first time only
+
+# 1) CLI on PATH (required)
+install -m 0755 target/release/quinte ~/.local/bin/quinte
+# ensure ~/.local/bin is on PATH
+
+# 2) Host progress helpers (required for interactive agents / Hermes skill)
+install -m 0755 scripts/quinte-progress scripts/quinte-run ~/.local/bin/
+# or symlink so updates follow the checkout:
+#   ln -sfn "$PWD/scripts/quinte-progress" ~/.local/bin/quinte-progress
+#   ln -sfn "$PWD/scripts/quinte-run" ~/.local/bin/quinte-run
+
+# 3) First-time state + environment check
+quinte init    # first time only; creates ~/.quinte
+quinte doctor  # after every install or rebuild
+quinte --version
+command -v quinte-progress quinte-run
+```
+
+### Windows (PowerShell)
+
+```powershell
+git clone https://github.com/eric-stone-plus/QUINTE.git
+cd QUINTE
+cargo build --release
+$dir = Join-Path $env:LOCALAPPDATA "Programs\quinte\bin"
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+Copy-Item target\release\quinte.exe (Join-Path $dir "quinte.exe") -Force
+Copy-Item scripts\quinte-progress, scripts\quinte-run $dir -Force
+# add $dir to the user PATH, then open a new shell
+quinte init
 quinte doctor
 ```
 
-The CLI executable is self-contained, but a complete run intentionally depends
-on its fixed native agent roster and existing token-plan credentials. Run
-`quinte doctor` to check CodeWhale, OpenCode, Kilo, MiMo, OMP, Claude Code, and
-their credential sources.
+### After every update
+
+```bash
+git pull
+cargo build --release
+install -m 0755 target/release/quinte ~/.local/bin/quinte   # or re-copy on Windows
+# if you installed scripts by copy (not symlink), re-install them too
+quinte doctor
+```
+
+### Host agent skill (Hermes and similar)
+
+The durable skill lives in this repo at [`skills/SKILL.md`](skills/SKILL.md).
+Copy or symlink it into the host’s live skill directory after install or pull
+(for example Hermes technical profile
+`…/skills/multi-agent-debate/quinte/SKILL.md`). Host trees under `~/.hermes`
+are not version-controlled; **the repo file is the source of truth**.
+
+Interactive hosts must not use `quinte run --wait` or bare `quinte wait`. Use
+detached `quinte run --brief … --json` and poll `quinte-progress`, or stream
+with `quinte-run --brief …`. Keep **one active run** at a time.
+
+### Credentials and roster
+
+The CLI is self-contained, but a complete run depends on the fixed native agent
+roster and existing token-plan credentials. `quinte doctor` checks CodeWhale,
+OpenCode, Kilo, MiMo, OMP, Claude Code, and their credential sources.
 
 Provision the Claude/MiMo token with Keychain Access on macOS or Windows
-Credential Manager on Windows, then verify it with `quinte credential status`.
+Credential Manager on Windows, then verify with `quinte credential status`.
 QUINTE exposes no secret-writing command; see the CLI contract for the exact
 account/service or target identity.
 
