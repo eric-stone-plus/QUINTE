@@ -236,7 +236,7 @@ fn spawn_adapter_process(
         // Combine hidden + suspended + new process group. CREATE_SUSPENDED closes
         // the race between spawn and AssignProcessToJobObject.
         command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
-        let child = command.spawn().context("cannot start adapter process")?;
+        let mut child = command.spawn().context("cannot start adapter process")?;
         let process = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
         if let Err(error) = job.assign_process_handle(process) {
             // Ensure a failed assignment cannot leave a suspended orphan.
