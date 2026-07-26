@@ -132,6 +132,8 @@ def cmd_stats(runs, as_json):
 def cmd_residuals(runs, args, as_json):
     rows = []
     for r in runs:
+        if r["status"] != "completed":
+            continue  # failed runs carry partial residuals — exclude from the KB
         for res in r["residuals"]:
             if args.severity and res.get("severity", "").upper() != args.severity.upper():
                 continue
@@ -164,6 +166,8 @@ def cmd_patterns(runs, args, as_json):
     """Cluster residuals by normalized id + token similarity; flag multi-run clusters."""
     entries = []
     for r in runs:
+        if r["status"] != "completed":
+            continue  # failed runs carry partial residuals — exclude
         for res in r["residuals"]:
             entries.append({
                 "run_id": r["run_id"],
