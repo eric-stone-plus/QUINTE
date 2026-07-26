@@ -502,13 +502,7 @@ fn degenerate_verdict_submission_is_rejected_without_force() {
         store.load_manifest(&run_id).unwrap().status,
         RunStatus::WaitingPrimaryArbiter
     );
-    assert!(
-        !store
-            .run_dir(&run_id)
-            .unwrap()
-            .join("result.json")
-            .exists()
-    );
+    assert!(!store.run_dir(&run_id).unwrap().join("result.json").exists());
 
     // --force 是显式操作员决定：同一 stub 可以 finalize
     assert_eq!(
@@ -540,12 +534,177 @@ fn verdict_schema_error_is_not_reported_as_a_syntax_error() {
 
     let error = run::submit_primary_arbiter_verdict(&store, &run_id, &broken, false).unwrap_err();
     let detail = format!("{error:#}");
-    assert!(detail.contains("does not match expected schema"), "{detail}");
+    assert!(
+        detail.contains("does not match expected schema"),
+        "{detail}"
+    );
     assert!(!detail.contains("invalid JSON syntax"), "{detail}");
     assert_eq!(
         store.load_manifest(&run_id).unwrap().status,
         RunStatus::WaitingPrimaryArbiter
     );
+}
+
+fn completed_run(
+    temporary: &std::path::Path,
+    executable: &std::path::Path,
+    suffix: &str,
+) -> (Store, String) {
+    let (store, run_id, response) = create_waiting_run(temporary, executable, suffix);
+    let response_path = temporary.join(format!("{suffix}-response.json"));
+    write_json(&response_path, &response).unwrap();
+    assert_eq!(
+        run::submit_primary_arbiter(&store, &run_id, &response_path).unwrap(),
+        RunStatus::Completed
+    );
+    (store, run_id)
+}
+
+fn replacement_verdict(summary: &str, recommendation: &str) -> ArbiterVerdict {
+    ArbiterVerdict {
+        arbiter_verdict_version: "1.0".into(),
+        summary: summary.into(),
+        recommendation: recommendation.into(),
+        residuals: vec![],
+    }
+}
+
+#[test]
+fn amend_rewrites_result_for_a_completed_run() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id) = completed_run(temporary.path(), &executable, "amend-rewrite");
+    let run_dir = store.run_dir(&run_id).unwrap();
+    let old_result = fs::read_to_string(run_dir.join("result.json")).unwrap();
+    let owned_response = fs::read(run_dir.join("r3/primary-arbiter-response.json")).unwrap();
+    let old_report = fs::read_to_string(run_dir.join("report.md")).unwrap();
+
+    let verdict_path = temporary.path().join("amend-verdict.json");
+    let verdict = replacement_verdict(
+        "Amended summary: the original verdict was a stub and is now replaced.",
+        "Amended recommendation: track every counterpart residual to closure.",
+    );
+    write_json(&verdict_path, &verdict).unwrap();
+
+    assert_eq!(
+        run::amend_primary_arbiter_verdict(&store, &run_id, &verdict_path, false).unwrap(),
+        RunStatus::Completed
+    );
+
+    // result.json 与 report.md 由同一条 finalize 路径重写
+    let result: serde_json::Value = read_json(&run_dir.join("result.json")).unwrap();
+    assert_eq!(result["summary"], verdict.summary);
+    assert_eq!(result["recommendation"], verdict.recommendation);
+    assert_ne!(
+        fs::read_to_string(run_dir.join("result.json")).unwrap(),
+        old_result
+    );
+    let report = fs::read_to_string(run_dir.join("report.md")).unwrap();
+    assert!(report.contains(&verdict.summary), "{report}");
+    assert_ne!(report, old_report);
+
+    // manifest 摘要更新，完整性校验通过
+    let manifest = store.load_manifest(&run_id).unwrap();
+    assert_eq!(manifest.status, RunStatus::Completed);
+    assert_eq!(
+        manifest.result_sha256.as_deref(),
+        Some(sha256_file(&run_dir.join("result.json")).unwrap().as_str())
+    );
+    let integrity = run::verify_result_integrity(&store, &run_id)
+        .unwrap()
+        .unwrap();
+    assert!(integrity.actionable);
+
+    // 审计 event 带 verdict 文件 sha256；r3/ 目录保持原样
+    let events = store.events(&run_id).unwrap();
+    let amended = events
+        .iter()
+        .find(|event| event.event_type == "primary_arbiter.amended")
+        .expect("amend must append an audit event");
+    assert_eq!(
+        amended.data["verdict_sha256"].as_str().unwrap(),
+        sha256_file(&verdict_path).unwrap()
+    );
+    assert_eq!(
+        fs::read(run_dir.join("r3/primary-arbiter-response.json")).unwrap(),
+        owned_response
+    );
+}
+
+#[test]
+fn amend_rejects_a_run_that_is_not_completed() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, _) = create_waiting_run(temporary.path(), &executable, "amend-active");
+    let verdict_path = temporary.path().join("amend-active-verdict.json");
+    write_json(
+        &verdict_path,
+        &replacement_verdict(
+            "Amended summary with plenty of substance.",
+            "Amended recommendation with plenty of substance.",
+        ),
+    )
+    .unwrap();
+
+    let error =
+        run::amend_primary_arbiter_verdict(&store, &run_id, &verdict_path, false).unwrap_err();
+    assert!(error.to_string().contains("not completed"), "{error}");
+    assert!(error.to_string().contains("submit"), "{error}");
+    assert!(!store.run_dir(&run_id).unwrap().join("result.json").exists());
+}
+
+#[test]
+fn amend_enforces_guardrail_and_schema_on_completed_runs() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id) = completed_run(temporary.path(), &executable, "amend-guard");
+    let run_dir = store.run_dir(&run_id).unwrap();
+    let original_sha = sha256_file(&run_dir.join("result.json")).unwrap();
+
+    // 退化 verdict 无 --force → 拒绝，result 不动
+    let stub = temporary.path().join("amend-stub.json");
+    fs::write(
+        &stub,
+        r#"{"arbiter_verdict_version":"1.0","summary":"test","recommendation":"ok","residuals":[]}"#,
+    )
+    .unwrap();
+    let error = run::amend_primary_arbiter_verdict(&store, &run_id, &stub, false).unwrap_err();
+    assert!(error.to_string().contains("degenerate"), "{error}");
+    assert_eq!(
+        sha256_file(&run_dir.join("result.json")).unwrap(),
+        original_sha
+    );
+
+    // schema 不合法 --force 也不豁免
+    let broken = temporary.path().join("amend-broken.json");
+    fs::write(
+        &broken,
+        r#"{"arbiter_verdict_version":"1.0","summary":"test","residuals":[]}"#,
+    )
+    .unwrap();
+    let error = run::amend_primary_arbiter_verdict(&store, &run_id, &broken, true).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("does not match expected schema"),
+        "{error:#}"
+    );
+    assert_eq!(
+        sha256_file(&run_dir.join("result.json")).unwrap(),
+        original_sha
+    );
+
+    // --force 只豁免护栏：同一 stub 可写入，完整性保持
+    assert_eq!(
+        run::amend_primary_arbiter_verdict(&store, &run_id, &stub, true).unwrap(),
+        RunStatus::Completed
+    );
+    assert_ne!(
+        sha256_file(&run_dir.join("result.json")).unwrap(),
+        original_sha
+    );
+    run::verify_result_integrity(&store, &run_id).unwrap();
 }
 
 #[test]

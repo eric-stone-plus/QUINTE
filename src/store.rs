@@ -159,6 +159,17 @@ impl Store {
         write_json(&self.manifest_path(&manifest.run_id)?, manifest)
     }
 
+    /// 绕过 save_manifest 的 terminal 静默跳过守卫。仅给已持有 run 锁、且有
+    /// 正当理由原地更新终态 run 元数据的路径使用（当前只有 primary-arbiter
+    /// amend 重写 result_sha256）。
+    pub(crate) fn save_manifest_after_terminal(
+        &self,
+        manifest: &RunManifest,
+    ) -> anyhow::Result<()> {
+        let _lock = self.resource_lock(&manifest.run_id, ".manifest.lock")?;
+        self.save_manifest_unlocked(manifest)
+    }
+
     pub fn lock(&self, run_id: &str) -> anyhow::Result<RunLock> {
         let path = self.run_dir(run_id)?.join(".run.lock");
         let file = File::options()

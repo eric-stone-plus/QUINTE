@@ -108,12 +108,8 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
         .with_context(|| format!("{} is not strict UTF-8", path.display()))?;
     let value: serde_json::Value = serde_json::from_str(text)
         .with_context(|| format!("invalid JSON syntax in {}", path.display()))?;
-    serde_json::from_value(value).with_context(|| {
-        format!(
-            "JSON in {} does not match expected schema",
-            path.display()
-        )
-    })
+    serde_json::from_value(value)
+        .with_context(|| format!("JSON in {} does not match expected schema", path.display()))
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -1134,14 +1130,20 @@ mod tests {
             )),
             "{detail}"
         );
-        assert!(detail.contains("missing field `required_field`"), "{detail}");
+        assert!(
+            detail.contains("missing field `required_field`"),
+            "{detail}"
+        );
 
         // 未知字段同样落入 schema 段（deny_unknown_fields）
         let unknown = temporary.path().join("unknown.json");
         std::fs::write(&unknown, b"{\"required_field\": \"x\", \"extra\": 1}\n").unwrap();
         let error = super::read_json::<Target>(&unknown).unwrap_err();
         let detail = format!("{error:#}");
-        assert!(detail.contains("does not match expected schema"), "{detail}");
+        assert!(
+            detail.contains("does not match expected schema"),
+            "{detail}"
+        );
         assert!(detail.contains("unknown field `extra`"), "{detail}");
 
         // 合法文件照常解析

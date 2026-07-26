@@ -102,6 +102,19 @@ pub(crate) struct PrimaryArbiterArgs {
 pub(crate) enum PrimaryArbiterCommand {
     Request(IdArgs),
     Submit(PrimaryArbiterSubmitArgs),
+    /// 用替换 verdict 重写已完成 run 的 result.json（不重跑任何 party）
+    Amend(PrimaryArbiterAmendArgs),
+}
+#[derive(Debug, Args)]
+pub(crate) struct PrimaryArbiterAmendArgs {
+    run_id: String,
+    #[arg(long, value_name = "FILE")]
+    verdict: PathBuf,
+    /// 豁免退化 verdict 护栏（schema 校验不豁免）
+    #[arg(long)]
+    force: bool,
+    #[arg(long)]
+    json: bool,
 }
 #[derive(Debug, Args)]
 pub(crate) struct PrimaryArbiterSubmitArgs {
@@ -464,6 +477,20 @@ pub(crate) fn execute_command(
                         args.response.as_deref().unwrap(),
                     )?
                 };
+                emit(
+                    args.json,
+                    json!({"run_id": args.run_id, "status": status}),
+                    format_status(&args.run_id, status),
+                )?;
+                Ok(status_code(status))
+            }
+            PrimaryArbiterCommand::Amend(args) => {
+                let status = run::amend_primary_arbiter_verdict(
+                    store,
+                    &args.run_id,
+                    &args.verdict,
+                    args.force,
+                )?;
                 emit(
                     args.json,
                     json!({"run_id": args.run_id, "status": status}),

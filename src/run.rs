@@ -1472,27 +1472,19 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
     // Challenge binding alone is insufficient: residual evidence references must
     // resolve to the exact snapshot before an external verdict can be merged.
     validate_arbiter_semantics(&primary_arbiter_response.verdict, &run_dir)?;
-    let counterpart_arbiter: ArbiterVerdict = read_json(&cc_path)?;
-    validate_unique_residual_ids(&counterpart_arbiter.residuals, "counterpart arbiter")?;
-    let result = merge_verdicts(
+    let finalization = store.finalization_guard(run_id)?;
+    if finalization.cancellation_requested() {
+        drop(finalization);
+        return cancel_run(store, &mut manifest);
+    }
+    let result = write_run_result(
         &manifest,
         &brief,
         &policy,
         &r1,
         &r2,
         &primary_arbiter_response.verdict,
-        &counterpart_arbiter,
-    );
-    validate_value(&serde_json::to_value(&result)?, RESULT_SCHEMA)?;
-    let finalization = store.finalization_guard(run_id)?;
-    if finalization.cancellation_requested() {
-        drop(finalization);
-        return cancel_run(store, &mut manifest);
-    }
-    write_json(&run_dir.join("result.json"), &result)?;
-    atomic_write(
-        &run_dir.join("report.md"),
-        render_report(&result).as_bytes(),
+        &run_dir,
     )?;
     manifest.result_sha256 = Some(sha256_file(&run_dir.join("result.json"))?);
     let status = store.transition(
@@ -1665,6 +1657,68 @@ fn submit_primary_arbiter_response(
     }
     drop(_lock);
     advance(store, run_id)
+}
+
+/// 用替换 verdict 重写已完成 run 的 result.json。R3 目录与 lane 产物只读，
+/// 不重跑任何 party；只更新 result/report、manifest 的 result_sha256，
+/// 并追加一条审计 event。run 仍处活动态时拒绝（submit 握手流程才是入口）。
+pub fn amend_primary_arbiter_verdict(
+    store: &Store,
+    run_id: &str,
+    verdict_path: &Path,
+    force: bool,
+) -> anyhow::Result<RunStatus> {
+    let run_dir = store.run_dir(run_id)?;
+    if verdict_path
+        .canonicalize()
+        .ok()
+        .is_some_and(|path| path.starts_with(&run_dir))
+    {
+        bail!("primary-arbiter verdict input must be outside the scheduler-owned run directory");
+    }
+    let verdict: ArbiterVerdict = read_json(verdict_path)?;
+    ensure_verdict_not_degenerate(&verdict, force)?;
+    let _lock = store.lock(run_id)?;
+    let mut manifest = store.load_manifest(run_id)?;
+    if manifest.status != RunStatus::Completed {
+        bail!(
+            "run {run_id} is {:?}, not completed; `primary-arbiter amend` only applies to completed runs (use `primary-arbiter submit` for a run in the arbiter handshake)",
+            manifest.status
+        );
+    }
+    let brief: Brief = read_json(&run_dir.join("input/brief.json"))?;
+    let policy: Policy = read_json(&run_dir.join("input/policy.json"))?;
+    // 记录在案的输入在重新合并前必须未被篡改。故意不复核 runtime 哈希：
+    // amend 的典型场景正是 CLI 升级之后修复旧 run。
+    if sha256_bytes(&serde_json::to_vec(&brief)?) != manifest.brief_sha256 {
+        bail!("brief changed since run creation");
+    }
+    if sha256_bytes(&serde_json::to_vec(&policy)?) != manifest.policy_sha256 {
+        bail!("policy changed since run creation");
+    }
+    if manifest.r3_input_receipt.is_some() {
+        verify_r3_input_receipt(&manifest, &policy, &run_dir)?;
+    }
+    let r1 = load_phase(&run_dir, "R1", &policy)?;
+    let r2 = load_phase(&run_dir, "R2", &policy)?;
+    // 与 finalize 相同的语义校验：residual id 唯一、证据引用可解析到快照。
+    validate_arbiter_semantics(&verdict, &run_dir)?;
+    write_run_result(&manifest, &brief, &policy, &r1, &r2, &verdict, &run_dir)?;
+    manifest.result_sha256 = Some(sha256_file(&run_dir.join("result.json"))?);
+    store.save_manifest_after_terminal(&manifest)?;
+    store.event(
+        run_id,
+        "primary_arbiter.amended",
+        Some("R3"),
+        None,
+        None,
+        json!({
+            "verdict_sha256": sha256_file(verdict_path)?,
+            "result": "result.json",
+            "force": force,
+        }),
+    )?;
+    Ok(manifest.status)
 }
 
 pub fn cancel(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
@@ -3565,6 +3619,38 @@ counterpart arbiter: {}",
     }
 }
 
+/// 合并双方裁决、按 RESULT_SCHEMA 校验并落盘 result.json + report.md。
+/// R3 finalize 与 primary-arbiter amend 共用这条路径，保证两条路径产出的
+/// result 结构完全一致。
+fn write_run_result(
+    manifest: &RunManifest,
+    brief: &Brief,
+    policy: &Policy,
+    r1: &[LaneAccepted],
+    r2: &[LaneAccepted],
+    primary_arbiter: &ArbiterVerdict,
+    run_dir: &Path,
+) -> anyhow::Result<ResultEnvelope> {
+    let counterpart_arbiter: ArbiterVerdict = read_json(&run_dir.join("r3/cc-response.json"))?;
+    validate_unique_residual_ids(&counterpart_arbiter.residuals, "counterpart arbiter")?;
+    let result = merge_verdicts(
+        manifest,
+        brief,
+        policy,
+        r1,
+        r2,
+        primary_arbiter,
+        &counterpart_arbiter,
+    );
+    validate_value(&serde_json::to_value(&result)?, RESULT_SCHEMA)?;
+    write_json(&run_dir.join("result.json"), &result)?;
+    atomic_write(
+        &run_dir.join("report.md"),
+        render_report(&result).as_bytes(),
+    )?;
+    Ok(result)
+}
+
 fn render_report(result: &ResultEnvelope) -> String {
     let mut report = format!(
         "# QUINTE Verdict\n\nRun: `{}`\n\n## Summary\n\n{}\n\n## Recommendation\n\n{}\n",
@@ -4491,14 +4577,13 @@ mod retry_tests {
 
     #[test]
     fn degenerate_verdict_guardrail_counts_chars_not_bytes() {
-        let verdict = |summary: String, recommendation: String, residuals: Vec<Residual>| {
-            ArbiterVerdict {
+        let verdict =
+            |summary: String, recommendation: String, residuals: Vec<Residual>| ArbiterVerdict {
                 arbiter_verdict_version: "1.0".into(),
                 summary,
                 recommendation,
                 residuals,
-            }
-        };
+            };
 
         // 空 residuals + 双短文本 → 退化；--force 豁免
         let stub = verdict("test".into(), "ok".into(), vec![]);
@@ -4514,12 +4599,20 @@ mod retry_tests {
             "short".into(),
             vec![]
         )));
-        assert!(!verdict_looks_degenerate(&verdict(long.clone(), long, vec![])));
+        assert!(!verdict_looks_degenerate(&verdict(
+            long.clone(),
+            long,
+            vec![]
+        )));
 
         // 20 个汉字（60 字节）按字符计为非平凡文本
         let cjk = "中文裁决摘要".repeat(4);
         assert_eq!(cjk.chars().count(), 24);
-        assert!(!verdict_looks_degenerate(&verdict(cjk.clone(), cjk, vec![])));
+        assert!(!verdict_looks_degenerate(&verdict(
+            cjk.clone(),
+            cjk,
+            vec![]
+        )));
 
         // residuals 非空时不判退化，哪怕文本很短
         let with_residual = verdict(

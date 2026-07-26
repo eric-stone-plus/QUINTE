@@ -16,7 +16,7 @@ _quinte() {
     case "${words[1]}" in
         primary-arbiter)
             if [ "$cword" -eq 2 ]; then
-                COMPREPLY=($(compgen -W "request submit" -- "$cur"))
+                COMPREPLY=($(compgen -W "request submit amend" -- "$cur"))
                 return 0
             fi
             ;;
@@ -85,7 +85,7 @@ _quinte() {
     fi
     case "$words[2]" in
         primary-arbiter)
-            (( CURRENT == 3 )) && compadd request submit && return ;;
+            (( CURRENT == 3 )) && compadd request submit amend && return ;;
         agents)
             (( CURRENT == 3 )) && compadd list describe && return ;;
         policy)
@@ -129,7 +129,7 @@ end
 for sub in SUBCOMMANDS_LIST
     complete -f -c quinte -n __fish_quinte_needs_command -a $sub
 end
-complete -f -c quinte -n '__fish_quinte_using_command primary-arbiter' -a 'request submit'
+complete -f -c quinte -n '__fish_quinte_using_command primary-arbiter' -a 'request submit amend'
 complete -f -c quinte -n '__fish_quinte_using_command agents' -a 'list describe'
 complete -f -c quinte -n '__fish_quinte_using_command policy' -a 'show validate'
 complete -f -c quinte -n '__fish_quinte_using_command credential' -a 'status'
