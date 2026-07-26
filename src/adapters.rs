@@ -235,7 +235,7 @@ pub fn build(
     let attachment_paths = input.attachment_paths;
     let schema_compact = compact_schema(LANE_OUTPUT_SCHEMA)?;
     let task_prompt = format!(
-        "PHASE: {phase}\nRead the task packet at {} and input/snapshot-manifest.json. Evidence is available only under input/snapshot. Every evidence_refs and closure_evidence entry must be either empty or an exact snapshot_ref copied from snapshot-manifest.json; never construct relative paths or line suffixes.{} Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters; emit one compact JSON object without preamble, markdown fences, or repeated analysis. Return JSON conforming exactly to this schema and invent no fields:\n{schema_compact}",
+        "PHASE: {phase}\nRead the task packet at {} and input/snapshot-manifest.json. Evidence is available only under input/snapshot. Every evidence_refs and closure_evidence entry must be either empty or an exact snapshot_ref copied from snapshot-manifest.json; never construct relative paths or line suffixes.{} Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters; emit one compact JSON object without preamble, markdown fences, or repeated analysis. Return JSON conforming exactly to this schema and invent no fields. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation:\n{schema_compact}",
         packet_path.display(),
         attachment_prompt(&attachment_paths),
     );
