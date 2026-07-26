@@ -120,6 +120,9 @@ pub(crate) struct PrimaryArbiterSubmitArgs {
         conflicts_with = "response"
     )]
     verdict: Option<PathBuf>,
+    /// 豁免退化 verdict 护栏（仅 --verdict 路径；schema 校验不豁免）
+    #[arg(long)]
+    force: bool,
     #[arg(long)]
     json: bool,
 }
@@ -453,7 +456,7 @@ pub(crate) fn execute_command(
             }
             PrimaryArbiterCommand::Submit(args) => {
                 let status = if let Some(verdict) = args.verdict {
-                    run::submit_primary_arbiter_verdict(store, &args.run_id, &verdict)?
+                    run::submit_primary_arbiter_verdict(store, &args.run_id, &verdict, args.force)?
                 } else {
                     run::submit_primary_arbiter(
                         store,

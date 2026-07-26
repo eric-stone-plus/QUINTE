@@ -1525,10 +1525,31 @@ pub fn submit_primary_arbiter(
     submit_primary_arbiter_response(store, run_id, response)
 }
 
+/// 退化 verdict 护栏的文本下限（按字符数计，CJK 友好）：
+/// 空 residuals 且 summary/recommendation 任一短于该值的 verdict 几乎必然是 stub，
+/// 直接提交会把 run 一次性 finalize，因此默认拒绝。
+const MIN_VERDICT_TEXT_CHARS: usize = 20;
+
+fn verdict_looks_degenerate(verdict: &ArbiterVerdict) -> bool {
+    verdict.residuals.is_empty()
+        && (verdict.summary.chars().count() < MIN_VERDICT_TEXT_CHARS
+            || verdict.recommendation.chars().count() < MIN_VERDICT_TEXT_CHARS)
+}
+
+fn ensure_verdict_not_degenerate(verdict: &ArbiterVerdict, force: bool) -> anyhow::Result<()> {
+    if !force && verdict_looks_degenerate(verdict) {
+        bail!(
+            "verdict looks degenerate (empty residuals and trivial summary/recommendation); pass --force to proceed anyway"
+        );
+    }
+    Ok(())
+}
+
 pub fn submit_primary_arbiter_verdict(
     store: &Store,
     run_id: &str,
     verdict_path: &Path,
+    force: bool,
 ) -> anyhow::Result<RunStatus> {
     let run_dir = store.run_dir(run_id)?;
     if verdict_path
@@ -1539,6 +1560,7 @@ pub fn submit_primary_arbiter_verdict(
         bail!("primary-arbiter verdict input must be outside the scheduler-owned run directory");
     }
     let verdict: ArbiterVerdict = read_json(verdict_path)?;
+    ensure_verdict_not_degenerate(&verdict, force)?;
     let manifest = store.load_manifest(run_id)?;
     let challenge = manifest
         .primary_arbiter_challenge
@@ -3960,9 +3982,10 @@ fn process_alive(pid: u32) -> bool {
 mod retry_tests {
     use super::{
         LaneAccepted, MIMO_REPETITION_ERROR, RateLimitSignal, RetryClass, build_snapshot,
-        classify_rate_limit, evaluate_attempt_output, merge_verdicts, next_attempt,
-        residual_fields_conflict, retry_allowed, retry_schedule, validate_arbiter_semantics,
-        validate_evidence_refs, validate_unique_claim_ids, validate_unique_residual_ids,
+        classify_rate_limit, ensure_verdict_not_degenerate, evaluate_attempt_output,
+        merge_verdicts, next_attempt, residual_fields_conflict, retry_allowed, retry_schedule,
+        validate_arbiter_semantics, validate_evidence_refs, validate_unique_claim_ids,
+        validate_unique_residual_ids, verdict_looks_degenerate,
     };
     use crate::adapters::OutputKind;
     use crate::contract::BRIEF_VERSION;
@@ -4464,6 +4487,47 @@ mod retry_tests {
             })
             .collect();
         (r1, r2)
+    }
+
+    #[test]
+    fn degenerate_verdict_guardrail_counts_chars_not_bytes() {
+        let verdict = |summary: String, recommendation: String, residuals: Vec<Residual>| {
+            ArbiterVerdict {
+                arbiter_verdict_version: "1.0".into(),
+                summary,
+                recommendation,
+                residuals,
+            }
+        };
+
+        // 空 residuals + 双短文本 → 退化；--force 豁免
+        let stub = verdict("test".into(), "ok".into(), vec![]);
+        assert!(verdict_looks_degenerate(&stub));
+        let error = ensure_verdict_not_degenerate(&stub, false).unwrap_err();
+        assert!(error.to_string().contains("degenerate"), "{error}");
+        ensure_verdict_not_degenerate(&stub, true).unwrap();
+
+        // 任一文本过短即退化（OR 语义）
+        let long = "x".repeat(20);
+        assert!(verdict_looks_degenerate(&verdict(
+            long.clone(),
+            "short".into(),
+            vec![]
+        )));
+        assert!(!verdict_looks_degenerate(&verdict(long.clone(), long, vec![])));
+
+        // 20 个汉字（60 字节）按字符计为非平凡文本
+        let cjk = "中文裁决摘要".repeat(4);
+        assert_eq!(cjk.chars().count(), 24);
+        assert!(!verdict_looks_degenerate(&verdict(cjk.clone(), cjk, vec![])));
+
+        // residuals 非空时不判退化，哪怕文本很短
+        let with_residual = verdict(
+            "t".into(),
+            "r".into(),
+            vec![sample_residual("r1", Severity::Low, "finding")],
+        );
+        assert!(!verdict_looks_degenerate(&with_residual));
     }
 
     #[test]

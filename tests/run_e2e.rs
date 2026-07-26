@@ -461,7 +461,7 @@ fn verdict_submission_constructs_scheduler_owned_binding_envelope() {
     write_json(&verdict_path, &response.verdict).unwrap();
 
     assert_eq!(
-        run::submit_primary_arbiter_verdict(&store, &run_id, &verdict_path).unwrap(),
+        run::submit_primary_arbiter_verdict(&store, &run_id, &verdict_path, false).unwrap(),
         RunStatus::Completed
     );
     let owned: PrimaryArbiterResponse = read_json(
@@ -478,6 +478,74 @@ fn verdict_submission_constructs_scheduler_owned_binding_envelope() {
         .unwrap();
     assert_eq!(owned.input_receipt_sha256, challenge.input_receipt_sha256);
     assert_eq!(owned.nonce, challenge.nonce);
+}
+
+#[test]
+fn degenerate_verdict_submission_is_rejected_without_force() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, _) = create_waiting_run(temporary.path(), &executable, "degenerate");
+    let stub = temporary.path().join("stub-verdict.json");
+    // schema 合法但明显是 stub：空 residuals + 极短文本
+    fs::write(
+        &stub,
+        r#"{"arbiter_verdict_version":"1.0","summary":"test","recommendation":"ok","residuals":[]}"#,
+    )
+    .unwrap();
+
+    let error = run::submit_primary_arbiter_verdict(&store, &run_id, &stub, false).unwrap_err();
+    assert!(error.to_string().contains("degenerate"), "{error}");
+    assert!(error.to_string().contains("--force"), "{error}");
+    // 护栏拒绝后 run 保持等待态，不产生 result
+    assert_eq!(
+        store.load_manifest(&run_id).unwrap().status,
+        RunStatus::WaitingPrimaryArbiter
+    );
+    assert!(
+        !store
+            .run_dir(&run_id)
+            .unwrap()
+            .join("result.json")
+            .exists()
+    );
+
+    // --force 是显式操作员决定：同一 stub 可以 finalize
+    assert_eq!(
+        run::submit_primary_arbiter_verdict(&store, &run_id, &stub, true).unwrap(),
+        RunStatus::Completed
+    );
+    assert!(
+        store
+            .run_dir(&run_id)
+            .unwrap()
+            .join("result.json")
+            .is_file()
+    );
+}
+
+#[test]
+fn verdict_schema_error_is_not_reported_as_a_syntax_error() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, _) = create_waiting_run(temporary.path(), &executable, "schema-msg");
+    let broken = temporary.path().join("broken-verdict.json");
+    // 合法 JSON，但 residual 缺 evidence_refs 等必填字段
+    fs::write(
+        &broken,
+        r#"{"arbiter_verdict_version":"1.0","summary":"A long enough summary text.","recommendation":"A long enough recommendation.","residuals":[{"id":"r1","severity":"LOW"}]}"#,
+    )
+    .unwrap();
+
+    let error = run::submit_primary_arbiter_verdict(&store, &run_id, &broken, false).unwrap_err();
+    let detail = format!("{error:#}");
+    assert!(detail.contains("does not match expected schema"), "{detail}");
+    assert!(!detail.contains("invalid JSON syntax"), "{detail}");
+    assert_eq!(
+        store.load_manifest(&run_id).unwrap().status,
+        RunStatus::WaitingPrimaryArbiter
+    );
 }
 
 #[test]
