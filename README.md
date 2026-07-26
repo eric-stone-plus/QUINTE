@@ -57,8 +57,9 @@ The default policy binds the protocol roles to these native routes:
 | Primary Arbiter | Hermes | R3 only |
 | Counterpart Arbiter | ClaudeCode | R3 only |
 
-R1 and R2 use `mimo-v2.5-pro` for text-only briefs. A supported image
-attachment selects `mimo-v2.5` for the run. These are same-family behavioral
+For text-only briefs, R1 and R2 run on each route's configured default text
+model. A supported image attachment switches the run to the route's
+vision-capable model. These are same-family behavioral
 perspectives, not independent model confirmation.
 
 There is deliberately no command for running one party, skipping R2, replacing
