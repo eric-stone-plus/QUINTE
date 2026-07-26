@@ -937,20 +937,23 @@ fn status_code(status: RunStatus) -> i32 {
     }
 }
 fn map_error(error: anyhow::Error) -> QuinteError {
-    let message = error.to_string();
-    if message.contains("policy")
-        || message.contains("changed since run creation")
-        || message.contains("primary-arbiter response does not bind")
-        || message.contains("challenge was already consumed")
-        || message.contains("challenge expired")
-        || message.contains("not waiting for Primary Arbiter")
-        || message.contains("response already exists")
+    // 分类只看最外层 context（与历史行为一致），但落盘的消息带完整错误链，
+    // 避免 Usage/Policy 变体吞掉 serde 等根因。
+    let outer = error.to_string();
+    let message = format!("{error:#}");
+    if outer.contains("policy")
+        || outer.contains("changed since run creation")
+        || outer.contains("primary-arbiter response does not bind")
+        || outer.contains("challenge was already consumed")
+        || outer.contains("challenge expired")
+        || outer.contains("not waiting for Primary Arbiter")
+        || outer.contains("response already exists")
     {
         QuinteError::Policy(message)
-    } else if message.contains("not initialized")
-        || message.contains("preflight")
-        || message.contains("path does not exist")
-        || message.contains("brief")
+    } else if outer.contains("not initialized")
+        || outer.contains("preflight")
+        || outer.contains("path does not exist")
+        || outer.contains("brief")
     {
         QuinteError::Usage(message)
     } else {

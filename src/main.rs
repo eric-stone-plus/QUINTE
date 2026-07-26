@@ -2,7 +2,7 @@ fn main() {
     let code = match quinte::cli::entrypoint() {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("quinte: {error}");
+            eprintln!("quinte: {error:#}");
             error.exit_code()
         }
     };
