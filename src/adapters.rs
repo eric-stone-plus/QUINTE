@@ -234,8 +234,19 @@ pub fn build(
     let packet_path = input.packet_path.as_path();
     let attachment_paths = input.attachment_paths;
     let schema_compact = compact_schema(LANE_OUTPUT_SCHEMA)?;
+    // R3 lanes (counterpart arbiter) produce an ArbiterVerdict, not a
+    // LaneOutput — prompt them with the verdict contract, including the
+    // summary/recommendation role split (a verbatim-duplicate recommendation
+    // was observed in production) and cross-party residual merging.
+    let phase_contract = if phase == "R3" {
+        "Return one JSON object with exactly these fields: arbiter_verdict_version (\"1.0\"), summary, recommendation, residuals. summary states WHAT WAS FOUND (evidence-weighted findings and judgments); recommendation states WHAT TO DO (actions, sequencing, gates) and must add decision value beyond summary — never restate it. Keep residuals to the decisive ones (aim for five or fewer): duplicate findings raised by multiple parties must be merged into one residual with combined severity, never listed separately. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation.".to_string()
+    } else {
+        format!(
+            "Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters. Return JSON conforming exactly to this schema and invent no fields. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation:\n{schema_compact}"
+        )
+    };
     let task_prompt = format!(
-        "PHASE: {phase}\nRead the task packet at {} and input/snapshot-manifest.json. Evidence is available only under input/snapshot. Every evidence_refs and closure_evidence entry must be either empty or an exact snapshot_ref copied from snapshot-manifest.json; never construct relative paths or line suffixes.{} Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters; emit one compact JSON object without preamble, markdown fences, or repeated analysis. Return JSON conforming exactly to this schema and invent no fields. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation:\n{schema_compact}",
+        "PHASE: {phase}\nRead the task packet at {} and input/snapshot-manifest.json. Evidence is available only under input/snapshot. Every evidence_refs and closure_evidence entry must be either empty or an exact snapshot_ref copied from snapshot-manifest.json; never construct relative paths or line suffixes.{} Emit one compact JSON object without preamble, markdown fences, or repeated analysis. {phase_contract}",
         packet_path.display(),
         attachment_prompt(&attachment_paths),
     );

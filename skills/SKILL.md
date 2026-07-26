@@ -77,7 +77,9 @@ When the user explicitly asks for a QUINTE review, actually invoke the
    Then validate before spending a multi-party round:
    `quinte validate --kind brief <file> --json` — fix every reported field
    error first; a schema-invalid brief fails the run after lanes have already
-   started.
+   started. Also verify `evidence_roots` resolve to at least one readable
+   file — an empty snapshot wastes a full round (run 019f710b produced 12
+   P0/CRITICAL residuals on zero evidence).
 3. Start the run detached: `quinte run --brief <file> --json`, and record the
    returned run id. Create the brief and start `run` in the same execution
    action when possible; do not claim dispatch until a run id returns.
