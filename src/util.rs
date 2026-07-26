@@ -106,7 +106,14 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
     let bytes = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
     let text = std::str::from_utf8(&bytes)
         .with_context(|| format!("{} is not strict UTF-8", path.display()))?;
-    serde_json::from_str(text).with_context(|| format!("invalid JSON in {}", path.display()))
+    let value: serde_json::Value = serde_json::from_str(text)
+        .with_context(|| format!("invalid JSON syntax in {}", path.display()))?;
+    serde_json::from_value(value).with_context(|| {
+        format!(
+            "JSON in {} does not match expected schema",
+            path.display()
+        )
+    })
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -1094,6 +1101,78 @@ pub fn relative_slash(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn read_json_distinguishes_syntax_errors_from_schema_mismatches() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Target {
+            required_field: String,
+        }
+
+        let temporary = tempfile::tempdir().unwrap();
+
+        // 语法错误：报 syntax，且错误链含 serde 行列信息
+        let syntax = temporary.path().join("syntax.json");
+        std::fs::write(&syntax, b"{\"required_field\":").unwrap();
+        let error = super::read_json::<Target>(&syntax).unwrap_err();
+        let detail = format!("{error:#}");
+        assert!(
+            detail.contains(&format!("invalid JSON syntax in {}", syntax.display())),
+            "{detail}"
+        );
+        assert!(detail.contains("line"), "{detail}");
+
+        // 语法合法但 schema 不符：报 schema，且带 serde 字段级原因
+        let mismatch = temporary.path().join("mismatch.json");
+        std::fs::write(&mismatch, b"{}\n").unwrap();
+        let error = super::read_json::<Target>(&mismatch).unwrap_err();
+        let detail = format!("{error:#}");
+        assert!(
+            detail.contains(&format!(
+                "JSON in {} does not match expected schema",
+                mismatch.display()
+            )),
+            "{detail}"
+        );
+        assert!(detail.contains("missing field `required_field`"), "{detail}");
+
+        // 未知字段同样落入 schema 段（deny_unknown_fields）
+        let unknown = temporary.path().join("unknown.json");
+        std::fs::write(&unknown, b"{\"required_field\": \"x\", \"extra\": 1}\n").unwrap();
+        let error = super::read_json::<Target>(&unknown).unwrap_err();
+        let detail = format!("{error:#}");
+        assert!(detail.contains("does not match expected schema"), "{detail}");
+        assert!(detail.contains("unknown field `extra`"), "{detail}");
+
+        // 合法文件照常解析
+        let valid = temporary.path().join("valid.json");
+        std::fs::write(&valid, b"{\"required_field\": \"x\"}\n").unwrap();
+        let parsed: serde_json::Value = super::read_json(&valid).unwrap();
+        assert_eq!(parsed["required_field"], "x");
+    }
+
+    #[test]
+    fn read_json_keeps_io_and_utf8_contexts() {
+        let temporary = tempfile::tempdir().unwrap();
+
+        let missing = temporary.path().join("missing.json");
+        let error = super::read_json::<serde_json::Value>(&missing).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("cannot read {}", missing.display()))
+        );
+
+        let binary = temporary.path().join("binary.json");
+        std::fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
+        let error = super::read_json::<serde_json::Value>(&binary).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{} is not strict UTF-8", binary.display()))
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn private_directory_creation_preserves_ancestors_and_hardens_new_components() {
