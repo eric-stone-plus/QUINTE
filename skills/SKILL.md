@@ -74,6 +74,10 @@ When the user explicitly asks for a QUINTE review, actually invoke the
    (`brief_version`, `question`, `context`, `evidence_roots`, `attachments`,
    `action_scope`) instead of probing the schema by trial and error. Do not
    infer a contract revision from the package version.
+   Then validate before spending a multi-party round:
+   `quinte validate --kind brief <file> --json` — fix every reported field
+   error first; a schema-invalid brief fails the run after lanes have already
+   started.
 3. Start the run detached: `quinte run --brief <file> --json`, and record the
    returned run id. Create the brief and start `run` in the same execution
    action when possible; do not claim dispatch until a run id returns.
