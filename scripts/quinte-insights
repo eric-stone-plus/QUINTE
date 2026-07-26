@@ -62,13 +62,56 @@ def norm_id(residual_id):
     return re.sub(r"[_\s]+", "-", rid)
 
 
+# Legacy spellings -> canonical taxonomy (display-time only; run data is
+# hash-chained audit record and must never be rewritten).
+LEGACY_TYPE_ALIASES = {
+    "data-gap": "evidence-gap",
+    "missing-evidence": "evidence-gap",
+    "documentary-gap": "evidence-gap",
+    "数据缺失": "evidence-gap",
+    "data-quality": "data-quality",
+    "data-integrity": "data-quality",
+    "data-pipeline-gap": "data-quality",
+    "data-gap-analysis": "data-quality",
+    "arithmetic-error": "data-quality",
+    "methodology-risk": "methodology-flaw",
+    "methodology-ambiguity": "methodology-flaw",
+    "methodology-flaw": "methodology-flaw",
+    "model-structural-flaw": "methodology-flaw",
+    "model-specification-defect": "methodology-flaw",
+    "model-assumption": "model-limitation",
+    "模型待建": "model-limitation",
+    "contract-ambiguity": "contract-ambiguity",
+    "contractual-ambiguity": "contract-ambiguity",
+    "contractual-deduction-error": "contract-ambiguity",
+    "contractual-behavioral": "contract-ambiguity",
+    "legal-ambiguity": "contract-ambiguity",
+    "compliance-risk": "compliance-risk",
+    "protocol-gap": "protocol-gap",
+    "protocol-blind-spot": "protocol-gap",
+    "engineering-defect": "engineering-defect",
+    "documentation-gap": "engineering-defect",
+    "documentation-defect": "engineering-defect",
+    "scope-limitation": "scope-limitation",
+    "coverage-gap": "scope-limitation",
+    "blocker": "blocker",
+    "前置依赖": "blocker",
+    "前置依赖阻断": "blocker",
+    "前置条件未关闭": "blocker",
+    "前置依赖与合规风险": "blocker",
+    "流程前置依赖": "blocker",
+}
+
+
 def norm_type(residual_type):
-    """Normalize free-text residual_type for display: lowercase, unify separators.
+    """Normalize free-text residual_type for display: lowercase, unify
+    separators, then map known legacy spellings onto the 2026-07-26 taxonomy.
 
     The vocabulary drifts across lanes (data-gap / data_gap / Data-Gap);
     normalized grouping exposes the drift instead of hiding it.
     """
-    return re.sub(r"[_\s]+", "-", residual_type.strip().lower())
+    norm = re.sub(r"[_\s]+", "-", residual_type.strip().lower())
+    return LEGACY_TYPE_ALIASES.get(norm, norm)
 
 
 def tokens(text):
