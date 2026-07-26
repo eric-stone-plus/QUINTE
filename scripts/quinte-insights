@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""quinte-insights — cross-run residual knowledge base for QUINTE.
+
+Scans ~/.quinte/runs/*/result.json and aggregates residuals across runs so
+recurring failure patterns (systemic blind spots) become visible.
+
+Subcommands:
+  stats      runs + residual histograms (severity / type / closure)
+  residuals  flat listing, filter by --severity / --type / --run
+  patterns   recurring-pattern clusters spanning >= --min-runs runs
+  (default)  stats + top patterns
+
+Global: --json for machine-readable output. Stdlib only.
+"""
+import argparse
+import json
+import re
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+RUNS_DIR = Path.home() / ".quinte" / "runs"
+
+STOP_TOKENS = {
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with",
+    "is", "are", "be", "by", "at", "from", "that", "this", "not", "no",
+}
+
+
+def load_runs():
+    """Yield (run_id, created_at, question, status, residuals) for each run."""
+    if not RUNS_DIR.is_dir():
+        return
+    for run_dir in sorted(RUNS_DIR.iterdir()):
+        result_path = run_dir / "result.json"
+        if not result_path.is_file():
+            continue
+        try:
+            result = json.loads(result_path.read_text())
+        except Exception:
+            continue
+        created = ""
+        manifest_path = run_dir / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                created = json.loads(manifest_path.read_text()).get("created_at", "")
+            except Exception:
+                pass
+        yield {
+            "run_id": result.get("run_id", run_dir.name),
+            "created_at": created,
+            "question": result.get("question", ""),
+            "status": result.get("status", ""),
+            "residuals": result.get("residuals", []),
+        }
+
+
+def norm_id(residual_id):
+    """Normalize residual id: lowercase, strip lane prefix (r1-/r2-), unify separators."""
+    rid = residual_id.strip().lower()
+    rid = re.sub(r"^r\d+[-_]", "", rid)
+    return re.sub(r"[_\s]+", "-", rid)
+
+
+def norm_type(residual_type):
+    """Normalize free-text residual_type for display: lowercase, unify separators.
+
+    The vocabulary drifts across lanes (data-gap / data_gap / Data-Gap);
+    normalized grouping exposes the drift instead of hiding it.
+    """
+    return re.sub(r"[_\s]+", "-", residual_type.strip().lower())
+
+
+def tokens(text):
+    """Mixed tokenizer: latin words whole, CJK as bigram shingles.
+
+    Chinese text has no whitespace, so word-splitting yields one giant token
+    per sentence and Jaccard never fires. Bigram shingles are the standard
+    fix for CJK similarity.
+    """
+    out = set()
+    for chunk in re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", text.lower()):
+        if chunk.isascii():
+            if len(chunk) >= 3 and chunk not in STOP_TOKENS:
+                out.add(chunk)
+        else:
+            out.update(chunk[i:i + 2] for i in range(len(chunk) - 1))
+    return out
+
+
+def jaccard(a, b):
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def cmd_stats(runs, as_json):
+    completed = [r for r in runs if r["status"] == "completed"]
+    sev = Counter()
+    rtype = Counter()
+    raw_types = set()
+    closure = Counter()
+    total_residuals = 0
+    for r in completed:
+        for res in r["residuals"]:
+            sev[res.get("severity", "?")] += 1
+            raw_types.add(res.get("residual_type", "?"))
+            rtype[norm_type(res.get("residual_type", "?"))] += 1
+            closure[res.get("closure_state", "?")] += 1
+            total_residuals += 1
+    out = {
+        "runs_total": len(runs),
+        "runs_completed": len(completed),
+        "residuals_total": total_residuals,
+        "by_severity": dict(sev.most_common()),
+        "by_type": dict(rtype.most_common()),
+        "by_closure_state": dict(closure.most_common()),
+        "type_vocab_raw": len(raw_types),
+        "type_vocab_normalized": len(rtype),
+    }
+    if as_json:
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+    print(f"runs: {out['runs_total']} (completed {out['runs_completed']})   "
+          f"residuals: {total_residuals}")
+    for label, key in (("severity", "by_severity"), ("type", "by_type"),
+                       ("closure", "by_closure_state")):
+        line = ", ".join(f"{k}={v}" for k, v in out[key].items())
+        print(f"  {label}: {line or '(none)'}")
+
+
+def cmd_residuals(runs, args, as_json):
+    rows = []
+    for r in runs:
+        for res in r["residuals"]:
+            if args.severity and res.get("severity", "").upper() != args.severity.upper():
+                continue
+            if args.type and res.get("residual_type", "") != args.type:
+                continue
+            if args.run and not r["run_id"].startswith(args.run):
+                continue
+            rows.append({
+                "run_id": r["run_id"],
+                "date": r["created_at"][:10],
+                "severity": res.get("severity", ""),
+                "type": res.get("residual_type", ""),
+                "id": res.get("id", ""),
+                "closure_state": res.get("closure_state", ""),
+                "finding": res.get("finding", ""),
+            })
+    rows = rows[: args.limit]
+    if as_json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+    for row in rows:
+        print(f"{row['date']} {row['run_id'][:8]} [{row['severity']}] "
+              f"{row['id']} ({row['type']}, {row['closure_state']})")
+        print(f"    {row['finding'][:120]}")
+    if not rows:
+        print("no residuals match")
+
+
+def cmd_patterns(runs, args, as_json):
+    """Cluster residuals by normalized id + token similarity; flag multi-run clusters."""
+    entries = []
+    for r in runs:
+        for res in r["residuals"]:
+            entries.append({
+                "run_id": r["run_id"],
+                "date": r["created_at"][:10],
+                "id": res.get("id", ""),
+                "norm": norm_id(res.get("id", "")),
+                "severity": res.get("severity", ""),
+                "type": res.get("residual_type", ""),
+                "closure_state": res.get("closure_state", ""),
+                "sig": tokens(norm_id(res.get("id", "")) + " " + res.get("finding", "")),
+            })
+
+    # Greedy single-linkage clustering: join when the normalized id matches,
+    # or the entry is similar to ANY existing member (not the diluted union
+    # signature — union signatures shrink Jaccard as clusters grow and
+    # silently break true links).
+    clusters = []
+    for e in entries:
+        placed = False
+        for c in clusters:
+            if e["norm"] == c["norm"] or any(
+                jaccard(e["sig"], m["sig"]) >= args.similarity
+                for m in c["members"]
+            ):
+                c["members"].append(e)
+                c["runs"].add(e["run_id"])
+                placed = True
+                break
+        if not placed:
+            clusters.append({"norm": e["norm"], "runs": {e["run_id"]},
+                             "members": [e]})
+
+    systemic = [c for c in clusters if len(c["runs"]) >= args.min_runs]
+    systemic.sort(key=lambda c: (-len(c["runs"]), -len(c["members"])))
+
+    if as_json:
+        print(json.dumps([{
+            "pattern": c["norm"],
+            "runs": len(c["runs"]),
+            "occurrences": len(c["members"]),
+            "severities": sorted({m["severity"] for m in c["members"]}),
+            "ids": sorted({m["id"] for m in c["members"]}),
+            "open": sum(1 for m in c["members"] if m["closure_state"] == "open"),
+        } for c in systemic], ensure_ascii=False, indent=2))
+        return
+    if not systemic:
+        print(f"no pattern spans >= {args.min_runs} runs "
+              f"(try --min-runs 2 or lower --similarity)")
+        return
+    for c in systemic:
+        sev = Counter(m["severity"] for m in c["members"])
+        open_n = sum(1 for m in c["members"] if m["closure_state"] == "open")
+        sev_s = ",".join(f"{k}:{v}" for k, v in sev.most_common())
+        print(f"[{len(c['runs'])} runs / {len(c['members'])}x] {c['norm']}  "
+              f"({sev_s}; open={open_n})")
+        for m in c["members"][: args.show_members]:
+            print(f"    {m['date']} {m['run_id'][:8]} {m['id']}")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="quinte-insights",
+                                 description="cross-run residual knowledge base")
+    ap.add_argument("command", nargs="?", default="summary",
+                    choices=["stats", "residuals", "patterns", "summary"])
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--severity")
+    ap.add_argument("--type")
+    ap.add_argument("--run", help="run id prefix")
+    ap.add_argument("--limit", type=int, default=50)
+    ap.add_argument("--min-runs", type=int, default=2)
+    ap.add_argument("--similarity", type=float, default=0.12,
+                    help="Jaccard threshold for cross-run clustering; calibrated "
+                         "on real runs: true matches ~0.16, noise floor ~0.08")
+    ap.add_argument("--show-members", type=int, default=5)
+    args = ap.parse_args()
+
+    runs = list(load_runs())
+    if not runs:
+        print(f"no runs with result.json under {RUNS_DIR}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.command == "stats":
+        cmd_stats(runs, args.json)
+    elif args.command == "residuals":
+        cmd_residuals(runs, args, args.json)
+    elif args.command == "patterns":
+        cmd_patterns(runs, args, args.json)
+    else:
+        cmd_stats(runs, args.json)
+        if not args.json:
+            print()
+        cmd_patterns(runs, args, args.json)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass
