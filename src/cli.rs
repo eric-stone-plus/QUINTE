@@ -1,6 +1,6 @@
 use crate::doctor;
 use crate::error::{QuinteError, Result};
-use crate::model::{CliEnvelope, Policy, RunManifest, RunStatus};
+use crate::model::{ArbiterVerdict, Brief, CliEnvelope, Policy, RunManifest, RunStatus};
 use crate::policy;
 use crate::run::{self, RunOptions};
 use crate::store::Store;
@@ -46,6 +46,8 @@ pub(crate) enum Command {
     Credential(CredentialArgs),
     /// brief 向导与校验
     Brief(BriefArgs),
+    /// 校验 brief/verdict 文件的语法与 schema（只读，不改任何状态）
+    Validate(ValidateArgs),
     /// 输出 shell 补全脚本
     Completions(CompletionsArgs),
     #[command(name = "__worker", hide = true)]
@@ -192,6 +194,32 @@ pub(crate) struct BriefValidateArgs {
     file: PathBuf,
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ValidateArgs {
+    /// 校验目标类型：brief 议题书 / verdict 主仲裁裁决
+    #[arg(long, value_enum)]
+    kind: ValidateKind,
+    /// 待校验的 JSON 文件
+    file: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub(crate) enum ValidateKind {
+    Brief,
+    Verdict,
+}
+
+impl ValidateKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Brief => "brief",
+            Self::Verdict => "verdict",
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -543,6 +571,42 @@ pub(crate) fn execute_command(
                 Ok(if ok { 0 } else { 2 })
             }
         },
+        Command::Validate(args) => {
+            // 与 submit/run 共用同一条 read_json 路径：语法错误与 schema
+            // 不符在这里拆成两段字段级报错，退出码 0/1。
+            let result = match args.kind {
+                ValidateKind::Brief => read_json::<Brief>(&args.file).map(|_| ()),
+                ValidateKind::Verdict => read_json::<ArbiterVerdict>(&args.file).map(|_| ()),
+            };
+            let kind = args.kind.as_str();
+            match result {
+                Ok(()) => {
+                    emit(
+                        args.json,
+                        json!({"kind": kind, "file": args.file, "valid": true}),
+                        format!(
+                            "{} {} is a valid {kind}",
+                            ui::paint(Tone::Ok, ui::mark_ok()),
+                            args.file.display()
+                        ),
+                    )?;
+                    Ok(0)
+                }
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    emit(
+                        args.json,
+                        json!({"kind": kind, "file": args.file, "valid": false, "error": message}),
+                        format!(
+                            "{} {} is not a valid {kind}: {message}",
+                            ui::paint(Tone::Fail, ui::mark_fail()),
+                            args.file.display()
+                        ),
+                    )?;
+                    Ok(1)
+                }
+            }
+        }
         Command::Completions(args) => match crate::completions::render(&args.shell) {
             Some(script) => {
                 eprintln!("{}", crate::completions::install_hint(&args.shell));

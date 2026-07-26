@@ -1,7 +1,7 @@
 //! `quinte completions <bash|zsh|fish>` — 手写补全脚本（静态字符串，无外部 crate）。
 
-const SUBCOMMANDS: &str = "init status doctor run wait resume cancel inspect primary-arbiter agents policy credential brief completions";
-const COMMON_FLAGS: &str = "--brief --wait --json --response --verdict --force --home";
+const SUBCOMMANDS: &str = "init status doctor run wait resume cancel inspect primary-arbiter agents policy credential brief validate completions";
+const COMMON_FLAGS: &str = "--brief --wait --json --response --verdict --force --kind --home";
 
 pub const BASH: &str = r#"# quinte bash completion — 安装：quinte completions bash > ~/.local/share/bash-completion/completions/quinte
 _quinte() {
@@ -47,6 +47,15 @@ _quinte() {
                 return 0
             fi
             ;;
+        validate)
+            if [ "$cword" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "--kind" -- "$cur"))
+                return 0
+            elif [ "$cword" -eq 3 ] && [ "${words[2]}" = "--kind" ]; then
+                COMPREPLY=($(compgen -W "brief verdict" -- "$cur"))
+                return 0
+            fi
+            ;;
         completions)
             if [ "$cword" -eq 2 ]; then
                 COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur"))
@@ -89,6 +98,12 @@ _quinte() {
             elif (( CURRENT == 4 )) && [[ "$words[3]" == new ]]; then
                 compadd -- --print-template && return
             fi ;;
+        validate)
+            if (( CURRENT == 3 )); then
+                compadd -- --kind && return
+            elif (( CURRENT == 4 )) && [[ "$words[3]" == "--kind" ]]; then
+                compadd brief verdict && return
+            fi ;;
         completions)
             (( CURRENT == 3 )) && compadd bash zsh fish && return ;;
     esac
@@ -102,7 +117,7 @@ _quinte "$@"
 "#;
 
 pub const FISH: &str = r#"# quinte fish completion — 安装：quinte completions fish > ~/.config/fish/completions/quinte.fish
-# 覆盖 flags: --brief --wait --json --response --verdict --force --home（fish 写法为 -l <name>）
+# 覆盖 flags: --brief --wait --json --response --verdict --force --kind --home（fish 写法为 -l <name>）
 function __fish_quinte_needs_command
     set -l cmd (commandline -opc)
     test (count $cmd) -eq 1
@@ -119,6 +134,7 @@ complete -f -c quinte -n '__fish_quinte_using_command agents' -a 'list describe'
 complete -f -c quinte -n '__fish_quinte_using_command policy' -a 'show validate'
 complete -f -c quinte -n '__fish_quinte_using_command credential' -a 'status'
 complete -f -c quinte -n '__fish_quinte_using_command brief' -a 'new validate'
+complete -f -c quinte -n '__fish_quinte_using_command validate' -l kind -r -a 'brief verdict'
 complete -f -c quinte -n '__fish_quinte_using_command completions' -a 'bash zsh fish'
 complete -f -c quinte -l brief -r
 complete -f -c quinte -l wait
@@ -184,11 +200,20 @@ mod tests {
                 "policy",
                 "credential",
                 "brief",
+                "validate",
                 "completions",
             ] {
                 assert!(script.contains(sub), "{shell} 缺 {sub}");
             }
-            for flag in ["--brief", "--wait", "--json", "--response", "--verdict"] {
+            for flag in [
+                "--brief",
+                "--wait",
+                "--json",
+                "--response",
+                "--verdict",
+                "--force",
+                "--kind",
+            ] {
                 assert!(script.contains(flag), "{shell} 缺 {flag}");
             }
         }
