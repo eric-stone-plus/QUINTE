@@ -982,10 +982,12 @@ fn has_unusable_final_candidate(content: &str) -> bool {
 }
 
 /// Returns true when a JsonEvents stream (opencode/kilo/mimo family) reached a
-/// terminal step but its final text payload ends in an unusable LaneOutput
-/// candidate, or when a raw-JSON stream (OmpJson) is itself unusable. The
-/// provider cut or corrupted the response, which is transient and worth a
-/// bounded retry.
+/// terminal step but produced no text payload at all (an empty completion), or
+/// its final text payload ends in an unusable LaneOutput candidate, or when a
+/// raw-JSON stream (OmpJson) is itself unusable. The provider cut or corrupted
+/// the response — or rolled an empty turn — which is transient and worth a
+/// bounded retry. Non-empty output that merely fails the schema stays a
+/// permanent, non-retryable contract failure.
 pub fn events_completed_with_unusable_final_candidate(stdout: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(stdout) else {
         return false;
@@ -1018,7 +1020,10 @@ pub fn events_completed_with_unusable_final_candidate(stdout: &[u8]) -> bool {
             _ => {}
         }
     }
-    saw_terminal_step && !content.is_empty() && has_unusable_final_candidate(&content)
+    // A terminal stop with zero text is an empty completion: the model rolled
+    // a no-output turn, which is transient, unlike non-empty output that fails
+    // the schema (a permanent contract failure).
+    saw_terminal_step && (content.is_empty() || has_unusable_final_candidate(&content))
 }
 
 fn extract_json_from_text(stdout: &[u8]) -> anyhow::Result<LaneOutput> {
@@ -2579,6 +2584,37 @@ mod tests {
             0xff, 0xfe
         ]));
         assert!(!events_completed_with_unusable_final_candidate(b""));
+    }
+
+    #[test]
+    fn events_completed_with_empty_text_is_unusable() {
+        // Terminal stop with an explicitly empty text event: the model rolled
+        // an empty completion, which is transient.
+        let empty_text = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": ""}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(events_completed_with_unusable_final_candidate(
+            empty_text.as_bytes()
+        ));
+
+        // Terminal stop with no text events at all (tool calls only) is the
+        // same empty completion.
+        let no_text = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "tool_use", "part": {"tool": "read"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(events_completed_with_unusable_final_candidate(
+            no_text.as_bytes()
+        ));
+
+        // Empty output without a terminal stop step is not a completed turn.
+        let no_terminal = serde_json::json!({"type": "text", "part": {"text": ""}});
+        assert!(!events_completed_with_unusable_final_candidate(
+            no_terminal.to_string().as_bytes()
+        ));
     }
 
     #[test]

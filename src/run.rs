@@ -4089,7 +4089,7 @@ mod retry_tests {
         validate_arbiter_semantics, validate_evidence_refs, validate_unique_claim_ids,
         validate_unique_residual_ids, verdict_looks_degenerate,
     };
-    use crate::adapters::OutputKind;
+    use crate::adapters::{self, OutputKind};
     use crate::contract::BRIEF_VERSION;
     use crate::model::{
         ArbiterVerdict, Brief, ClosureState, Disposition, LaneOutput, Residual, RunManifest,
@@ -5092,6 +5092,156 @@ mod retry_tests {
         );
         assert!(error.unwrap().contains("no valid LaneOutput"));
         assert_eq!(retry, RetryClass::Never);
+    }
+
+    #[test]
+    fn completed_empty_text_stream_is_transient_adapter() {
+        // (a) Terminal stop with zero text output is an empty completion: the
+        // model rolled a no-output turn, which is transient across runs.
+        let empty_text = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": ""}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(adapters::events_completed_with_unusable_final_candidate(
+            empty_text.as_bytes()
+        ));
+        let (output, error, retry) = evaluate_attempt_output(
+            "opencode",
+            OutputKind::JsonEvents,
+            empty_text.as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert!(error.unwrap().contains("no valid LaneOutput"));
+        assert_eq!(retry, RetryClass::TransientAdapter);
+
+        // Same empty completion with no text events at all (tool calls only).
+        let no_text = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "tool_use", "part": {"tool": "read"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        let (_, _, retry) = evaluate_attempt_output(
+            "kilo",
+            OutputKind::JsonEvents,
+            no_text.as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert_eq!(retry, RetryClass::TransientAdapter);
+
+        // (b) Terminal stop with complete but schema-invalid content stays a
+        // permanent contract failure: never retried.
+        let schema_invalid = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": "{\"lane_output_version\":\"1.0\",\"task_restatement\":\"missing fields\"}"}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(!adapters::events_completed_with_unusable_final_candidate(
+            schema_invalid.as_bytes()
+        ));
+        let (output, error, retry) = evaluate_attempt_output(
+            "opencode",
+            OutputKind::JsonEvents,
+            schema_invalid.as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert!(error.unwrap().contains("no valid LaneOutput"));
+        assert_eq!(retry, RetryClass::Never);
+
+        // (c) Terminal stop with a valid LaneOutput payload parses cleanly.
+        let valid = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "bounded task",
+            "verdict": "all good",
+            "confidence": 0.9,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let valid_stream = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": valid.to_string()}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        let (output, error, retry) = evaluate_attempt_output(
+            "opencode",
+            OutputKind::JsonEvents,
+            valid_stream.as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert_eq!(output.unwrap().verdict, "all good");
+        assert_eq!(error, None);
+        assert_eq!(retry, RetryClass::Never);
+    }
+
+    #[test]
+    fn completed_codewhale_with_empty_content_is_transient_adapter() {
+        // Completed codewhale stream whose assembled content is empty (no
+        // JSON candidate at all) is the same transient empty completion.
+        let stdout = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({"type": "content", "content": ""}),
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        assert!(adapters::codewhale_completed_with_retryable_content(
+            stdout.as_bytes()
+        ));
+        let (output, error, retry) = evaluate_attempt_output(
+            "codewhale",
+            OutputKind::CodewhaleStream,
+            stdout.as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert!(error.unwrap().contains("no valid LaneOutput"));
+        assert_eq!(retry, RetryClass::TransientAdapter);
+
+        // No content events at all (tool calls only) behaves identically.
+        let no_content = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "metadata", "meta": {"status": "completed"}}),
+            serde_json::json!({"type": "done"})
+        );
+        let (_, _, retry) = evaluate_attempt_output(
+            "codewhale",
+            OutputKind::CodewhaleStream,
+            no_content.as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert_eq!(retry, RetryClass::TransientAdapter);
     }
 
     #[test]
