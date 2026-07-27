@@ -115,6 +115,7 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
         multimodal_model: "mimo-v2.5".into(),
         max_parallel_r1: 5,
         max_parallel_r2: 1,
+        r2_parallel: false,
         max_attempts: 1,
         timeout_seconds: 30,
         retry_backoff_seconds: 0,
@@ -1187,6 +1188,72 @@ fn r2_rate_limit_retries_same_route_with_persisted_scheduler_events() {
     assert!(events.contains("\"failure_class\":\"rate_limit\""));
     assert!(events.contains("lane.retry_started"));
     assert!(events.contains("r2.pacing_wait"));
+}
+
+#[test]
+fn r2_parallel_fans_out_lanes_without_serial_pacing() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    // Barrier probe: every R2 lane registers its start and then blocks until
+    // all five parties have registered. Serial scheduling cannot release the
+    // barrier before its 30s deadlock timeout, so a fast advance proves the
+    // parallel fan-out actually happened.
+    fs::write(temporary.path().join("fake-agent-r2-barrier"), "5\n").unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.r2_parallel = true;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: BRIEF_VERSION.into(),
+            question: "Does r2_parallel fan out the cross-examination?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
+        },
+    )
+    .unwrap();
+
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+    let started_at = Instant::now();
+    assert_eq!(
+        run::advance(&store, &created.run_id).unwrap(),
+        RunStatus::WaitingPrimaryArbiter
+    );
+    assert!(
+        started_at.elapsed() < Duration::from_secs(25),
+        "R2 barrier must be released by concurrent lane starts, not by its serial deadlock timeout"
+    );
+
+    let run_dir = store.run_dir(&created.run_id).unwrap();
+    for index in 0..5 {
+        assert!(
+            run_dir
+                .join(format!("lanes/R2/fake-{index}/accepted.json"))
+                .is_file()
+        );
+    }
+    let registered =
+        fs::read_to_string(temporary.path().join("fake-agent-r2-barrier-started")).unwrap();
+    for party in ["Party A", "Party B", "Party C", "Party D", "Party E"] {
+        assert!(registered.contains(party), "R2 lane {party} never started");
+    }
+    // Parallel R2 replaces serial pacing with the fan-out soft-stagger: no
+    // pacing state file and no pacing events may be produced.
+    let events = fs::read_to_string(run_dir.join("events.jsonl")).unwrap();
+    assert!(!events.contains("r2.pacing_wait"));
+    assert!(!run_dir.join("diagnostics/r2-rate-state.json").exists());
 }
 
 #[test]

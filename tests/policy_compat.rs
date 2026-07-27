@@ -147,3 +147,30 @@ fn old_and_new_arbiter_fields_together_are_rejected_as_ambiguous() {
     assert!(error.contains("invalid JSON in"));
     assert!(detail.contains("duplicate field"));
 }
+
+#[test]
+fn r2_parallel_defaults_false_for_legacy_policies_and_parses_when_present() {
+    let home = tempdir().unwrap();
+    let policy_path = home.path().join("policy.json");
+
+    // Pre-0.1.8 policy.json has no r2_parallel key; it must load as serial.
+    let mut legacy = serde_json::to_value(default_policy()).unwrap();
+    legacy.as_object_mut().unwrap().remove("r2_parallel");
+    fs::write(&policy_path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+    let policy = quinte::policy::load(&policy_path).unwrap();
+    assert!(!policy.r2_parallel);
+    quinte::policy::validate(&policy).unwrap();
+
+    // The opt-in switch is honored when explicitly present, in both states.
+    let mut parallel = legacy.clone();
+    parallel["r2_parallel"] = json!(true);
+    fs::write(&policy_path, serde_json::to_vec_pretty(&parallel).unwrap()).unwrap();
+    let policy = quinte::policy::load(&policy_path).unwrap();
+    assert!(policy.r2_parallel);
+    quinte::policy::validate(&policy).unwrap();
+
+    let mut serial = legacy;
+    serial["r2_parallel"] = json!(false);
+    fs::write(&policy_path, serde_json::to_vec_pretty(&serial).unwrap()).unwrap();
+    assert!(!quinte::policy::load(&policy_path).unwrap().r2_parallel);
+}

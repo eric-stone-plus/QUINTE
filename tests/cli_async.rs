@@ -146,6 +146,7 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
         multimodal_model: "mimo-v2.5".into(),
         max_parallel_r1: 5,
         max_parallel_r2: 1,
+        r2_parallel: false,
         max_attempts: 1,
         timeout_seconds: 30,
         retry_backoff_seconds: 0,

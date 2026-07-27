@@ -34,6 +34,11 @@ pacing, soft-staggers R1 starts, makes at most three same-route attempts, and
 applies typed 15-to-120-second bounded backoff. Do not add sleeps, retries, or
 lane logic in the host skill.
 
+Policy switch `r2_parallel` (default `false`) opts into parallel R2: lanes fan
+out with the same soft-stagger as R1 instead of serial pacing. The switch
+changes only the rate-limit profile, never a lane's information set — in both
+modes every R2 lane sees only the anonymized R1 packet, never other R2 outputs.
+
 When the user explicitly asks for a QUINTE review, actually invoke the
 `quinte` CLI. Manual analysis must not be presented as a QUINTE result.
 

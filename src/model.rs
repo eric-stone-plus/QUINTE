@@ -39,6 +39,15 @@ pub struct Policy {
     pub multimodal_model: String,
     pub max_parallel_r1: usize,
     pub max_parallel_r2: usize,
+    /// Opt-in R2 fan-out switch (0.1.8). `false` keeps the historical serial
+    /// R2 schedule with `r2_min_interval_seconds` inter-call pacing;
+    /// `true` schedules R2 lanes concurrently with the same soft-stagger as
+    /// R1. The information set is identical in both modes: every R2 lane sees
+    /// only the anonymized R1 packet, never other R2 outputs — the switch
+    /// changes only the rate-limit profile (pacing vs. stagger), not what any
+    /// lane can read. Missing in pre-0.1.8 policy files; defaults to `false`.
+    #[serde(default)]
+    pub r2_parallel: bool,
     pub max_attempts: usize,
     pub timeout_seconds: u64,
     pub retry_backoff_seconds: u64,

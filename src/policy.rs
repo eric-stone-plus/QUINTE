@@ -22,6 +22,8 @@ struct CompatiblePolicy {
     multimodal_model: String,
     max_parallel_r1: usize,
     max_parallel_r2: usize,
+    #[serde(default)]
+    r2_parallel: bool,
     max_attempts: usize,
     timeout_seconds: u64,
     retry_backoff_seconds: u64,
@@ -56,6 +58,8 @@ pub fn default_policy() -> Policy {
         multimodal_model: MULTIMODAL_MODEL.to_string(),
         max_parallel_r1: 5,
         max_parallel_r2: 1,
+        // Serial R2 with pacing remains the default; r2_parallel is opt-in.
+        r2_parallel: false,
         max_attempts: 3,
         // Hang recovery: real R1 lanes typically finish in 1–4 min. 300s fails
         // stuck adapters faster without starving healthy long reviews; R2 stays
@@ -122,6 +126,7 @@ fn read_compatible(path: &Path) -> anyhow::Result<Policy> {
         multimodal_model: compatible.multimodal_model,
         max_parallel_r1: compatible.max_parallel_r1,
         max_parallel_r2: compatible.max_parallel_r2,
+        r2_parallel: compatible.r2_parallel,
         max_attempts: compatible.max_attempts,
         timeout_seconds: compatible.timeout_seconds,
         retry_backoff_seconds: compatible.retry_backoff_seconds,

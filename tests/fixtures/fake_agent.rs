@@ -269,6 +269,39 @@ fn main() {
         }
     }
 
+    // Parallel-R2 probe: every R2 lane registers its start, then blocks until
+    // all five parties have registered. Serial scheduling can never release
+    // the barrier before the deadline, so a fast release proves fan-out.
+    let r2_barrier = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fake-agent-r2-barrier");
+    if args[0] == "R2" && r2_barrier.exists() {
+        let started = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fake-agent-r2-barrier-started");
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&started)
+            .unwrap();
+        writeln!(file, "{}", args[1]).unwrap();
+        drop(file);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let count = fs::read_to_string(&started)
+                .map(|content| content.lines().filter(|line| !line.trim().is_empty()).count())
+                .unwrap_or(0);
+            if count >= 5 || std::time::Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     let prose_429_party = std::env::current_exe()
         .unwrap()
         .parent()

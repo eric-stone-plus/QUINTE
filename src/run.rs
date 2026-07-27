@@ -582,8 +582,9 @@ fn persist_r2_pacing_until(
     )
 }
 
-/// Inter-start delay for R1 parallel fan-out. Zero under fake-adapter tests.
-fn r1_start_stagger() -> Duration {
+/// Inter-start delay for parallel lane fan-out (R1, and R2 under the
+/// `r2_parallel` policy switch). Zero under fake-adapter tests.
+fn parallel_start_stagger() -> Duration {
     if std::env::var_os("QUINTE_ALLOW_FAKE_ADAPTERS").is_some() {
         return Duration::ZERO;
     }
@@ -2166,7 +2167,13 @@ fn run_phase(
         .cloned()
         .collect::<Vec<_>>();
 
-    if phase == "R1" {
+    // R1 always fans out; R2 fans out only under the opt-in `r2_parallel`
+    // policy switch. Both share this scheduler. The switch changes only the
+    // rate-limit profile (serial inter-call pacing vs. parallel soft-stagger),
+    // never a lane's information set: every R2 lane sees only the anonymized
+    // R1 packet, and no lane ever reads another same-phase lane's output.
+    let parallel_fan_out = phase == "R1" || (phase == "R2" && policy.r2_parallel);
+    if parallel_fan_out {
         // Build every invocation before spawning any lane. A later build failure can
         // therefore never detach already-running children from scheduler ownership.
         let pending = missing
@@ -2194,17 +2201,17 @@ fn run_phase(
             prepared.push((route, attempt, invocation));
         }
 
-        // Soft-stagger R1 starts so five same-family model routes do not all
-        // hit the provider in the same second (primary 429 source). Total lag
-        // is (n-1)*stagger and is recovered many times over when a single 429
-        // retry is avoided. Fake-adapter tests set QUINTE_ALLOW_FAKE_ADAPTERS
+        // Soft-stagger parallel starts so five same-family model routes do not
+        // all hit the provider in the same second (primary 429 source). Total
+        // lag is (n-1)*stagger and is recovered many times over when a single
+        // 429 retry is avoided. Fake-adapter tests set QUINTE_ALLOW_FAKE_ADAPTERS
         // and skip the sleep so e2e stays fast.
-        let r1_stagger = r1_start_stagger();
+        let stagger = parallel_start_stagger();
         let mut jobs = Vec::new();
         let mut spawn_cancelled = false;
         for (index, (route, attempt, invocation)) in prepared.into_iter().enumerate() {
-            if index > 0 && !r1_stagger.is_zero() {
-                if wait_cancellable(&run_dir, r1_stagger) {
+            if index > 0 && !stagger.is_zero() {
+                if wait_cancellable(&run_dir, stagger) {
                     let _ = cancel_run(store, manifest);
                     spawn_cancelled = true;
                     break;
@@ -2238,7 +2245,7 @@ fn run_phase(
             });
         }
 
-        // Always join every spawned R1 lane before interpreting any output. In
+        // Always join every spawned lane before interpreting any output. In
         // particular, an invalid early lane must not orphan remaining children.
         let mut finished = Vec::new();
         let mut join_errors = Vec::new();
@@ -2253,7 +2260,7 @@ fn run_phase(
             bail!("run cancelled");
         }
         if !join_errors.is_empty() {
-            bail!("R1 lane execution failed: {}", join_errors.join("; "));
+            bail!("{phase} lane execution failed: {}", join_errors.join("; "));
         }
 
         let mut acceptance_errors = Vec::new();
@@ -2274,9 +2281,14 @@ fn run_phase(
             }
         }
         if !acceptance_errors.is_empty() {
-            bail!("R1 acceptance failed: {}", acceptance_errors.join("; "));
+            bail!(
+                "{phase} acceptance failed: {}",
+                acceptance_errors.join("; ")
+            );
         }
     } else {
+        // Serial R2 loop (the default): one lane at a time with persisted
+        // inter-call pacing — the anti-429 rate-limit profile.
         for route in missing {
             let attempt = next_attempt(&run_dir, phase, &route.route_id, policy.max_attempts)?;
             wait_for_retry_deadline(store, manifest, phase, &route, attempt)?;
@@ -2486,7 +2498,11 @@ fn run_retry_attempt(
         retry,
         schedule.source,
     )?;
-    if phase == "R2" {
+    // R2 inter-call pacing exists only in the default serial mode; parallel
+    // R2 (r2_parallel) replaces pacing with the fan-out soft-stagger, so
+    // retries skip the shared pacing state as well.
+    let r2_serial_pacing = phase == "R2" && !policy.r2_parallel;
+    if r2_serial_pacing {
         let reason = if matches!(retry, RetryClass::RateLimited(_)) {
             "rate_limit_backoff"
         } else {
@@ -2516,7 +2532,7 @@ fn run_retry_attempt(
         .checked_add(1)
         .ok_or_else(|| anyhow!("attempt history overflow for {phase}/{}", route.route_id))?;
     wait_for_retry_deadline(store, manifest, phase, route, attempt)?;
-    if phase == "R2" {
+    if r2_serial_pacing {
         wait_for_r2_pacing(store, manifest, route, attempt)?;
     }
     store.event(
@@ -2549,7 +2565,7 @@ fn run_retry_attempt(
         policy.max_output_bytes,
         policy.max_attempts,
     )?;
-    if phase == "R2" {
+    if r2_serial_pacing {
         persist_r2_pacing(
             store,
             manifest,
