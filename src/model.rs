@@ -186,6 +186,10 @@ pub struct LaneOutput {
     pub claims: Vec<Claim>,
     pub residuals: Vec<Residual>,
     pub uncertainties: Vec<String>,
+    /// Structured aporia (0.1.8): what this analysis could NOT establish.
+    /// Missing in pre-0.1.8 lane artifacts; defaults to an empty list.
+    #[serde(default)]
+    pub limitations: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -196,6 +200,14 @@ pub struct Claim {
     pub evidence_refs: Vec<String>,
     pub confidence: f64,
     pub category: String,
+    /// Toulmin warrant (0.1.8): why the cited evidence supports this claim.
+    /// Missing in pre-0.1.8 lane artifacts; defaults to `None`.
+    #[serde(default)]
+    pub warrant: Option<String>,
+    /// Toulmin qualifier (0.1.8): scope and preconditions bounding the claim.
+    /// Missing in pre-0.1.8 lane artifacts; defaults to `None`.
+    #[serde(default)]
+    pub qualifier: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

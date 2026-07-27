@@ -241,8 +241,21 @@ pub fn build(
     let phase_contract = if phase == "R3" {
         "Return one JSON object with exactly these fields: arbiter_verdict_version (\"1.0\"), summary, recommendation, residuals. summary states WHAT WAS FOUND (evidence-weighted findings and judgments); recommendation states WHAT TO DO (actions, sequencing, gates) and must add decision value beyond summary — never restate it. Keep residuals to the decisive ones (aim for five or fewer): duplicate findings raised by multiple parties must be merged into one residual with combined severity, never listed separately. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation.".to_string()
     } else {
+        // Phase-specific analysis duties, split by phase like the R3 branch
+        // above. R1 lanes argue in Toulmin form and close with an honest
+        // aporia; R2 lanes interrogate R1 claims and must steel-man before
+        // challenging. Both phases emit the same LaneOutput wire shape.
+        let phase_requirements = match phase {
+            "R1" => {
+                " For every claim, fill warrant (why the cited evidence actually supports this claim) and qualifier (the scope and preconditions that bound it). Declare at least one honest limitations entry stating what this analysis could NOT establish; an analysis without an explicit evidence boundary is incomplete."
+            }
+            "R2" => {
+                " Before challenging any participant claim, first restate that claim in its strongest defensible form (steel-man); never attack a weakened paraphrase. For every claim you challenge, name the auxiliary assumption whose falsity would collapse it."
+            }
+            _ => "",
+        };
         format!(
-            "Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters. Return JSON conforming exactly to this schema and invent no fields. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation:\n{schema_compact}"
+            "Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters.{phase_requirements} Return JSON conforming exactly to this schema and invent no fields. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation:\n{schema_compact}"
         )
     };
     let task_prompt = format!(

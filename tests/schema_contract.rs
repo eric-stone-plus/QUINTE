@@ -87,6 +87,53 @@ fn lane_output_rejects_unknown_nested_field() {
 }
 
 #[test]
+fn lane_output_legacy_documents_without_toulmin_fields_still_validate() {
+    // Pre-0.1.8 accepted.json: claims carry no warrant/qualifier and the
+    // output has no limitations list. Both the JSON schema and the typed
+    // contract must keep accepting that shape (backward compatibility).
+    let legacy = common::valid_lane_output();
+    let bytes = serde_json::to_vec(&legacy).unwrap();
+    let output = parse_and_validate::<LaneOutput>(&bytes, LANE_OUTPUT_SCHEMA).unwrap();
+
+    assert!(output.claims[0].warrant.is_none());
+    assert!(output.claims[0].qualifier.is_none());
+    assert!(output.limitations.is_empty());
+}
+
+#[test]
+fn lane_output_toulmin_fields_and_limitations_roundtrip() {
+    let mut value = common::valid_lane_output();
+    value["claims"][0]["warrant"] =
+        serde_json::json!("the cited diff removes the only null check on this path");
+    value["claims"][0]["qualifier"] =
+        serde_json::json!("holds only for builds with assertions enabled");
+    value["limitations"] =
+        serde_json::json!(["cannot establish absence of races without a stress run"]);
+    let bytes = serde_json::to_vec(&value).unwrap();
+    let output = parse_and_validate::<LaneOutput>(&bytes, LANE_OUTPUT_SCHEMA).unwrap();
+
+    assert_eq!(
+        output.claims[0].warrant.as_deref(),
+        Some("the cited diff removes the only null check on this path")
+    );
+    assert_eq!(
+        output.claims[0].qualifier.as_deref(),
+        Some("holds only for builds with assertions enabled")
+    );
+    assert_eq!(
+        output.limitations,
+        vec!["cannot establish absence of races without a stress run".to_string()]
+    );
+
+    // A serde roundtrip through the typed contract preserves the new fields.
+    let reparsed: LaneOutput =
+        serde_json::from_str(&serde_json::to_string(&output).unwrap()).unwrap();
+    assert_eq!(reparsed.claims[0].warrant, output.claims[0].warrant);
+    assert_eq!(reparsed.claims[0].qualifier, output.claims[0].qualifier);
+    assert_eq!(reparsed.limitations, output.limitations);
+}
+
+#[test]
 fn lane_output_rejects_invalid_utf8_before_json_parsing() {
     let error =
         parse_and_validate::<LaneOutput>(&[b'{', 0xff, b'}'], LANE_OUTPUT_SCHEMA).unwrap_err();

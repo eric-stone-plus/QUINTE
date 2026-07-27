@@ -4503,6 +4503,7 @@ mod retry_tests {
                 claims: vec![],
                 residuals: vec![residual],
                 uncertainties: vec![],
+                limitations: vec![],
             },
             artifact_ref: format!("lanes/R1/{id}/accepted.json"),
         }
@@ -4560,6 +4561,7 @@ mod retry_tests {
                     claims: vec![],
                     residuals: vec![],
                     uncertainties: vec![],
+                    limitations: vec![],
                 },
                 artifact_ref: format!("lanes/R1/{}/accepted.json", route.route_id),
             })
