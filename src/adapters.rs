@@ -996,9 +996,11 @@ pub fn events_completed_with_unusable_final_candidate(stdout: &[u8]) -> bool {
     let mut saw_terminal_step = false;
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
-            // A line that is not valid JSON (for example a raw-JSON adapter
-            // truncated mid payload) makes the whole stream the candidate.
-            return has_unusable_final_candidate(text);
+            // A line that is not valid JSON (a raw-JSON adapter truncated mid
+            // payload or corrupt quoting, e.g. unescaped quotes inside a string)
+            // makes the whole stream the candidate. No braces at all means the
+            // adapter returned pure prose — the same no-payload turn.
+            return !text.contains('{') || has_unusable_final_candidate(text);
         };
         match value.get("type").and_then(Value::as_str) {
             Some("text") => {

@@ -2860,7 +2860,9 @@ fn evaluate_attempt_output(
                 && adapters::codewhale_completed_with_retryable_content(stdout)
                 || matches!(
                     output_kind,
-                    adapters::OutputKind::JsonEvents | adapters::OutputKind::OmpJson
+                    adapters::OutputKind::JsonEvents
+                        | adapters::OutputKind::OmpJson
+                        | adapters::OutputKind::TextJson
                 ) && adapters::events_completed_with_unusable_final_candidate(stdout);
             let retry = if truncated_completion {
                 RetryClass::TransientAdapter
@@ -5119,6 +5121,38 @@ mod retry_tests {
         );
         assert!(output.is_none());
         assert!(error.unwrap().contains("no valid LaneOutput"));
+        assert_eq!(retry, RetryClass::TransientAdapter);
+
+        // TextJson (omp) with corrupt quoting — unescaped double quotes inside
+        // a string value make the whole payload unparseable. That is a corrupt
+        // provider payload, transient, not a schema contract failure.
+        let corrupt =
+            br#"{"lane_output_version":"1.0","verdict":"bad "quote" inside","confidence":0.5}"#;
+        let (_, _, retry) = evaluate_attempt_output(
+            "omp",
+            OutputKind::TextJson,
+            corrupt,
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert_eq!(retry, RetryClass::TransientAdapter);
+
+        // TextJson pure prose with no JSON candidate at all: same no-payload turn.
+        let (_, _, retry) = evaluate_attempt_output(
+            "omp",
+            OutputKind::TextJson,
+            b"plain prose, no payload",
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
         assert_eq!(retry, RetryClass::TransientAdapter);
 
         // Same empty completion with no text events at all (tool calls only).
