@@ -482,6 +482,30 @@ pub(crate) fn execute_command(
                     json!({"run_id": args.run_id, "status": status}),
                     format_status(&args.run_id, status),
                 )?;
+                // Post-completion: automatically run external audit via
+                // quinte-audit if available on PATH.  Non-blocking failure
+                // (audit is advisory — the run is already complete).
+                if status == RunStatus::Completed {
+                    let audit_result = std::process::Command::new("quinte-audit")
+                        .arg(&args.run_id)
+                        .status();
+                    match audit_result {
+                        Ok(es) if es.success() => {
+                            eprintln!("external audit: PASS (r3/external-audit.json)");
+                        }
+                        Ok(es) => {
+                            eprintln!(
+                                "external audit: exited {es} — read r3/external-audit.json"
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "external audit skipped ({e}); run manually: quinte-audit {}",
+                                args.run_id
+                            );
+                        }
+                    }
+                }
                 Ok(status_code(status))
             }
             PrimaryArbiterCommand::Amend(args) => {

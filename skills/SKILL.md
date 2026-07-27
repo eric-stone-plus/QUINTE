@@ -138,26 +138,27 @@ Use `quinte resume <run-id> --json` after an interrupted scheduler process,
 only for an explicit cancellation. Ctrl-C on `wait` returns `130` without
 cancelling the run.
 
-## External Audit (post-completion, optional)
+## External Audit (post-completion, automatic)
 
-For high-stakes runs, audit the verdict with an independent model that is NOT
-in the QUINTE roster before human acceptance:
+After `primary-arbiter submit` returns `completed`, the CLI automatically runs
+`quinte-audit <run-id>` as a post-completion hook (non-blocking failure — the
+run is already complete). The auditor is an independent model (reasonix/
+deepseek-v4-pro) NOT in the QUINTE roster. If `quinte-audit` is not on PATH,
+the CLI prints a fallback message with the manual command.
 
-1. Run `quinte-audit <run-id>` (defaults: latest completed via `--latest`,
-   auditor `reasonix/deepseek-v4-pro`, `--effort max` fixed). The script reads
-   `result.json` (+ `r3/cc-response.json` when present), asks the auditor to
-   check composition fidelity, evidence support, blind spots, and
-   actionability.
+1. The script reads `result.json` (+ `r3/cc-response.json` when present), asks
+   the auditor to check composition fidelity, evidence support, blind spots,
+   and actionability.
 2. It writes `r3/external-audit.json` — an additive artifact; `result.json`,
    `manifest.json`, and the hash chain are never modified.
 3. Verdicts: `PASS` (adopt), `PASS_WITH_NOTES` (adopt after reading findings),
    `FAIL` (do NOT adopt — route the findings back as a new brief or amend).
    `UNPARSED` means the auditor's output was not clean JSON; read
    `audit_raw` in the artifact and re-run once before trusting it.
+4. Manual invocation: `quinte-audit <run-id>` or `quinte-audit --latest`.
 
-This is a host-layer step, not a protocol round: the QUINTE state machine and
-R3 dual-arbiter structure are untouched. Audit independence is the point —
-never substitute a roster member as the auditor.
+Audit independence is the point — never substitute a roster member as the
+auditor.
 
 ## Contract Ownership
 
