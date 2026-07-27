@@ -184,7 +184,9 @@ def main() -> int:
 
     r3_dir = run_dir / "r3"
     r3_dir.mkdir(exist_ok=True)
-    out_path = r3_dir / "external-audit.json"
+    # mode-specific filename so a paradigm audit never overwrites the standard one
+    out_path = r3_dir / ("external-audit.json" if args.mode == "standard"
+                         else f"external-audit-{args.mode}.json")
     out_path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2))
 
     if args.json:
