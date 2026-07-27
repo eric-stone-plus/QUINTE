@@ -1554,6 +1554,12 @@ pub fn submit_primary_arbiter_verdict(
     }
     let verdict: ArbiterVerdict = read_json(verdict_path)?;
     ensure_verdict_not_degenerate(&verdict, force)?;
+    // Fail fast, before any staging side effects: an invalid verdict
+    // (e.g. unresolvable evidence_refs/closure_evidence) must bail here.
+    // Previously the failure surfaced only inside the durable-acceptance
+    // step AFTER the receipt and r3/primary-arbiter-response.json were
+    // already written, poisoning the challenge for every later attempt.
+    validate_arbiter_semantics(&verdict, &run_dir)?;
     let manifest = store.load_manifest(run_id)?;
     let challenge = manifest
         .primary_arbiter_challenge

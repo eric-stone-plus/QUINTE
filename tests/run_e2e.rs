@@ -546,6 +546,40 @@ fn verdict_schema_error_is_not_reported_as_a_syntax_error() {
     );
 }
 
+#[test]
+fn invalid_verdict_fails_before_any_staging_side_effects() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, _) = create_waiting_run(temporary.path(), &executable, "pre-stage");
+    let bad = temporary.path().join("bad-ref-verdict.json");
+    // schema-valid verdict whose closure_evidence points at the filesystem
+    // instead of snapshot:// refs — must fail semantic validation early.
+    fs::write(
+        &bad,
+        r#"{"arbiter_verdict_version":"1.0","summary":"A long enough summary text.","recommendation":"A long enough recommendation.","residuals":[{"id":"r1","severity":"LOW","residual_type":"evidence-gap","source":"test","finding":"f","evidence_refs":[],"disposition":"verified","required_closure":"done","closure_state":"closed","closure_evidence":["/tmp/not-a-snapshot.txt"],"scope":"s"}]}"#,
+    )
+    .unwrap();
+
+    let error = run::submit_primary_arbiter_verdict(&store, &run_id, &bad, false).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("unresolvable evidence reference"),
+        "{error:#}"
+    );
+    // No receipt staged, no response file written — a retry with a fixed
+    // verdict must find the challenge untouched.
+    let manifest = store.load_manifest(&run_id).unwrap();
+    assert!(manifest.primary_arbiter_submission.is_none());
+    assert!(
+        !store
+            .run_dir(&run_id)
+            .unwrap()
+            .join("r3/primary-arbiter-response.json")
+            .exists()
+    );
+    assert_eq!(manifest.status, RunStatus::WaitingPrimaryArbiter);
+}
+
 fn completed_run(
     temporary: &std::path::Path,
     executable: &std::path::Path,
