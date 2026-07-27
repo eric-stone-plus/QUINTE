@@ -31,9 +31,13 @@ pub fn run(policy: &Policy) -> DoctorReport {
     }));
     checks.push(serde_json::json!({
         "name": "os_sandbox",
-        "ok": false,
-        "severity": "warning",
-        "message": "process mode isolates cwd/HOME/state and tool permissions but does not provide a kernel-enforced filesystem/network sandbox"
+        "ok": policy.sandbox_mode != SandboxMode::Strict,
+        "severity": if policy.sandbox_mode == SandboxMode::Strict { "error" } else { "info" },
+        "message": if policy.sandbox_mode == SandboxMode::Strict {
+            "strict mode requires a kernel-enforced sandbox backend"
+        } else {
+            "process mode: cwd/HOME/state/tool permissions isolated; no kernel sandbox (user accepted)"
+        }
     }));
     checks.push(serde_json::json!({
         "name": "git",

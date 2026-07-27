@@ -45,6 +45,7 @@ pub enum CredentialSource {
     Keychain,
     WindowsCredentialManager,
     EnvironmentVariable,
+    ClaudeSettingsFile,
 }
 
 impl CredentialSource {
@@ -53,6 +54,7 @@ impl CredentialSource {
             Self::Keychain => "keychain",
             Self::WindowsCredentialManager => "windows_credential_manager",
             Self::EnvironmentVariable => "environment_variable",
+            Self::ClaudeSettingsFile => "claude_settings_file",
         }
     }
 
@@ -96,9 +98,12 @@ impl CredentialStatus {
     }
 }
 
-/// Probe protected storage first, then legacy environment variable.
+/// Probe protected storage first, then Claude settings file, then legacy environment variable.
 pub fn probe(service: &str) -> CredentialStatus {
     if let Some(status) = probe_protected(service) {
+        return status;
+    }
+    if let Some(status) = probe_claude_settings_file() {
         return status;
     }
     if std::env::var_os("ANTHROPIC_API_KEY").is_some() {
@@ -112,10 +117,16 @@ pub fn probe(service: &str) -> CredentialStatus {
     ))
 }
 
-/// Read the secret. Prefers protected store over environment.
+/// Read the secret. Prefers protected store over settings file over environment.
 pub fn get(service: &str) -> anyhow::Result<String> {
     if let Ok(secret) = get_protected(service) {
         let trimmed = secret.trim().to_string();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
+        }
+    }
+    if let Some(token) = claude_settings_file_token() {
+        let trimmed = token.trim().to_string();
         if !trimmed.is_empty() {
             return Ok(trimmed);
         }
@@ -126,7 +137,7 @@ pub fn get(service: &str) -> anyhow::Result<String> {
             return Ok(trimmed);
         }
     }
-    bail!("Claude credential not found in protected store or ANTHROPIC_API_KEY")
+    bail!("Claude credential not found in protected store, settings file, or ANTHROPIC_API_KEY")
 }
 
 /// Read only from the OS-protected store; lane helpers never inherit the
@@ -205,6 +216,40 @@ fn zeroize_string(value: &mut String) {
     }
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
     value.clear();
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+}
+
+/// Read ANTHROPIC_AUTH_TOKEN from ~/.claude/settings.json env block.
+fn claude_settings_file_token() -> Option<String> {
+    let home = home_dir()?;
+    let path = home.join(".claude/settings.json");
+    if !path.is_file() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value
+        .get("env")?
+        .get("ANTHROPIC_AUTH_TOKEN")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// Probe the Claude settings file for a usable credential.
+fn probe_claude_settings_file() -> Option<CredentialStatus> {
+    let token = claude_settings_file_token()?;
+    if token.trim().is_empty() {
+        return None;
+    }
+    Some(CredentialStatus::found(
+        CredentialSource::ClaudeSettingsFile,
+        "ANTHROPIC_AUTH_TOKEN from ~/.claude/settings.json",
+    ))
 }
 
 fn probe_protected(service: &str) -> Option<CredentialStatus> {

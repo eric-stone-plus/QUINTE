@@ -1583,6 +1583,15 @@ fn configure_claude_credential(
             .source
             .is_some_and(|source| source != CredentialSource::EnvironmentVariable);
 
+    // ClaudeSettingsFile: read full env block from ~/.claude/settings.json,
+    // write it into the lane's settings file. The token is not injected into
+    // the process env — Claude Code reads it from the settings file directly.
+    if status.source == Some(CredentialSource::ClaudeSettingsFile) {
+        let lane_settings = build_claude_lane_settings()?;
+        write_json(&settings, &lane_settings)?;
+        return Ok((settings, Vec::new()));
+    }
+
     if use_isolated {
         let authorization =
             credential::create_helper_authorization(lane_root, DEFAULT_CLAUDE_SERVICE)?;
@@ -1613,6 +1622,22 @@ fn configure_claude_credential(
     env.insert("ANTHROPIC_API_KEY".into(), api_key);
     write_json(&settings, &json!({}))?;
     Ok((settings, Vec::new()))
+}
+
+/// Build a lane-specific claude settings JSON that mirrors the user's
+/// ~/.claude/settings.json env block so Claude Code inherits the correct
+/// base URL, auth token, and model overrides.
+fn build_claude_lane_settings() -> anyhow::Result<serde_json::Value> {
+    let home = real_home()?;
+    let path = home.join(".claude/settings.json");
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let user_settings: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("cannot parse {}", path.display()))?;
+    let env_block = user_settings.get("env").cloned().unwrap_or(json!({}));
+    Ok(json!({
+        "env": env_block
+    }))
 }
 
 fn credential_helper_path(lane_root: &Path) -> PathBuf {
