@@ -1020,10 +1020,14 @@ pub fn events_completed_with_unusable_final_candidate(stdout: &[u8]) -> bool {
             _ => {}
         }
     }
-    // A terminal stop with zero text is an empty completion: the model rolled
-    // a no-output turn, which is transient, unlike non-empty output that fails
+    // A terminal stop with zero text is an empty completion, and a terminal
+    // stop whose text carries no JSON candidate at all (pure prose, e.g. the
+    // model went off reading files and ended with a sentence) is the same
+    // no-output turn: transient, unlike a non-empty JSON candidate that fails
     // the schema (a permanent contract failure).
-    saw_terminal_step && (content.is_empty() || has_unusable_final_candidate(&content))
+    let no_candidate = !content.contains('{');
+    saw_terminal_step
+        && (content.is_empty() || no_candidate || has_unusable_final_candidate(&content))
 }
 
 fn extract_json_from_text(stdout: &[u8]) -> anyhow::Result<LaneOutput> {
@@ -2603,13 +2607,16 @@ mod tests {
             schema_invalid.as_bytes()
         ));
 
-        // Prose-only output with no JSON candidate is not a truncation.
+        // Prose-only output with no JSON candidate is the same transient
+        // no-output turn as empty text (production evidence: an R2 lane ended
+        // with "Let me read the key evidence files…" and no payload — the
+        // model abandoned the JSON task, not violated the schema).
         let prose_only = format!(
             "{}\n{}\n",
             serde_json::json!({"type": "text", "part": {"text": "plain analysis, no payload"}}),
             serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
         );
-        assert!(!events_completed_with_unusable_final_candidate(
+        assert!(events_completed_with_unusable_final_candidate(
             prose_only.as_bytes()
         ));
 
@@ -2656,6 +2663,18 @@ mod tests {
         let no_terminal = serde_json::json!({"type": "text", "part": {"text": ""}});
         assert!(!events_completed_with_unusable_final_candidate(
             no_terminal.to_string().as_bytes()
+        ));
+
+        // Terminal stop whose text is pure prose with no JSON candidate at all
+        // (the model went off reading files and ended with a sentence) is the
+        // same transient no-output turn — not a schema failure.
+        let prose = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": "Let me read the key evidence files to ground the analysis."}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(events_completed_with_unusable_final_candidate(
+            prose.as_bytes()
         ));
     }
 
