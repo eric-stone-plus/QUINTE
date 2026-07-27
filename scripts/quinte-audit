@@ -9,7 +9,12 @@ result.json, manifest.json and the hash chain are never modified.
 
 Usage:
   quinte-audit <run-id> [--model NAME] [--timeout SEC] [--json]
+                    [--mode {standard,paradigm}]
   quinte-audit --latest [--model NAME]
+
+Modes: standard audits the verdict (composition/evidence/blind spots/
+actionability/rhetoric); paradigm attacks the shared methodological
+framework itself (roster correlation blind spots, framework alternatives).
 
 Exit codes: 0 audit completed (any verdict), 2 audit could not run.
 """
@@ -24,20 +29,33 @@ RUNS_DIR = Path.home() / ".quinte" / "runs"
 DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_TIMEOUT = 600
 
-INSTRUCTION = """你是一名独立外部审计师。你没有参与以下结论的产生，也不知道参与方的身份。
+INSTRUCTION_STANDARD = """你是一名独立外部审计师。你没有参与以下结论的产生，也不知道参与方的身份。
 请对这份多模型对抗审查（QUINTE）的最终裁决做独立审计，只依据给定材料判断：
 
 1. 组装完整性：裁决的 summary/recommendation 是否忠实覆盖残差清单？有无残差被静默丢弃或淡化？
 2. 证据支撑：关键结论是否超出证据范围（无据断言、数字与残差描述矛盾）？
 3. 盲区：材料语境下明显该查而未查的风险点。
 4. 可执行性：required_closure 是否具体可验证，还是空话？
+5. 修辞审计：裁决跟随的是证据最充分的一方，还是发言最多/语气最自信的一方？若发现文风压过证据的迹象（自信措辞替代证据引用、音量替代论证），作为 HIGH severity 的 finding 报出。
 
 仅输出一个 JSON 对象（不要 markdown 围栏、不要前后文）：
 {"verdict": "PASS" | "PASS_WITH_NOTES" | "FAIL",
  "confidence": 0.0-1.0,
- "findings": [{"kind": "composition|evidence|blind-spot|actionability", "severity": "HIGH|MEDIUM|LOW", "detail": "..."}],
+ "findings": [{"kind": "composition|evidence|blind-spot|actionability|rhetoric", "severity": "HIGH|MEDIUM|LOW", "detail": "..."}],
  "summary": "三句话以内的审计结论"}
 若材料本身证据不足以下判断，verdict 给 FAIL 并在 findings 里说明缺什么。"""
+
+INSTRUCTION_PARADIGM = """你是一名独立外部审计师，任务是范式批判。不要逐条审计具体结论，而是攻击本轮多模型对抗审查（QUINTE）共享的方法论框架本身：
+
+1. roster 相关性盲区：参与各方是否共享训练分布、工具链或数据源崇拜，使"五方对抗"实为同一视角的五次重复？指出哪些错误会被所有方同时犯下、因而在这个结构里无人可能暴露。
+2. 框架层面的替代方案：若改用另一个方法论框架（不同的对抗结构、不同来源的评审者、不同的证据标准），本议题会被怎样重新提出？现行框架系统性地看不见什么？
+
+仅输出一个 JSON 对象（不要 markdown 围栏、不要前后文）：
+{"verdict": "PASS" | "PASS_WITH_NOTES" | "FAIL",
+ "confidence": 0.0-1.0,
+ "findings": [{"kind": "roster-correlation|framework|alternative", "severity": "HIGH|MEDIUM|LOW", "detail": "..."}],
+ "summary": "三句话以内的审计结论"}
+若材料本身不足以判断框架层面的问题，verdict 给 FAIL 并在 findings 里说明缺什么。"""
 
 
 def resolve_run_dir(run_id: str) -> Path:
@@ -66,7 +84,7 @@ def latest_completed() -> Path:
     return best
 
 
-def build_brief(result: dict, cc_response: dict | None) -> str:
+def build_brief(result: dict, cc_response: dict | None, instruction: str) -> str:
     residuals = result.get("residuals", [])
     lines = [
         "# 被审计材料\n",
@@ -83,7 +101,7 @@ def build_brief(result: dict, cc_response: dict | None) -> str:
     if cc_response:
         lines.append("\n## 对照仲裁（Counterpart）响应\n"
                      + json.dumps(cc_response, ensure_ascii=False)[:4000])
-    lines.append("\n# 审计任务\n" + INSTRUCTION)
+    lines.append("\n# 审计任务\n" + instruction)
     return "\n".join(lines)
 
 
@@ -94,6 +112,8 @@ def main() -> int:
     ap.add_argument("--latest", action="store_true", help="audit the latest completed run")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    ap.add_argument("--mode", choices=["standard", "paradigm"], default="standard",
+                    help="standard: audit the verdict; paradigm: attack the shared methodological framework")
     ap.add_argument("--json", action="store_true", help="print the audit artifact JSON to stdout")
     args = ap.parse_args()
 
@@ -119,7 +139,8 @@ def main() -> int:
         except Exception:
             pass
 
-    brief = build_brief(result, cc_response)
+    instruction = INSTRUCTION_PARADIGM if args.mode == "paradigm" else INSTRUCTION_STANDARD
+    brief = build_brief(result, cc_response, instruction)
     cmd = ["reasonix", "-p", brief, "--output-format", "json", "--effort", "max"]
     if args.model != DEFAULT_MODEL:
         cmd[1:1] = ["--model", args.model]
@@ -152,6 +173,7 @@ def main() -> int:
         "run_id": result.get("run_id", run_dir.name),
         "audited_at": datetime.now(timezone.utc).isoformat(),
         "auditor": f"reasonix/{args.model}",
+        "mode": args.mode,
         "reasonix_session_id": envelope.get("session_id"),
         "cost_usd": envelope.get("total_cost_usd"),
         "usage": envelope.get("usage"),
@@ -170,6 +192,7 @@ def main() -> int:
     else:
         verdict = (parsed or {}).get("verdict", "UNPARSED")
         print(f"run:      {run_dir.name}")
+        print(f"mode:     {args.mode}")
         print(f"auditor:  reasonix/{args.model} (cost ${envelope.get('total_cost_usd', 0):.4f})")
         print(f"verdict:  {verdict}")
         if parsed and parsed.get("summary"):
