@@ -9,7 +9,7 @@ use rusqlite::{Connection, OpenFlags, backup::Backup};
 use serde_json::{Value, json};
 
 use crate::model::{LaneOutput, Policy, RoutePolicy};
-use crate::schema::{LANE_OUTPUT_SCHEMA, parse_and_validate};
+use crate::schema::{LANE_OUTPUT_SCHEMA, validate_value};
 #[cfg(windows)]
 use crate::util::configure_hidden_process;
 use crate::util::{
@@ -875,16 +875,16 @@ pub fn parse_output(kind: OutputKind, stdout: &[u8]) -> anyhow::Result<LaneOutpu
         bail!("adapter output exceeds hard 16 MiB limit");
     }
     match kind {
-        OutputKind::DirectJson => parse_and_validate(stdout, LANE_OUTPUT_SCHEMA),
+        OutputKind::DirectJson => parse_lane_output(stdout),
         OutputKind::TextJson => extract_json_from_text(stdout),
         OutputKind::ClaudeJson => {
             let wrapper: Value = serde_json::from_slice(stdout).context("invalid Claude JSON")?;
             if let Some(structured) = wrapper.get("structured_output") {
                 let bytes = serde_json::to_vec(structured)?;
-                return parse_and_validate(&bytes, LANE_OUTPUT_SCHEMA);
+                return parse_lane_output(&bytes);
             }
             if let Some(result) = wrapper.get("result").and_then(Value::as_str) {
-                return parse_and_validate(result.as_bytes(), LANE_OUTPUT_SCHEMA);
+                return parse_lane_output(result.as_bytes());
             }
             bail!("Claude output has no structured_output or result");
         }
@@ -1032,7 +1032,7 @@ fn extract_json_from_text(stdout: &[u8]) -> anyhow::Result<LaneOutput> {
         return Ok(output);
     }
     for block in fenced_json_blocks(text).into_iter().rev() {
-        if let Ok(output) = parse_and_validate(block.as_bytes(), LANE_OUTPUT_SCHEMA) {
+        if let Ok(output) = parse_lane_output(block.as_bytes()) {
             return Ok(output);
         }
     }
@@ -1049,11 +1049,11 @@ fn extract_json_from_events(stdout: &[u8]) -> anyhow::Result<LaneOutput> {
         candidates.push(serde_json::to_string(&value)?);
     }
     for candidate in candidates.into_iter().rev() {
-        if let Ok(output) = parse_and_validate(candidate.as_bytes(), LANE_OUTPUT_SCHEMA) {
+        if let Ok(output) = parse_lane_output(candidate.as_bytes()) {
             return Ok(output);
         }
         if let Some(block) = json_object_block(&candidate)
-            && let Ok(output) = parse_and_validate(block.as_bytes(), LANE_OUTPUT_SCHEMA)
+            && let Ok(output) = parse_lane_output(block.as_bytes())
         {
             return Ok(output);
         }
@@ -1071,9 +1071,7 @@ fn candidates_validation_error(stdout: &[u8]) -> Option<String> {
             .and_then(|part| part.get("text"))
             .and_then(Value::as_str)?;
         let block = fenced_json_blocks(candidate).into_iter().next_back()?;
-        let error = parse_and_validate::<LaneOutput>(block.as_bytes(), LANE_OUTPUT_SCHEMA)
-            .err()?
-            .to_string();
+        let error = parse_lane_output(block.as_bytes()).err()?.to_string();
         return Some(format!(": {error}"));
     }
     None
@@ -1116,16 +1114,60 @@ fn parse_last_complete_candidate(candidate: &str) -> Option<LaneOutput> {
     if block.required_key_mask != LANE_OUTPUT_REQUIRED_KEY_MASK {
         return None;
     }
-    parse_and_validate(&candidate.as_bytes()[block.start..end], LANE_OUTPUT_SCHEMA).ok()
+    parse_lane_output(&candidate.as_bytes()[block.start..end]).ok()
 }
 
 fn parse_candidate(candidate: &str) -> Option<LaneOutput> {
-    parse_and_validate(candidate.as_bytes(), LANE_OUTPUT_SCHEMA)
-        .ok()
-        .or_else(|| {
-            let block = json_object_block(candidate)?;
-            parse_and_validate(block.as_bytes(), LANE_OUTPUT_SCHEMA).ok()
-        })
+    parse_lane_output(candidate.as_bytes()).ok().or_else(|| {
+        let block = json_object_block(candidate)?;
+        parse_lane_output(block.as_bytes()).ok()
+    })
+}
+
+/// Coerce near-valid lane output shapes before schema validation.
+///
+/// Models sometimes wrap free-text annotations in objects, e.g.
+/// `uncertainties: [{"id": "U1", "statement": "..."}]` instead of plain
+/// strings. Coerce `uncertainties`/`limitations` object items carrying a
+/// `statement` (or `text`) string into a plain string (id-prefixed for
+/// traceability). Anything else is left untouched and fails closed exactly
+/// as before — this never accepts a different meaning, it only flattens
+/// the observed wrapper.
+fn normalize_lane_shape(value: &mut Value) {
+    for key in ["uncertainties", "limitations"] {
+        let Some(items) = value.get_mut(key).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for item in items.iter_mut() {
+            if item.is_string() {
+                continue;
+            }
+            let text = item
+                .get("statement")
+                .or_else(|| item.get("text"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if let Some(text) = text {
+                let id = item.get("id").and_then(Value::as_str).unwrap_or("");
+                *item = Value::String(if id.is_empty() {
+                    text
+                } else {
+                    format!("{id}: {text}")
+                });
+            }
+        }
+    }
+}
+
+/// Parse a lane payload: JSON parse → shape coercion → schema validate →
+/// typed contract. Use everywhere LaneOutput is parsed from adapter output
+/// so near-valid shapes are normalized consistently.
+fn parse_lane_output(bytes: &[u8]) -> anyhow::Result<LaneOutput> {
+    let text = std::str::from_utf8(bytes).context("payload is not strict UTF-8")?;
+    let mut value: Value = serde_json::from_str(text).context("payload is not valid JSON")?;
+    normalize_lane_shape(&mut value);
+    validate_value(&value, LANE_OUTPUT_SCHEMA)?;
+    serde_json::from_value(value).context("payload does not match typed contract")
 }
 
 fn strip_ansi(text: &str) -> String {
@@ -1637,8 +1679,8 @@ fn build_claude_lane_settings() -> anyhow::Result<serde_json::Value> {
     let path = home.join(".claude/settings.json");
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("cannot read {}", path.display()))?;
-    let user_settings: serde_json::Value = serde_json::from_str(&text)
-        .with_context(|| format!("cannot parse {}", path.display()))?;
+    let user_settings: serde_json::Value =
+        serde_json::from_str(&text).with_context(|| format!("cannot parse {}", path.display()))?;
     let env_block = user_settings.get("env").cloned().unwrap_or(json!({}));
     Ok(json!({
         "env": env_block
@@ -2615,6 +2657,39 @@ mod tests {
         assert!(!events_completed_with_unusable_final_candidate(
             no_terminal.to_string().as_bytes()
         ));
+    }
+
+    fn minimal_lane_payload(uncertainties: &str, limitations: &str) -> String {
+        format!(
+            r#"{{"lane_output_version":"1.0","task_restatement":"t","verdict":"v","confidence":0.5,"claims":[],"residuals":[],"uncertainties":{uncertainties},"limitations":{limitations}}}"#
+        )
+    }
+
+    #[test]
+    fn uncertainties_objects_are_coerced_to_strings() {
+        let payload = minimal_lane_payload(
+            r#"[{"id":"U1","statement":"shape risk"},{"text":"plain"}]"#,
+            r#"[{"id":"L1","statement":"scope"}]"#,
+        );
+        let output = parse_lane_output(payload.as_bytes()).expect("coerced");
+        assert_eq!(
+            output.uncertainties,
+            vec!["U1: shape risk".to_string(), "plain".to_string()]
+        );
+        assert_eq!(output.limitations, vec!["L1: scope".to_string()]);
+    }
+
+    #[test]
+    fn uncertainties_plain_strings_still_parse() {
+        let payload = minimal_lane_payload(r#"["a","b"]"#, r#"["c"]"#);
+        let output = parse_lane_output(payload.as_bytes()).expect("plain");
+        assert_eq!(output.uncertainties, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn non_coercible_uncertainty_shape_still_fails() {
+        let payload = minimal_lane_payload(r#"[{"foo":"bar"}]"#, "[]");
+        assert!(parse_lane_output(payload.as_bytes()).is_err());
     }
 
     #[test]
