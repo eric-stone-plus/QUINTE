@@ -6,10 +6,33 @@ guard="$repo_root/scripts/release-guard.sh"
 tmp="$(mktemp -d)"
 trap '[[ -n "${KEEP_RELEASE_TEST_TMP:-}" ]] || rm -rf "$tmp"' EXIT
 
+# Keep the fixture ahead of the immutable burn ledger so adding a real release
+# attempt cannot silently stale the first positive test.
+burned_version="$(awk '
+  !/^[[:space:]]*#/ && NF {
+    split($1, value, ".")
+    if (!seen || value[1] > major ||
+        (value[1] == major && value[2] > minor) ||
+        (value[1] == major && value[2] == minor && value[3] > patch)) {
+      major = value[1]
+      minor = value[2]
+      patch = value[3]
+      seen = 1
+    }
+  }
+  END {
+    if (!seen) exit 1
+    printf "%d.%d.%d", major, minor, patch
+  }
+' "$repo_root/.github/release-history.txt")"
+IFS=. read -r fixture_major fixture_minor burned_patch <<<"$burned_version"
+fixture_version="$fixture_major.$fixture_minor.$((burned_patch + 1))"
+higher_version="$fixture_major.$fixture_minor.$((burned_patch + 2))"
+
 git -C "$tmp" init -q
 git -C "$tmp" config user.name release-test
 git -C "$tmp" config user.email release-test@example.invalid
-printf '[package]\nname = "quinte"\nversion = "0.1.5"\n' >"$tmp/Cargo.toml"
+printf '[package]\nname = "quinte"\nversion = "%s"\n' "$fixture_version" >"$tmp/Cargo.toml"
 printf '# lock fixture\n' >"$tmp/Cargo.lock"
 printf 'fixture\n' >"$tmp/tracked"
 git -C "$tmp" add .
@@ -23,7 +46,7 @@ cat >"$tmp/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$*" == "metadata --locked --no-deps --format-version 1" ]]
-printf '{"packages":[{"name":"quinte","version":"%s"}]}\n' "${FAKE_CARGO_VERSION:-0.1.5}"
+printf '{"packages":[{"name":"quinte","version":"%s"}]}\n' "${FAKE_CARGO_VERSION:-${FIXTURE_VERSION:?}}"
 EOF
 
 cat >"$tmp/bin/fake-api" <<'EOF'
@@ -85,7 +108,8 @@ run_guard() {
       RELEASE_GUARD_OFFLINE=1 \
       RELEASE_GUARD_FAKE_API="$tmp/bin/fake-api" \
       FAKE_API_ROOT="$tmp/api" \
-      "$guard" "${1:-0.1.5}" "${2:-$candidate}"
+      FIXTURE_VERSION="$fixture_version" \
+      "$guard" "${1:-$fixture_version}" "${2:-$candidate}"
   )
 }
 
@@ -122,7 +146,7 @@ done
 
 reset_api
 printf '0\n' >"$tmp/api/tag.status"
-printf '{"ref":"refs/tags/v0.1.5","object":{"sha":"%s"}}\n' "$candidate" >"$tmp/api/tag.json"
+printf '{"ref":"refs/tags/v%s","object":{"sha":"%s"}}\n' "$fixture_version" "$candidate" >"$tmp/api/tag.json"
 expect_fail 'existing tag fails even at the same candidate' run_guard
 
 reset_api
@@ -139,11 +163,11 @@ printf '50\n' >"$tmp/api/runs.status"
 expect_fail 'Actions API server error fails closed' run_guard
 
 reset_api
-printf '[[{"ref":"refs/tags/v0.1.7","object":{"sha":"%s"}}]]\n' "$candidate" >"$tmp/api/tags.json"
+printf '[[{"ref":"refs/tags/v%s","object":{"sha":"%s"}}]]\n' "$higher_version" "$candidate" >"$tmp/api/tags.json"
 expect_fail 'higher historical tag blocks a lower request' run_guard
 
 reset_api
-printf '[[{"tag_name":"v0.1.5"}]]\n' >"$tmp/api/releases.json"
+printf '[[{"tag_name":"v%s"}]]\n' "$fixture_version" >"$tmp/api/releases.json"
 expect_fail 'historical release burns the same version' run_guard
 
 reset_api
@@ -151,16 +175,16 @@ printf '{}\n' >"$tmp/api/runs.json"
 expect_fail 'malformed Actions response fails closed' run_guard
 
 reset_api
-printf '[{"total_count":1,"workflow_runs":[{"id":699,"head_sha":"%s","display_title":"Release v0.1.5 from %s","event":"workflow_dispatch","conclusion":"cancelled"}]}]\n' "$candidate" "$candidate" >"$tmp/api/runs.json"
+printf '[{"total_count":1,"workflow_runs":[{"id":699,"head_sha":"%s","display_title":"Release v%s from %s","event":"workflow_dispatch","conclusion":"cancelled"}]}]\n' "$candidate" "$fixture_version" "$candidate" >"$tmp/api/runs.json"
 expect_fail 'cancelled prior attempt burns the candidate' run_guard
 
 reset_api
 other_sha="0000000000000000000000000000000000000000"
-printf '[{"total_count":1,"workflow_runs":[{"id":699,"head_sha":"%s","display_title":"Release v0.1.5 from %s","event":"workflow_dispatch"}]}]\n' "$other_sha" "$other_sha" >"$tmp/api/runs.json"
+printf '[{"total_count":1,"workflow_runs":[{"id":699,"head_sha":"%s","display_title":"Release v%s from %s","event":"workflow_dispatch"}]}]\n' "$other_sha" "$fixture_version" "$other_sha" >"$tmp/api/runs.json"
 expect_fail 'same version on another candidate is permanently burned' run_guard
 
 reset_api
-printf '[{"total_count":1,"workflow_runs":[{"id":699,"head_sha":"%s","display_title":"Release v0.1.7 from %s","event":"workflow_dispatch"}]}]\n' "$other_sha" "$other_sha" >"$tmp/api/runs.json"
+printf '[{"total_count":1,"workflow_runs":[{"id":699,"head_sha":"%s","display_title":"Release v%s from %s","event":"workflow_dispatch"}]}]\n' "$other_sha" "$higher_version" "$other_sha" >"$tmp/api/runs.json"
 expect_fail 'higher attempted version blocks a lower request' run_guard
 
 reset_api
@@ -172,17 +196,17 @@ printf '[{"total_count":101,"workflow_runs":[]}]\n' >"$tmp/api/runs.json"
 expect_fail 'incomplete Actions history fails closed' run_guard
 
 reset_api
-printf '[{"total_count":1,"workflow_runs":[{"id":700,"head_sha":"%s","display_title":"Release v0.1.5 from %s","event":"workflow_dispatch","status":"in_progress"}]}]\n' "$candidate" "$candidate" >"$tmp/api/runs.json"
+printf '[{"total_count":1,"workflow_runs":[{"id":700,"head_sha":"%s","display_title":"Release v%s from %s","event":"workflow_dispatch","status":"in_progress"}]}]\n' "$candidate" "$fixture_version" "$candidate" >"$tmp/api/runs.json"
 expect_pass 'publish recheck ignores only its current run id' run_guard
 
 reset_api
-expect_fail 'burned version cannot be reused' run_guard 0.1.4 "$candidate"
+FAKE_CARGO_VERSION="$burned_version" expect_fail 'burned version cannot be reused' run_guard "$burned_version" "$candidate"
 
 reset_api
-FAKE_CARGO_VERSION=0.1.6 expect_fail 'Cargo mismatch fails' run_guard
+FAKE_CARGO_VERSION="$higher_version" expect_fail 'Cargo mismatch fails' run_guard
 
 reset_api
-expect_fail 'candidate must be a full commit SHA' run_guard 0.1.5 deadbeef
+expect_fail 'candidate must be a full commit SHA' run_guard "$fixture_version" deadbeef
 
 asset_dir="$tmp/assets"
 mkdir "$asset_dir"

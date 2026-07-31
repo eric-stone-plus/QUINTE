@@ -7,3 +7,4 @@
 0.1.4 attempted-cancelled-deleted
 0.1.6 attempted-windows-compile-failed
 0.2.0 attempted-cancelled-prepublish-doc-fix
+0.2.1 attempted-windows-native-test-failed

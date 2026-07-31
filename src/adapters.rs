@@ -1524,16 +1524,27 @@ fn minimal_environment() -> BTreeMap<String, String> {
         "SYSTEMROOT",
         "WINDIR",
         "SYSTEMDRIVE",
-        // Container seats use an internal network with a mandatory egress
-        // proxy. Preserve both conventional casings because provider CLIs and
-        // their HTTP stacks disagree about which form they honor.
+    ] {
+        if let Ok(value) = std::env::var(name) {
+            env.insert(name.to_string(), value);
+        }
+    }
+    // Container seats use an internal network with a mandatory egress proxy.
+    // Unix can carry both conventional casings, while Windows environment
+    // names are case-insensitive; canonical uppercase keys avoid duplicate,
+    // order-dependent aliases there without changing lowercase lookup.
+    #[cfg(not(windows))]
+    let proxy_names = [
         "HTTP_PROXY",
         "HTTPS_PROXY",
         "NO_PROXY",
         "http_proxy",
         "https_proxy",
         "no_proxy",
-    ] {
+    ];
+    #[cfg(windows)]
+    let proxy_names = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"];
+    for name in proxy_names {
         if let Ok(value) = std::env::var(name) {
             env.insert(name.to_string(), value);
         }
@@ -1702,8 +1713,18 @@ mod tests {
                 }
             }
         }
+        #[cfg(not(windows))]
         for name in allowed {
             assert_eq!(environment[name], format!("value-for-{name}"));
+        }
+        #[cfg(windows)]
+        for (canonical, alias) in [
+            ("HTTP_PROXY", "http_proxy"),
+            ("HTTPS_PROXY", "https_proxy"),
+            ("NO_PROXY", "no_proxy"),
+        ] {
+            assert_eq!(environment[canonical], format!("value-for-{alias}"));
+            assert!(!environment.contains_key(alias));
         }
         for name in blocked {
             assert!(
