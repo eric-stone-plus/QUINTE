@@ -1,9 +1,9 @@
 # QUINTE CLI Contract
 
 This document defines the public command boundary for the `quinte` Rust
-CLI. The CLI is the execution authority for a QUINTE run. A host such as the
-Primary Arbiter may create a brief, invoke commands, supply the `primary-arbiter` verdict, and consume the
-result; it must not reproduce the scheduler with ad hoc agent calls.
+CLI. The CLI is the execution authority for a QUINTE run. A host may create a
+brief, invoke commands, and consume the result; it must not reproduce the
+scheduler with ad hoc agent calls.
 
 The protocol itself remains defined by [PROTOCOL.md](PROTOCOL.md).
 
@@ -26,15 +26,11 @@ policy copy and challenge already stored in an existing run. `quinte init
 
 ## Installation Boundary
 
-Official release archives contain one `quinte` executable for each supported
-platform and a shared checksum manifest. `install.sh` and `install.ps1`
-download and verify that executable; end users do not need Rust, Cargo, or a
-repository checkout. The release build excludes all test-adapter code.
+QUINTE is built from source. The release build excludes all test-adapter code.
 
-QUINTE is not a hosted proxy and does not bundle or impersonate its fixed
-native routes. CodeWhale, OpenCode, Kilo, MiMo, OMP, Claude Code, and their
-existing token-plan credentials remain runtime prerequisites for a complete
-run. `doctor` reports the exact missing prerequisite before execution.
+QUINTE is not a hosted proxy. Policy v2 supports only the proven production
+bindings MiMoCode/MiMo, Reasonix/DeepSeek, and Codex/OpenAI. `doctor` checks all
+seven same-family roles and the selected provider environment pair.
 
 ## Command Surface
 
@@ -64,9 +60,10 @@ command.
 Creates the state root, `policy.json`, and `runs/`. It refuses to replace an
 existing policy unless `--force` is supplied.
 
-The default policy fixes Party A-E to CodeWhale, OpenCode, Kilo, MiMo, and OMP,
-and fixes Counterpart Arbiter to Claude Code. Text uses `mimo-v2.5-pro`; a supported image
-attachment selects `mimo-v2.5` for the whole run.
+The generated policy has five parties, Counterpart Arbiter, and Primary
+Arbiter. All seven share one seat binding. `auto_primary_arbiter=true` is the
+default. Policy v1 is accepted read-only and normalized in memory without
+rewriting its historical file.
 
 ### `status`
 
@@ -87,7 +84,7 @@ not by itself fail `doctor`; missing required routes do.
 Validates the brief, snapshots its evidence roots and attachments, creates a
 queued run, and starts a per-run background worker. Without `--wait`, the
 command returns the run id and `queued` status immediately; the worker owns
-advancement through R1, R2, and the Counterpart Arbiter part of R3.
+advancement through R1, R2, both R3 arbiters, and deterministic merge.
 
 With `--wait`, the initiating process observes the manifest until it reaches a
 terminal state or `waiting_primary_arbiter`. The worker remains a separate process, so
@@ -153,7 +150,10 @@ legacy field and party id are accepted only as that pair; partially renamed
 combinations are rejected.
 
 Read-only commands and normal runs never rewrite the source `policy.json`;
-`init --force` remains the only way to replace it.
+`init --force` remains the only way to replace it. `policy show` and
+`policy validate` can inspect a normalized v1 policy, but `run` refuses it with
+an explicit backup-and-migrate instruction. Production v2 also requires
+`auto_primary_arbiter=true`.
 
 ## Brief Contract
 
@@ -162,7 +162,7 @@ Read-only commands and normal runs never rewrite the source `policy.json`;
 
 ```json
 {
-  "brief_version": "1.0",
+  "brief_version": "1.1",
   "question": "Required non-empty question",
   "context": "Optional bounded context",
   "evidence_roots": ["/absolute/or/resolvable/path"],
@@ -212,18 +212,18 @@ The normal flow is:
 ```text
 queued -> preflight -> r1_running -> r1_gate
        -> r2_packet -> r2_running -> r2_gate
-       -> r3_cc -> waiting_primary_arbiter
-       -> merging -> completed
+       -> r3_cc -> merging -> completed
 ```
 
-`waiting_primary_arbiter` is non-terminal. It is a deliberate host handoff and may be
-returned with exit `0`; callers must inspect the status value instead of using
-the exit code alone as proof of completion.
+Existing runs created under policy v1 can instead pass through
+`waiting_primary_arbiter` before merge. It is non-terminal and may be returned
+with exit `0`; callers must inspect the status value. Policy v1 and policy v2
+with automatic PA disabled cannot start a new production run.
 
 `completed`, `degraded`, `failed`, `failed_policy`, and `cancelled` are terminal
 states. A completed analysis still does not authorize any external action.
 
-## Primary Arbiter Handshake
+## Primary Arbiter Paths
 
 Counterpart Arbiter runs first in R3. The scheduler then creates:
 
@@ -233,6 +233,11 @@ Counterpart Arbiter runs first in R3. The scheduler then creates:
   the evidence packet, and the CC verdict
 - `r3/primary-arbiter-request.json`: the challenge the Primary Arbiter must answer
 
+With auto PA enabled, the scheduler gives the same-family Primary Arbiter the
+evidence and Counterpart verdict, validates `ArbiterVerdict`, constructs the
+bound response, and consumes the challenge without host submission.
+
+For an existing historical run already waiting for manual PA,
 `quinte primary-arbiter request RUN_ID --json` returns the challenge. It contains:
 
 ```text
@@ -247,7 +252,7 @@ expires_at
 consumed
 ```
 
-The Primary Arbiter must read the evidence packet and Counterpart Arbiter response, independently
+The external Primary Arbiter must read the evidence packet and Counterpart Arbiter response, independently
 draft its verdict, and write a response conforming to
 [`schemas/primary-arbiter-response.schema.json`](../schemas/primary-arbiter-response.schema.json):
 
@@ -434,26 +439,14 @@ Use an external OS sandbox, container, VM, or restricted account for hostile
 code, secrets, or network containment. Do not describe `process` isolation
 as a security sandbox.
 
-## Credential Commands
+## Provider Binding
 
-### `credential status`
+MAGI/container integrations select one key variable and one base URL variable
+through `QUINTE_PROVIDER_KEY_ENV` and `QUINTE_PROVIDER_BASE_URL_ENV`. The
+selected names must match the seat family: `XIAOMI_*`, `DEEPSEEK_*`, or
+`OPENAI_*`. Only that pair is copied into a lane environment. URLs must be
+configured HTTPS endpoints without whitespace or `.invalid`; OpenAI relays
+must support the Responses API used by Codex.
 
-Provision the Claude / MiMo token with OS-native protected-store tooling or UI:
-
-- macOS: a Keychain generic password whose account is the current login user
-  and service is `xiaomi-mimo-token-plan-api-key`.
-- Windows: a Generic Credential whose target is
-  `xiaomi-mimo-token-plan-api-key.quinte`.
-
-QUINTE intentionally exposes no secret-writing command. Verify provisioning
-with `quinte credential status --json`.
-
-`ANTHROPIC_API_KEY` remains a legacy non-isolated fallback. Doctor reports
-`credential_source` and `credential_isolated` for the Claude route.
-
-### `__credential-helper` (hidden)
-
-Internal Claude Code `apiKeyHelper` entrypoint. It requires a private per-lane
-authorization file and binds the request to the canonical lane root and fixed
-service. No credential or bearer token is placed in the helper command line or
-script. User hosts must not invoke it directly.
+The removed historical credential command and helper are not part of policy-v1
+inspection or the production v2 command surface.

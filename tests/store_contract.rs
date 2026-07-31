@@ -71,7 +71,7 @@ fn manifest_run_id_must_match_the_validated_directory_id() {
 
 fn manifest(run_id: &str) -> RunManifest {
     RunManifest {
-        manifest_version: "1.0".into(),
+        manifest_version: "2.0".into(),
         run_id: run_id.into(),
         created_at: "2026-07-13T00:00:00.000Z".into(),
         updated_at: "2026-07-13T00:00:00.000Z".into(),
@@ -82,6 +82,8 @@ fn manifest(run_id: &str) -> RunManifest {
         runtime_sha256: format!("sha256:{}", "d".repeat(64)),
         protocol_version: "1.0".into(),
         effective_model: "mimo-v2.5-pro".into(),
+        seat_binding: Default::default(),
+        route_bindings: quinte::model::legacy_route_bindings(),
         sandbox_mode: SandboxMode::Process,
         current_phase: None,
         error: None,

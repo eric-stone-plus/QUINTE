@@ -1102,7 +1102,8 @@ mod tests {
         #[derive(Debug, serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Target {
-            required_field: String,
+            #[serde(rename = "required_field")]
+            _required_field: String,
         }
 
         let temporary = tempfile::tempdir().unwrap();

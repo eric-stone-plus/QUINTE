@@ -92,7 +92,9 @@ impl<T> Drop for ControlledWorker<T> {
 fn fake_policy(executable: &std::path::Path) -> Policy {
     let parties = ["Party A", "Party B", "Party C", "Party D", "Party E"];
     Policy {
-        policy_version: "1.0".into(),
+        legacy_v1_source: false,
+        policy_version: "2.0".into(),
+        seat: Default::default(),
         roster: parties
             .iter()
             .enumerate()
@@ -102,6 +104,11 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
                 adapter: "fake".into(),
                 executable: executable.display().to_string(),
                 required: true,
+                family: "mimo".into(),
+                provider: "xiaomi-token-plan-cn".into(),
+                text_model: TEXT_MODEL.into(),
+                multimodal_model: "mimo-v2.5".into(),
+                perspective: String::new(),
             })
             .collect(),
         counterpart_arbiter: quinte::model::RoutePolicy {
@@ -110,7 +117,25 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
             adapter: "fake".into(),
             executable: executable.display().to_string(),
             required: true,
+            family: "mimo".into(),
+            provider: "xiaomi-token-plan-cn".into(),
+            text_model: TEXT_MODEL.into(),
+            multimodal_model: "mimo-v2.5".into(),
+            perspective: String::new(),
         },
+        primary_arbiter: quinte::model::RoutePolicy {
+            party_id: "Primary Arbiter".into(),
+            route_id: "fake-pa".into(),
+            adapter: "fake".into(),
+            executable: executable.display().to_string(),
+            required: true,
+            family: "mimo".into(),
+            provider: "xiaomi-token-plan-cn".into(),
+            text_model: TEXT_MODEL.into(),
+            multimodal_model: "mimo-v2.5".into(),
+            perspective: String::new(),
+        },
+        auto_primary_arbiter: false,
         text_model: TEXT_MODEL.into(),
         multimodal_model: "mimo-v2.5".into(),
         max_parallel_r1: 5,
@@ -185,6 +210,39 @@ fn create_waiting_run(
         verdict: counterpart_arbiter,
     };
     (store, created.run_id, response)
+}
+
+fn create_auto_primary_run(
+    temporary: &std::path::Path,
+    executable: &std::path::Path,
+    suffix: &str,
+) -> (Store, String) {
+    let home = temporary.join(format!("home-{suffix}"));
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(executable);
+    policy.auto_primary_arbiter = true;
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.join(format!("evidence-{suffix}.txt"));
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.join(format!("brief-{suffix}.json"));
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: BRIEF_VERSION.into(),
+            question: "Can the automatic Primary Arbiter finish the run?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+    (store, created.run_id)
 }
 
 #[test]
@@ -348,7 +406,7 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
     let integrity = run::verify_result_integrity(&store, &created.run_id)
         .unwrap()
         .unwrap();
-    assert_eq!(integrity.contract_version, "2.0");
+    assert_eq!(integrity.contract_version, "2.1");
     assert!(integrity.actionable);
     for phase in ["R1", "R2"] {
         for index in 0..5 {
@@ -361,6 +419,61 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
             );
         }
     }
+}
+
+#[test]
+fn automatic_primary_arbiter_sees_counterpart_and_completes_without_host_submission() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id) = create_auto_primary_run(temporary.path(), &executable, "auto-pa");
+
+    assert_eq!(run::advance(&store, &run_id).unwrap(), RunStatus::Completed);
+    let run_dir = store.run_dir(&run_id).unwrap();
+    let packet: serde_json::Value =
+        read_json(&run_dir.join("r3/primary-arbiter-packet.json")).unwrap();
+    assert_eq!(packet["primary_arbiter_packet_version"], "1.0");
+    assert_eq!(packet["run_id"], run_id);
+    assert!(packet["evidence_packet"].is_object());
+    assert!(packet["counterpart_arbiter_verdict"].is_object());
+    assert!(
+        run_dir
+            .join("lanes/R3/fake-cc/attempt-1/stdout.bin")
+            .is_file()
+    );
+    assert!(
+        run_dir
+            .join("lanes/R3/fake-pa/attempt-1/stdout.bin")
+            .is_file()
+    );
+    assert!(run_dir.join("r3/primary-arbiter-response.json").is_file());
+    assert!(run_dir.join("result.json").is_file());
+    let manifest = store.load_manifest(&run_id).unwrap();
+    let expected_roles = [
+        "Party A",
+        "Party B",
+        "Party C",
+        "Party D",
+        "Party E",
+        "Counterpart Arbiter",
+        "Primary Arbiter",
+    ];
+    assert_eq!(
+        manifest
+            .route_bindings
+            .iter()
+            .map(|binding| binding.party_id.as_str())
+            .collect::<Vec<_>>(),
+        expected_roles
+    );
+    let result: quinte::model::ResultEnvelope = read_json(&run_dir.join("result.json")).unwrap();
+    assert_eq!(result.seat_binding, manifest.seat_binding);
+    assert_eq!(result.route_bindings, manifest.route_bindings);
+    assert!(manifest.primary_arbiter_challenge.unwrap().consumed);
+    assert_eq!(
+        manifest.primary_arbiter_submission.unwrap().state,
+        PrimaryArbiterSubmissionState::Accepted
+    );
 }
 
 #[test]
@@ -416,28 +529,29 @@ fn legacy_completed_result_is_verified_read_only_without_contract_rewrite() {
     write_json(&result_path, &legacy_result).unwrap();
     let original_result = fs::read(&result_path).unwrap();
     let now = "2026-07-13T00:00:00.000Z";
-    let manifest = quinte::model::RunManifest {
-        manifest_version: "1.0".into(),
-        run_id: run_id.into(),
-        created_at: now.into(),
-        updated_at: now.into(),
-        status: RunStatus::Completed,
-        brief_sha256: format!("sha256:{}", "a".repeat(64)),
-        policy_sha256: format!("sha256:{}", "b".repeat(64)),
-        snapshot_sha256: format!("sha256:{}", "c".repeat(64)),
-        runtime_sha256: format!("sha256:{}", "d".repeat(64)),
-        protocol_version: "1.0".into(),
-        effective_model: "mimo-v2.5-pro".into(),
-        sandbox_mode: SandboxMode::Process,
-        current_phase: Some("R3".into()),
-        error: None,
-        r3_input_receipt: None,
-        primary_arbiter_challenge: None,
-        primary_arbiter_submission: None,
-        result_sha256: Some(sha256_file(&result_path).unwrap()),
-    };
-    store.save_manifest(&manifest).unwrap();
-    let original_manifest = fs::read(store.manifest_path(run_id).unwrap()).unwrap();
+    let legacy_manifest = serde_json::json!({
+        "manifest_version": "1.0",
+        "run_id": run_id,
+        "created_at": now,
+        "updated_at": now,
+        "status": "completed",
+        "brief_sha256": format!("sha256:{}", "a".repeat(64)),
+        "policy_sha256": format!("sha256:{}", "b".repeat(64)),
+        "snapshot_sha256": format!("sha256:{}", "c".repeat(64)),
+        "runtime_sha256": format!("sha256:{}", "d".repeat(64)),
+        "protocol_version": "1.0",
+        "effective_model": "mimo-v2.5-pro",
+        "sandbox_mode": "process",
+        "current_phase": "R3",
+        "error": null,
+        "r3_input_receipt": null,
+        "primary_arbiter_challenge": null,
+        "primary_arbiter_submission": null,
+        "result_sha256": sha256_file(&result_path).unwrap()
+    });
+    let manifest_path = store.manifest_path(run_id).unwrap();
+    write_json(&manifest_path, &legacy_manifest).unwrap();
+    let original_manifest = fs::read(&manifest_path).unwrap();
 
     let integrity = run::verify_result_integrity(&store, run_id)
         .unwrap()
@@ -445,10 +559,7 @@ fn legacy_completed_result_is_verified_read_only_without_contract_rewrite() {
     assert_eq!(integrity.contract_version, "1.0");
     assert!(!integrity.actionable);
     assert_eq!(fs::read(&result_path).unwrap(), original_result);
-    assert_eq!(
-        fs::read(store.manifest_path(run_id).unwrap()).unwrap(),
-        original_manifest
-    );
+    assert_eq!(fs::read(&manifest_path).unwrap(), original_manifest);
 }
 
 #[test]
@@ -1718,6 +1829,85 @@ fn r3_counterpart_arbiter_timeout_uses_the_same_bounded_retry_policy() {
 }
 
 #[test]
+fn automatic_primary_arbiter_retries_an_empty_completed_verdict_in_its_own_attempt_tree() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    fs::write(
+        temporary.path().join("fake-agent-empty-once-party"),
+        "Primary Arbiter\n",
+    )
+    .unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.auto_primary_arbiter = true;
+    policy.max_attempts = 2;
+    policy.primary_arbiter.adapter = "fake_envelope".into();
+    write_json(&store.policy_path(), &policy).unwrap();
+    let evidence = temporary.path().join("evidence.txt");
+    fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: BRIEF_VERSION.into(),
+            question: "Does automatic PA retry an empty terminal verdict?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
+        },
+    )
+    .unwrap();
+    let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
+
+    let status = run::advance(&store, &created.run_id).unwrap();
+    let run_dir = store.run_dir(&created.run_id).unwrap();
+    let manifest = store.load_manifest(&created.run_id).unwrap();
+    let events = fs::read_to_string(run_dir.join("events.jsonl")).unwrap_or_default();
+    assert_eq!(
+        status,
+        RunStatus::Completed,
+        "manifest={manifest:?} events={events}"
+    );
+    assert!(
+        run_dir
+            .join("lanes/R3/fake-pa/attempt-1/stdout.bin")
+            .is_file()
+    );
+    assert!(
+        run_dir
+            .join("lanes/R3/fake-pa/attempt-2/stdout.bin")
+            .is_file()
+    );
+    assert!(
+        run_dir
+            .join("lanes/R3/fake-cc/attempt-1/stdout.bin")
+            .is_file()
+    );
+    assert!(!run_dir.join("lanes/R3/fake-cc/attempt-2").exists());
+    let events = store.events(&created.run_id).unwrap();
+    assert!(events.iter().any(|event| {
+        event.event_type == "lane.finished"
+            && event.party_id.as_deref() == Some("Primary Arbiter")
+            && event.attempt == Some(1)
+            && event.data["failure_class"] == "transient_adapter"
+            && event.data["retryable"] == true
+    }));
+    assert!(events.iter().any(|event| {
+        event.event_type == "lane.finished"
+            && event.party_id.as_deref() == Some("Primary Arbiter")
+            && event.attempt == Some(2)
+            && event.data["accepted"] == true
+    }));
+}
+
+#[test]
 fn resume_consumes_existing_attempt_directories_in_r1_and_r3() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
@@ -1751,7 +1941,7 @@ fn resume_consumes_existing_attempt_directories_in_r1_and_r3() {
 
     // A crash after creating an attempt directory still consumes that attempt.
     fs::create_dir_all(run_dir.join("lanes/R1/fake-0/attempt-1")).unwrap();
-    fs::create_dir_all(run_dir.join("lanes/R3/cc/attempt-1")).unwrap();
+    fs::create_dir_all(run_dir.join("lanes/R3/fake-cc/attempt-1")).unwrap();
 
     assert_eq!(
         run::advance(&store, &created.run_id).unwrap(),
@@ -1762,7 +1952,11 @@ fn resume_consumes_existing_attempt_directories_in_r1_and_r3() {
             .join("lanes/R1/fake-0/attempt-2/stdout.bin")
             .is_file()
     );
-    assert!(run_dir.join("lanes/R3/cc/attempt-2/stdout.bin").is_file());
+    assert!(
+        run_dir
+            .join("lanes/R3/fake-cc/attempt-2/stdout.bin")
+            .is_file()
+    );
     let events = store.events(&created.run_id).unwrap();
     assert!(events.iter().any(|event| {
         event.event_type == "lane.finished"
@@ -1883,7 +2077,7 @@ fn resume_honors_a_persisted_r3_retry_deadline_before_starting_the_counterpart_a
     .unwrap();
     let created = run::create(&store, &policy, &RunOptions { brief_path }).unwrap();
     let run_dir = store.run_dir(&created.run_id).unwrap();
-    let lane_dir = run_dir.join("lanes/R3/cc");
+    let lane_dir = run_dir.join("lanes/R3/fake-cc");
     fs::create_dir_all(lane_dir.join("attempt-1")).unwrap();
     // R1/R2 run before R3 is reached, so keep this deadline comfortably ahead.
     let due_at = Utc::now() + ChronoDuration::milliseconds(10_000);

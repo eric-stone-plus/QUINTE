@@ -1,4 +1,4 @@
-use quinte::model::{MULTIMODAL_MODEL, TEXT_MODEL};
+use quinte::model::{MULTIMODAL_MODEL, Policy, RoutePolicy, TEXT_MODEL};
 use quinte::policy::{default_policy, validate};
 
 #[test]
@@ -14,14 +14,23 @@ fn default_policy_binds_the_fixed_roster_and_models() {
     assert_eq!(
         parties,
         vec![
-            ("Party A", "codewhale"),
-            ("Party B", "opencode"),
-            ("Party C", "kilo"),
-            ("Party D", "mimo"),
-            ("Party E", "omp"),
+            ("Party A", "mimo-a"),
+            ("Party B", "mimo-b"),
+            ("Party C", "mimo-c"),
+            ("Party D", "mimo-d"),
+            ("Party E", "mimo-e"),
         ]
     );
     assert!(policy.roster.iter().all(|route| route.required));
+    assert!(policy.roster.iter().all(|route| route.adapter == "mimo"));
+    assert!(
+        policy
+            .roster
+            .iter()
+            .all(|route| !route.perspective.is_empty())
+    );
+    assert_eq!(policy.seat.family, "mimo");
+    assert_eq!(policy.seat.provider, "xiaomi");
     assert_eq!(policy.counterpart_arbiter.party_id, "Counterpart Arbiter");
     assert!(policy.counterpart_arbiter.required);
     assert_eq!(policy.text_model, TEXT_MODEL);
@@ -69,12 +78,12 @@ fn policy_rejects_model_route_drift() {
     let mut text_drift = default_policy();
     text_drift.text_model = "mimo-v2.5".into();
     let error = validate(&text_drift).unwrap_err().to_string();
-    assert!(error.contains("model routing is fixed"));
+    assert!(error.contains("model aliases must match"));
 
     let mut multimodal_drift = default_policy();
     multimodal_drift.multimodal_model = "mimo-v2.5-pro".into();
     let error = validate(&multimodal_drift).unwrap_err().to_string();
-    assert!(error.contains("model routing is fixed"));
+    assert!(error.contains("model aliases must match"));
 }
 
 #[test]
@@ -115,16 +124,18 @@ fn policy_rejects_invalid_counterpart_arbiter_and_phase_limits() {
 
 #[test]
 fn policy_rejects_route_tuple_drift_and_path_unsafe_ids() {
-    for mutate in [
-        |policy: &mut quinte::model::Policy| policy.roster[0].route_id = "other".into(),
-        |policy: &mut quinte::model::Policy| policy.roster[0].executable = "other".into(),
-        |policy: &mut quinte::model::Policy| policy.counterpart_arbiter.route_id = "other".into(),
-        |policy: &mut quinte::model::Policy| policy.counterpart_arbiter.executable = "other".into(),
-    ] {
-        let mut policy = default_policy();
-        mutate(&mut policy);
-        assert!(validate(&policy).is_err());
-    }
+    let mut unsupported = default_policy();
+    unsupported.roster[0].adapter = "unknown".into();
+    assert!(validate(&unsupported).is_err());
+
+    let mut mixed = default_policy();
+    mixed.roster[0].family = "deepseek".into();
+    assert!(
+        validate(&mixed)
+            .unwrap_err()
+            .to_string()
+            .contains("single-family")
+    );
 
     for route_id in ["../escape", "a/b", r"a\b", ".", "UPPER", "two words", ""] {
         let mut policy = default_policy();
@@ -138,4 +149,143 @@ fn policy_rejects_route_tuple_drift_and_path_unsafe_ids() {
     let mut duplicate = default_policy();
     duplicate.counterpart_arbiter.route_id = duplicate.roster[0].route_id.clone();
     assert!(validate(&duplicate).is_err());
+
+    let mut primary_duplicate = default_policy();
+    primary_duplicate.primary_arbiter.route_id =
+        primary_duplicate.counterpart_arbiter.route_id.clone();
+    assert!(validate(&primary_duplicate).is_err());
+}
+
+fn routes_mut(policy: &mut Policy) -> Vec<&mut RoutePolicy> {
+    policy
+        .roster
+        .iter_mut()
+        .chain(std::iter::once(&mut policy.counterpart_arbiter))
+        .chain(std::iter::once(&mut policy.primary_arbiter))
+        .collect()
+}
+
+#[test]
+fn every_role_must_match_all_four_single_family_binding_axes() {
+    for route_index in 0..7 {
+        for axis in ["family", "provider", "text_model", "multimodal_model"] {
+            let mut policy = default_policy();
+            let party = {
+                let mut routes = routes_mut(&mut policy);
+                let route = &mut routes[route_index];
+                match axis {
+                    "family" => route.family = "other-family".into(),
+                    "provider" => route.provider = "other-provider".into(),
+                    "text_model" => route.text_model = "other-text-model".into(),
+                    "multimodal_model" => route.multimodal_model = "other-multimodal-model".into(),
+                    _ => unreachable!(),
+                }
+                route.party_id.clone()
+            };
+            let error = validate(&policy).unwrap_err().to_string();
+            assert!(
+                error.contains("single-family seat invariant"),
+                "accepted {axis} drift for {party}: {error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn both_arbiters_are_required_and_have_fixed_identities() {
+    for mutate in [
+        |policy: &mut Policy| policy.counterpart_arbiter.required = false,
+        |policy: &mut Policy| policy.primary_arbiter.required = false,
+        |policy: &mut Policy| policy.counterpart_arbiter.party_id = "Other".into(),
+        |policy: &mut Policy| policy.primary_arbiter.party_id = "Other".into(),
+    ] {
+        let mut policy = default_policy();
+        mutate(&mut policy);
+        assert!(validate(&policy).is_err());
+    }
+}
+
+#[test]
+fn binding_identifiers_reject_config_and_endpoint_injection_syntax() {
+    for value in [
+        "deepseek\nbase_url=evil",
+        "provider/name",
+        "provider:route",
+        "quoted\"value",
+        "模型",
+        "",
+    ] {
+        let mut policy = default_policy();
+        policy.seat.provider = value.into();
+        for route in routes_mut(&mut policy) {
+            route.provider = value.into();
+        }
+        assert!(
+            validate(&policy).is_err(),
+            "accepted unsafe provider {value:?}"
+        );
+    }
+}
+
+fn production_policy(family: &str, provider: &str, adapter: &str) -> Policy {
+    let mut policy = default_policy();
+    policy.seat.seat_id = format!("seat-{family}");
+    policy.seat.family = family.into();
+    policy.seat.provider = provider.into();
+    policy.text_model = format!("{family}-text-model");
+    policy.multimodal_model = format!("{family}-multimodal-model");
+    policy.seat.text_model = policy.text_model.clone();
+    policy.seat.multimodal_model = policy.multimodal_model.clone();
+    for route in routes_mut(&mut policy) {
+        route.family = family.into();
+        route.provider = provider.into();
+        route.text_model = format!("{family}-text-model");
+        route.multimodal_model = format!("{family}-multimodal-model");
+        route.adapter = adapter.into();
+        route.executable = adapter.into();
+    }
+    policy
+}
+
+#[test]
+fn spoofed_legacy_seat_id_cannot_bypass_the_production_capability_matrix() {
+    let mut policy = default_policy();
+    policy.seat.seat_id = "legacy-mimo".into();
+    policy.seat.provider = "xiaomi-token-plan-cn".into();
+    for route in routes_mut(&mut policy) {
+        route.provider = "xiaomi-token-plan-cn".into();
+        route.adapter = "omp".into();
+        route.executable = "omp".into();
+    }
+    let error = validate(&policy).unwrap_err().to_string();
+    assert!(
+        error.contains("requires provider xiaomi") || error.contains("unsupported adapter"),
+        "spoofed legacy seat was not rejected: {error}"
+    );
+}
+
+#[test]
+fn production_capability_matrix_requires_a_proven_isolated_adapter() {
+    for (family, provider, adapter) in [
+        ("mimo", "xiaomi", "mimo"),
+        ("deepseek", "deepseek", "reasonix"),
+        ("openai", "openai-api", "codex"),
+    ] {
+        validate(&production_policy(family, provider, adapter)).unwrap();
+    }
+
+    for (family, provider, wrong_adapter) in [
+        ("mimo", "xiaomi", "reasonix"),
+        ("mimo", "xiaomi", "omp"),
+        ("deepseek", "deepseek", "mimo"),
+        ("openai", "openai-api", "reasonix"),
+    ] {
+        let error = validate(&production_policy(family, provider, wrong_adapter))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("proven stateless binding") || error.contains("unsupported adapter"),
+            "accepted {wrong_adapter} for {family}: {error}"
+        );
+    }
 }

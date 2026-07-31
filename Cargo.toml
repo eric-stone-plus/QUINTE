@@ -1,6 +1,6 @@
 [package]
 name = "quinte"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2024"
 description = "Protocol-enforcing CLI for QUINTE adversarial review"
 license = "MIT"
@@ -28,7 +28,6 @@ infer = "0.19"
 jsonschema = "0.47"
 rand = "0.10"
 regex = "1.12"
-rusqlite = { version = "0.38", features = ["backup", "bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
@@ -45,7 +44,6 @@ windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
-    "Win32_Security_Credentials",
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",

@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/result/2.0/schema.json",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/result/2.1/schema.json",
   "title": "QUINTE Result",
   "type": "object",
   "additionalProperties": false,
-  "required": ["result_version", "run_id", "status", "brief_sha256", "question", "action_scope", "affected_paths", "action_binding_sha256", "summary", "recommendation", "dissent", "residuals", "trial_manifest"],
+  "required": ["result_version", "run_id", "status", "brief_sha256", "question", "action_scope", "affected_paths", "action_binding_sha256", "seat_binding", "route_bindings", "summary", "recommendation", "dissent", "residuals", "trial_manifest"],
   "properties": {
-    "result_version": { "const": "2.0" },
+    "result_version": { "const": "2.1" },
     "run_id": { "type": "string", "minLength": 1 },
     "status": { "enum": ["completed", "degraded"] },
     "brief_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
@@ -22,6 +22,8 @@
       "type": ["string", "null"],
       "pattern": "^sha256:[a-f0-9]{64}$"
     },
+    "seat_binding": { "$ref": "#/$defs/seat_binding" },
+    "route_bindings": { "type": "array", "minItems": 7, "maxItems": 7, "items": { "$ref": "#/$defs/route_binding" } },
     "summary": { "type": "string", "minLength": 1 },
     "recommendation": { "type": "string", "minLength": 1 },
     "dissent": { "type": "array", "items": { "type": "string" } },
@@ -57,5 +59,10 @@
         "wall_time_seconds": { "type": ["integer", "null"], "minimum": 0 }
       }
     }
+  },
+  "$defs": {
+    "identifier": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^\\S+$" },
+    "seat_binding": { "type": "object", "additionalProperties": false, "required": ["seat_id", "family", "provider", "text_model", "multimodal_model"], "properties": { "seat_id": { "$ref": "#/$defs/identifier" }, "family": { "$ref": "#/$defs/identifier" }, "provider": { "$ref": "#/$defs/identifier" }, "text_model": { "$ref": "#/$defs/identifier" }, "multimodal_model": { "$ref": "#/$defs/identifier" } } },
+    "route_binding": { "type": "object", "additionalProperties": false, "required": ["party_id", "route_id", "adapter", "executable", "family", "provider", "text_model", "multimodal_model", "perspective"], "properties": { "party_id": { "enum": ["Party A", "Party B", "Party C", "Party D", "Party E", "Counterpart Arbiter", "Primary Arbiter"] }, "route_id": { "$ref": "#/$defs/identifier" }, "adapter": { "$ref": "#/$defs/identifier" }, "executable": { "type": "string", "minLength": 1, "maxLength": 4000 }, "family": { "$ref": "#/$defs/identifier" }, "provider": { "$ref": "#/$defs/identifier" }, "text_model": { "$ref": "#/$defs/identifier" }, "multimodal_model": { "$ref": "#/$defs/identifier" }, "perspective": { "type": "string", "maxLength": 2000 } } }
   }
 }

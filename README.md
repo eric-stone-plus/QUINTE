@@ -45,22 +45,22 @@ behavior in scenarios and arbitrates it with contracts.
 
 ## Runtime Boundary
 
-The default policy binds the protocol roles to these native routes:
+Policy v2 binds all seven roles to one seat identity. The four binding axes
+(`family`, `provider`, `text_model`, `multimodal_model`) must match exactly:
 
-| Role | Route | Rounds |
+| Seat family | Adapter for Party A-E and both arbiters | Requirement |
 | --- | --- | --- |
-| Party A | CodeWhale | R1, R2 |
-| Party B | OpenCode | R1, R2 |
-| Party C | KiloCode| R1, R2 |
-| Party D | MiMoCode| R1, R2 |
-| Party E | Oh-My-Pi | R1, R2 |
-| Primary Arbiter | Hermes | R3 only |
-| Counterpart Arbiter | ClaudeCode | R3 only |
+| MiMo | MiMoCode | isolated config/auth from selected Xiaomi key and base URL |
+| DeepSeek | Reasonix | stateless provider config from selected DeepSeek key and base URL |
+| OpenAI | Codex | relay must implement the Responses API |
 
-For text-only briefs, R1 and R2 run on each route's configured default text
-model. A supported image attachment switches the run to the route's
-vision-capable model. These are same-family behavioral
-perspectives, not independent model confirmation.
+Party A-E provide policy-defined scenario perspectives; they are not different
+model families. Both R3 arbiters use the same seat family too. Cross-family
+comparison belongs to an outer orchestrator such as MAGI, not one QUINTE run.
+Legacy policy v1 remains readable without rewrite, but its historical native
+harness roster is a compatibility surface, not the production v2 default. It
+cannot start a new run; back up the file and run `quinte init --force` to
+install a production v2 policy.
 
 There is deliberately no command for running one party, skipping R2, replacing
 a failed party, or asking a model to advance the state machine. A required lane
@@ -152,20 +152,18 @@ with `quinte-run --brief …`. Keep **one active run** at a time.
 
 ### Credentials and roster
 
-The CLI is self-contained, but a complete run depends on the fixed native agent
-roster and existing token-plan credentials. `quinte doctor` checks CodeWhale,
-OpenCode, Kilo, MiMo, OMP, Claude Code, and their credential sources.
-
-Provision the Claude/MiMo token with Keychain Access on macOS or Windows
-Credential Manager on Windows, then verify with `quinte credential status`.
-QUINTE exposes no secret-writing command; see the CLI contract for the exact
-account/service or target identity.
+The CLI is self-contained, but a production policy needs the matching adapter
+and exactly one selected provider key/base URL pair. Set
+`QUINTE_PROVIDER_KEY_ENV` and `QUINTE_PROVIDER_BASE_URL_ENV` to the appropriate
+allowlisted names (`XIAOMI_*`, `DEEPSEEK_*`, or `OPENAI_*`). HTTPS is required;
+whitespace and `.invalid` placeholders fail closed. `quinte doctor --json`
+checks all seven roles before dispatch.
 
 Create a brief such as `brief.json`:
 
 ```json
 {
-  "brief_version": "1.0",
+  "brief_version": "1.1",
   "question": "Which material risks remain in this change?",
   "context": "Review the implementation, tests, and operational boundary.",
   "evidence_roots": ["/absolute/path/to/project"],
@@ -182,22 +180,24 @@ quinte run --brief brief.json --json
 ```
 
 The default command returns immediately with a queued run while a supervised
-background worker advances R1, R2, and the Counterpart Arbiter:
+background worker advances R1, R2, both arbiters, and deterministic merge:
 
 ```json
 {"cli_envelope_version":"1.0","ok":true,"data":{"run_id":"...","status":"queued","run_dir":"..."}}
 ```
 
-Use `--wait` to keep the initiating terminal attached to state observation
-(not to the worker itself). It normally returns when the Primary Arbiter input is required:
+Use `--wait` only for a human terminal that wants state observation (not worker
+ownership). Production policy v2 requires `auto_primary_arbiter=true`, so a new
+run normally returns `completed`. Historical runs created under policy v1 may
+still expose:
 
 ```json
 {"cli_envelope_version":"1.0","ok":true,"data":{"run_id":"...","status":"waiting_primary_arbiter","run_dir":"..."}}
 ```
 
-`waiting_primary_arbiter` with exit code `0` is a successful handoff, not a completed
-verdict. The Primary Arbiter must read the bound request and evidence, submit its response,
-and then inspect the result:
+`waiting_primary_arbiter` with exit code `0` is a historical/manual handoff,
+not a completed verdict. Only for such an existing run, submit an external
+verdict and inspect:
 
 ```bash
 quinte primary-arbiter request RUN_ID --json
@@ -247,11 +247,10 @@ contents; for example, `[".firecrawl", "tools/r4se-packages"]` omits both
 trees. Built-in exclusions for credentials and common generated trees remain
 in force.
 
-OpenCode, Kilo, and MiMo receive validated images with native `--file`
-arguments, OMP receives staged `@file` inputs, and CodeWhale/Claude receive
-their native read-only image path forms. OMP runs from a WAL-consistent,
-per-attempt SQLite credential snapshot; copied credentials are removed after
-each attempt.
+Production v2 adapters receive validated attachments through their native
+read-only input mechanisms. They start from a fresh per-attempt HOME/config
+tree; selected provider state is constructed from the allowlisted environment
+pair and no host agent profile is copied.
 
 ## Isolation and Authorization
 

@@ -6,7 +6,6 @@ pub mod brief;
 pub mod cli;
 pub mod completions;
 pub mod contract;
-pub mod credential;
 pub mod doctor;
 pub mod error;
 pub mod model;

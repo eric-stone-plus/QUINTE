@@ -20,20 +20,18 @@ use walkdir::{DirEntry, WalkDir};
 
 use crate::adapters::{self, Invocation};
 use crate::contract::{
-    ARBITER_VERDICT_VERSION, BRIEF_VERSION, EVIDENCE_PACKET_VERSION,
-    PRIMARY_ARBITER_CHALLENGE_VERSION, PRIMARY_ARBITER_RESPONSE_VERSION,
-    PRIMARY_ARBITER_SUBMISSION_VERSION, PROTOCOL_VERSION, R2_PACKET_VERSION,
-    R3_INPUT_RECEIPT_VERSION, RATE_STATE_VERSION, RETRY_STATE_VERSION, RUN_MANIFEST_VERSION,
-    SNAPSHOT_VERSION, TASK_PACKET_VERSION, TRIAL_MANIFEST_VERSION, brief_version_supported,
-    contract,
+    BRIEF_VERSION, EVIDENCE_PACKET_VERSION, PRIMARY_ARBITER_CHALLENGE_VERSION,
+    PRIMARY_ARBITER_RESPONSE_VERSION, PRIMARY_ARBITER_SUBMISSION_VERSION, PROTOCOL_VERSION,
+    R2_PACKET_VERSION, R3_INPUT_RECEIPT_VERSION, RATE_STATE_VERSION, RETRY_STATE_VERSION,
+    RUN_MANIFEST_VERSION, SNAPSHOT_VERSION, TASK_PACKET_VERSION, TRIAL_MANIFEST_VERSION,
+    brief_version_supported, contract,
 };
 use crate::model::{
     ArbiterVerdict, ArtifactBinding, AttachmentEntry, Brief, ClosureState, Disposition,
-    LaneArtifactBinding, LaneOutput, MULTIMODAL_MODEL, Policy, PrimaryArbiterChallenge,
-    PrimaryArbiterResponse, PrimaryArbiterSubmissionReceipt, PrimaryArbiterSubmissionState,
-    R2Packet, R3InputReceipt, RESULT_VERSION, Residual, ResultEnvelope, RunError, RunManifest,
-    RunStatus, Severity, SnapshotEntry, SnapshotManifest, TEXT_MODEL, TrialManifest,
-    TrialPerspective,
+    LaneArtifactBinding, LaneOutput, Policy, PrimaryArbiterChallenge, PrimaryArbiterResponse,
+    PrimaryArbiterSubmissionReceipt, PrimaryArbiterSubmissionState, R2Packet, R3InputReceipt,
+    RESULT_VERSION, Residual, ResultEnvelope, RouteBinding, RunError, RunManifest, RunStatus,
+    Severity, SnapshotEntry, SnapshotManifest, TrialManifest, TrialPerspective,
 };
 use crate::policy;
 use crate::schema::{
@@ -326,7 +324,7 @@ fn resume_suspended_process(pid: u32) -> anyhow::Result<()> {
 
 #[derive(Debug)]
 struct AttemptOutcome {
-    output: Option<LaneOutput>,
+    output: Option<adapters::AdapterOutput>,
     error: Option<String>,
     cancelled: bool,
     retry: RetryClass,
@@ -447,11 +445,10 @@ fn r2_rate_state_path(run_dir: &Path) -> PathBuf {
 }
 
 fn retry_deadline_path(run_dir: &Path, phase: &str, route_id: &str) -> PathBuf {
-    let lane_route_id = if phase == "R3" { "cc" } else { route_id };
     run_dir
         .join("lanes")
         .join(phase)
-        .join(lane_route_id)
+        .join(route_id)
         .join("retry-deadline.json")
 }
 
@@ -683,9 +680,9 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
     write_json(&run_dir.join("input/snapshot-manifest.json"), &snapshot)?;
 
     let effective_model = if snapshot.attachments.is_empty() {
-        TEXT_MODEL
+        policy.text_model.as_str()
     } else {
-        MULTIMODAL_MODEL
+        policy.multimodal_model.as_str()
     };
     let runtime_sha256 = runtime_sha256()?;
     let now = utc_now();
@@ -701,6 +698,8 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
         runtime_sha256,
         protocol_version: PROTOCOL_VERSION.into(),
         effective_model: effective_model.to_string(),
+        seat_binding: policy.seat.clone(),
+        route_bindings: policy_route_bindings(policy),
         sandbox_mode: policy.sandbox_mode,
         current_phase: None,
         error: None,
@@ -723,6 +722,16 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
         status: RunStatus::Queued,
         run_dir,
     })
+}
+
+fn policy_route_bindings(policy: &Policy) -> Vec<RouteBinding> {
+    policy
+        .roster
+        .iter()
+        .chain(std::iter::once(&policy.counterpart_arbiter))
+        .chain(std::iter::once(&policy.primary_arbiter))
+        .map(RouteBinding::from)
+        .collect()
 }
 
 /// Starts the scheduler in a separate process so the creating CLI can return immediately.
@@ -1321,17 +1330,12 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
             return Ok(RunStatus::Cancelled);
         }
         let lane_result = (|| {
-            let attempt = next_attempt(&run_dir, "R3", "cc", policy.max_attempts)?;
-            wait_for_retry_deadline(
-                store,
-                &mut manifest,
-                "R3",
-                &policy.counterpart_arbiter,
-                attempt,
-            )?;
-            let lane_root = run_dir.join(format!("lanes/R3/cc/attempt-{attempt}"));
+            let route = &policy.counterpart_arbiter;
+            let attempt = next_attempt(&run_dir, "R3", &route.route_id, policy.max_attempts)?;
+            wait_for_retry_deadline(store, &mut manifest, "R3", route, attempt)?;
+            let lane_root = run_dir.join(format!("lanes/R3/{}/attempt-{attempt}", route.route_id));
             let invocation = adapters::build(
-                &policy.counterpart_arbiter,
+                route,
                 "R3",
                 &manifest.effective_model,
                 &evidence_packet_path,
@@ -1341,8 +1345,8 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
             let outcome = run_attempt(
                 store,
                 &manifest,
-                &policy.counterpart_arbiter.party_id,
-                &policy.counterpart_arbiter.adapter,
+                &route.party_id,
+                &route.adapter,
                 "R3",
                 attempt,
                 invocation,
@@ -1350,19 +1354,19 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
                 policy.max_output_bytes,
                 policy.max_attempts,
             )?;
-            await_lane_output(
+            await_arbiter_output(
                 store,
                 &mut manifest,
                 &policy,
                 "R3",
                 &evidence_packet_path,
                 &run_dir,
-                &policy.counterpart_arbiter,
+                route,
                 attempt,
                 outcome,
             )
         })();
-        let lane = match lane_result {
+        let verdict = match lane_result {
             Err(error) => {
                 if manifest.status == RunStatus::Cancelled {
                     return Ok(RunStatus::Cancelled);
@@ -1376,10 +1380,9 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
                     false,
                 );
             }
-            Ok(Some(lane)) => lane,
+            Ok(Some(verdict)) => verdict,
             Ok(None) => return cancel_run(store, &mut manifest),
         };
-        let verdict = arbiter_from_lane(lane);
         if let Err(error) = write_json(&cc_path, &verdict) {
             return fail_run(
                 store,
@@ -1409,6 +1412,118 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
             &error.to_string(),
             false,
         );
+    }
+
+    if policy.auto_primary_arbiter && manifest.primary_arbiter_submission.is_none() {
+        if manifest.primary_arbiter_challenge.is_none() {
+            let challenge =
+                match create_primary_arbiter_challenge(&manifest, &brief, &evidence_packet_path) {
+                    Ok(challenge) => challenge,
+                    Err(error) => {
+                        return fail_run(
+                            store,
+                            &mut manifest,
+                            RunStatus::FailedPolicy,
+                            "r3_primary_arbiter_challenge_failed",
+                            &error.to_string(),
+                            false,
+                        );
+                    }
+                };
+            manifest.primary_arbiter_challenge = Some(challenge);
+            store.save_manifest(&manifest)?;
+        }
+        let primary_packet_path = run_dir.join("r3/primary-arbiter-packet.json");
+        if let Err(error) = ensure_primary_arbiter_packet(
+            &manifest,
+            &evidence_packet_path,
+            &cc_path,
+            &primary_packet_path,
+        ) {
+            return fail_run(
+                store,
+                &mut manifest,
+                RunStatus::FailedPolicy,
+                "r3_primary_arbiter_input_drift",
+                &error.to_string(),
+                false,
+            );
+        }
+        let lane_result = (|| {
+            let route = &policy.primary_arbiter;
+            let attempt = next_attempt(&run_dir, "R3", &route.route_id, policy.max_attempts)?;
+            wait_for_retry_deadline(store, &mut manifest, "R3", route, attempt)?;
+            let lane_root = run_dir.join(format!("lanes/R3/{}/attempt-{attempt}", route.route_id));
+            let invocation = adapters::build(
+                route,
+                "R3",
+                &manifest.effective_model,
+                &primary_packet_path,
+                &lane_root,
+                policy.timeout_seconds,
+            )?;
+            let outcome = run_attempt(
+                store,
+                &manifest,
+                &route.party_id,
+                &route.adapter,
+                "R3",
+                attempt,
+                invocation,
+                policy.timeout_seconds,
+                policy.max_output_bytes,
+                policy.max_attempts,
+            )?;
+            await_arbiter_output(
+                store,
+                &mut manifest,
+                &policy,
+                "R3",
+                &primary_packet_path,
+                &run_dir,
+                route,
+                attempt,
+                outcome,
+            )
+        })();
+        let verdict = match lane_result {
+            Err(error) => {
+                return fail_run(
+                    store,
+                    &mut manifest,
+                    RunStatus::Failed,
+                    "r3_primary_arbiter_failed",
+                    &error.to_string(),
+                    false,
+                );
+            }
+            Ok(Some(verdict)) => verdict,
+            Ok(None) => return cancel_run(store, &mut manifest),
+        };
+        let response = match bound_primary_response(&manifest, verdict) {
+            Ok(response) => response,
+            Err(error) => {
+                return fail_run(
+                    store,
+                    &mut manifest,
+                    RunStatus::FailedPolicy,
+                    "r3_primary_arbiter_response_invalid",
+                    &error.to_string(),
+                    false,
+                );
+            }
+        };
+        if let Err(error) = stage_primary_response(store, &mut manifest, &run_dir, &brief, response)
+        {
+            return fail_run(
+                store,
+                &mut manifest,
+                RunStatus::FailedPolicy,
+                "r3_primary_arbiter_response_invalid",
+                &error.to_string(),
+                false,
+            );
+        }
     }
 
     if manifest.primary_arbiter_submission.is_none() {
@@ -1458,7 +1573,12 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
         );
     }
 
-    if store.transition(&mut manifest, RunStatus::Merging, Some("R3"), json!({}))?
+    let merge_detail = if policy.auto_primary_arbiter {
+        json!({"submission": "automatic"})
+    } else {
+        json!({})
+    };
+    if store.transition(&mut manifest, RunStatus::Merging, Some("R3"), merge_detail)?
         == RunStatus::Cancelled
     {
         return Ok(RunStatus::Cancelled);
@@ -1496,6 +1616,105 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
     )?;
     drop(finalization);
     Ok(status)
+}
+
+fn ensure_primary_arbiter_packet(
+    manifest: &RunManifest,
+    evidence_packet_path: &Path,
+    cc_path: &Path,
+    packet_path: &Path,
+) -> anyhow::Result<()> {
+    let receipt = manifest
+        .r3_input_receipt
+        .as_ref()
+        .ok_or_else(|| anyhow!("R3 input receipt is missing"))?;
+    let packet = json!({
+        "primary_arbiter_packet_version": "1.0",
+        "run_id": manifest.run_id,
+        "input_receipt_sha256": receipt.sha256,
+        "evidence_packet": read_json::<Value>(evidence_packet_path)?,
+        "counterpart_arbiter_verdict": read_json::<ArbiterVerdict>(cc_path)?,
+    });
+    if packet_path.exists() {
+        let existing: Value = read_json(packet_path)?;
+        if existing != packet {
+            bail!("primary arbiter packet changed after creation");
+        }
+        return Ok(());
+    }
+    write_json(packet_path, &packet)
+}
+
+fn verify_primary_arbiter_packet(manifest: &RunManifest, run_dir: &Path) -> anyhow::Result<()> {
+    let packet_path = run_dir.join("r3/primary-arbiter-packet.json");
+    if !packet_path.exists() {
+        return Ok(());
+    }
+    ensure_primary_arbiter_packet(
+        manifest,
+        &run_dir.join("r3/evidence-packet.json"),
+        &run_dir.join("r3/cc-response.json"),
+        &packet_path,
+    )
+}
+
+fn bound_primary_response(
+    manifest: &RunManifest,
+    verdict: ArbiterVerdict,
+) -> anyhow::Result<PrimaryArbiterResponse> {
+    let challenge = manifest
+        .primary_arbiter_challenge
+        .as_ref()
+        .ok_or_else(|| anyhow!("primary arbiter challenge is missing"))?;
+    Ok(PrimaryArbiterResponse {
+        primary_arbiter_response_version: PRIMARY_ARBITER_RESPONSE_VERSION.into(),
+        run_id: challenge.run_id.clone(),
+        nonce: challenge.nonce.clone(),
+        policy_sha256: challenge.policy_sha256.clone(),
+        evidence_packet_sha256: challenge.evidence_packet_sha256.clone(),
+        input_receipt_sha256: challenge.input_receipt_sha256.clone(),
+        action_scope: challenge.action_scope.clone(),
+        verdict,
+    })
+}
+
+fn stage_primary_response(
+    store: &Store,
+    manifest: &mut RunManifest,
+    run_dir: &Path,
+    brief: &Brief,
+    response: PrimaryArbiterResponse,
+) -> anyhow::Result<()> {
+    validate_new_primary_arbiter_response(
+        manifest,
+        &response,
+        brief,
+        &run_dir.join("r3/evidence-packet.json"),
+    )?;
+    validate_arbiter_semantics(&response.verdict, run_dir)?;
+    let response_bytes = serde_json::to_vec_pretty(&response)?;
+    let response_sha256 = sha256_bytes(&response_bytes_with_newline(response_bytes));
+    let input_receipt_sha256 = manifest
+        .r3_input_receipt
+        .as_ref()
+        .ok_or_else(|| anyhow!("R3 input receipt is missing"))?
+        .sha256
+        .clone();
+    manifest.primary_arbiter_submission = Some(PrimaryArbiterSubmissionReceipt {
+        submission_receipt_version: PRIMARY_ARBITER_SUBMISSION_VERSION.into(),
+        state: PrimaryArbiterSubmissionState::Staging,
+        response_ref: "r3/primary-arbiter-response.json".into(),
+        response_sha256,
+        input_receipt_sha256,
+        staged_at: utc_now(),
+        accepted_at: None,
+    });
+    store.save_manifest(manifest)?;
+    write_json(&run_dir.join("r3/primary-arbiter-response.json"), &response)?;
+    if !recover_primary_arbiter_submission(manifest, brief, run_dir)? {
+        bail!("primary-arbiter response could not be durably accepted");
+    }
+    store.save_manifest(manifest)
 }
 
 pub fn submit_primary_arbiter(
@@ -2013,6 +2232,12 @@ fn verify_resume_integrity(
     policy: &Policy,
     run_dir: &Path,
 ) -> anyhow::Result<()> {
+    policy::validate_for_runtime(policy)?;
+    if manifest.seat_binding != policy.seat
+        || manifest.route_bindings != policy_route_bindings(policy)
+    {
+        bail!("seat or route binding changed since run creation");
+    }
     if runtime_sha256()? != manifest.runtime_sha256 {
         bail!("QUINTE runtime changed since run creation");
     }
@@ -2044,6 +2269,7 @@ fn verify_resume_integrity(
     if manifest.r3_input_receipt.is_some() {
         verify_r3_input_receipt(manifest, policy, run_dir)?;
     }
+    verify_primary_arbiter_packet(manifest, run_dir)?;
     if manifest.primary_arbiter_submission.is_some() {
         let mut recovered = manifest.clone();
         recover_primary_arbiter_submission(&mut recovered, brief, run_dir)?;
@@ -2216,12 +2442,10 @@ fn run_phase(
         let mut jobs = Vec::new();
         let mut spawn_cancelled = false;
         for (index, (route, attempt, invocation)) in prepared.into_iter().enumerate() {
-            if index > 0 && !stagger.is_zero() {
-                if wait_cancellable(&run_dir, stagger) {
-                    let _ = cancel_run(store, manifest);
-                    spawn_cancelled = true;
-                    break;
-                }
+            if index > 0 && !stagger.is_zero() && wait_cancellable(&run_dir, stagger) {
+                let _ = cancel_run(store, manifest);
+                spawn_cancelled = true;
+                break;
             }
             let job_store = Store::new(store.home().to_path_buf());
             let job_manifest = manifest.clone();
@@ -2389,7 +2613,13 @@ fn accept_or_retry_lane(
             cancel_run(store, manifest)?;
             bail!("run cancelled");
         }
-        if let Some(output) = outcome.output {
+        if matches!(outcome.output, Some(adapters::AdapterOutput::Arbiter(_))) {
+            bail!(
+                "internal adapter contract mismatch: {} returned ArbiterVerdict in {phase}",
+                route.party_id
+            );
+        }
+        if let Some(adapters::AdapterOutput::Lane(output)) = outcome.output {
             validate_evidence_refs(&output, run_dir)?;
             let accepted_path =
                 run_dir.join(format!("lanes/{phase}/{}/accepted.json", route.route_id));
@@ -2432,7 +2662,7 @@ fn accept_or_retry_lane(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn await_lane_output(
+fn await_arbiter_output(
     store: &Store,
     manifest: &mut RunManifest,
     policy: &Policy,
@@ -2442,19 +2672,25 @@ fn await_lane_output(
     route: &crate::model::RoutePolicy,
     mut attempt: usize,
     mut outcome: AttemptOutcome,
-) -> anyhow::Result<Option<LaneOutput>> {
+) -> anyhow::Result<Option<ArbiterVerdict>> {
     loop {
         if outcome.cancelled || cancellation_requested(run_dir) {
             return Ok(None);
         }
-        if let Some(output) = outcome.output {
-            validate_evidence_refs(&output, run_dir)?;
+        if matches!(outcome.output, Some(adapters::AdapterOutput::Lane(_))) {
+            bail!(
+                "internal adapter contract mismatch: {} returned LaneOutput in {phase}",
+                route.party_id
+            );
+        }
+        if let Some(adapters::AdapterOutput::Arbiter(output)) = outcome.output {
+            validate_arbiter_semantics(&output, run_dir)?;
             return Ok(Some(output));
         }
         let error = outcome
             .error
             .take()
-            .unwrap_or_else(|| "invalid adapter output".to_string());
+            .unwrap_or_else(|| "invalid arbiter output".to_string());
         if !retry_allowed(outcome.retry, attempt, policy.max_attempts) {
             bail!("{} failed in {phase}: {error}", route.party_id);
         }
@@ -2549,8 +2785,10 @@ fn run_retry_attempt(
         Some(attempt),
         json!({"route_id": route.route_id}),
     )?;
-    let lane_route_id = if phase == "R3" { "cc" } else { &route.route_id };
-    let lane_root = run_dir.join(format!("lanes/{phase}/{lane_route_id}/attempt-{attempt}"));
+    let lane_root = run_dir.join(format!(
+        "lanes/{phase}/{}/attempt-{attempt}",
+        route.route_id
+    ));
     let invocation = adapters::build(
         route,
         phase,
@@ -2723,6 +2961,7 @@ fn run_attempt(
     let (mut output, mut error, mut retry) = evaluate_attempt_output(
         adapter,
         invocation.output_kind,
+        invocation.contract,
         &stdout,
         &stderr,
         exit_code,
@@ -2733,18 +2972,24 @@ fn run_attempt(
     );
     let mut output_recovered_after_timeout = timed_out && output.is_some();
     if let Some(candidate) = output.as_ref()
-        && let Err(validation_error) =
-            validate_evidence_refs(candidate, &store.run_dir(&manifest.run_id)?)
+        && let Err(validation_error) = match candidate {
+            adapters::AdapterOutput::Lane(output) => {
+                validate_evidence_refs(output, &store.run_dir(&manifest.run_id)?)
+            }
+            adapters::AdapterOutput::Arbiter(verdict) => {
+                validate_arbiter_semantics(verdict, &store.run_dir(&manifest.run_id)?)
+            }
+        }
     {
         output = None;
         if timed_out {
             error = Some(format!(
-                "timeout; captured LaneOutput failed evidence validation: {validation_error}"
+                "timeout; captured adapter output failed evidence validation: {validation_error}"
             ));
             retry = RetryClass::TransientTimeout;
         } else {
             error = Some(format!(
-                "LaneOutput failed evidence validation: {validation_error}"
+                "adapter output failed evidence validation: {validation_error}"
             ));
             retry = RetryClass::Never;
         }
@@ -2791,6 +3036,7 @@ const MIMO_REPETITION_ERROR: &str =
 fn evaluate_attempt_output(
     adapter: &str,
     output_kind: adapters::OutputKind,
+    output_contract: adapters::OutputContract,
     stdout: &[u8],
     stderr: &[u8],
     exit_code: Option<i32>,
@@ -2798,7 +3044,7 @@ fn evaluate_attempt_output(
     cancelled: bool,
     output_limit_exceeded: bool,
     max_output_bytes: usize,
-) -> (Option<LaneOutput>, Option<String>, RetryClass) {
+) -> (Option<adapters::AdapterOutput>, Option<String>, RetryClass) {
     if cancelled {
         return (None, Some("cancelled".into()), RetryClass::Never);
     }
@@ -2836,7 +3082,12 @@ fn evaluate_attempt_output(
         return (None, Some(adapter_error.message), RetryClass::Never);
     }
     if timed_out {
-        return match adapters::parse_output_with_limit(output_kind, stdout, max_output_bytes) {
+        return match adapters::parse_typed_output_with_limit(
+            output_kind,
+            output_contract,
+            stdout,
+            max_output_bytes,
+        ) {
             Ok(output) => (Some(output), None, RetryClass::Never),
             Err(_) => (None, Some("timeout".into()), RetryClass::TransientTimeout),
         };
@@ -2859,17 +3110,22 @@ fn evaluate_attempt_output(
             )
         };
     }
-    match adapters::parse_output_with_limit(output_kind, stdout, max_output_bytes) {
+    match adapters::parse_typed_output_with_limit(
+        output_kind,
+        output_contract,
+        stdout,
+        max_output_bytes,
+    ) {
         Ok(output) => (Some(output), None, RetryClass::Never),
         Err(parse_error) => {
+            let event_stream_unusable = output_kind == adapters::OutputKind::JsonEvents
+                && adapters::events_completed_with_unusable_final_candidate(stdout);
+            let envelope_unusable = output_kind == adapters::OutputKind::EnvelopeJson
+                && envelope_completed_with_unusable_result(stdout);
             let truncated_completion = matches!(adapter, "codewhale" | "fake_codewhale")
                 && adapters::codewhale_completed_with_retryable_content(stdout)
-                || matches!(
-                    output_kind,
-                    adapters::OutputKind::JsonEvents
-                        | adapters::OutputKind::OmpJson
-                        | adapters::OutputKind::TextJson
-                ) && adapters::events_completed_with_unusable_final_candidate(stdout);
+                || event_stream_unusable
+                || envelope_unusable;
             let retry = if truncated_completion {
                 RetryClass::TransientAdapter
             } else {
@@ -2880,24 +3136,40 @@ fn evaluate_attempt_output(
     }
 }
 
+fn envelope_completed_with_unusable_result(stdout: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<Value>(stdout) else {
+        return false;
+    };
+    if value.get("is_error").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
+    match value
+        .get("structured_output")
+        .or_else(|| value.get("result"))
+    {
+        None | Some(Value::Null) => true,
+        Some(Value::String(text)) => {
+            text.trim().is_empty()
+                || !text.contains('{')
+                || adapters::events_completed_with_unusable_final_candidate(text.as_bytes())
+        }
+        Some(_) => false,
+    }
+}
+
 fn is_mimo_repetition_error(message: &str) -> bool {
     message.starts_with("Text repetition detected: repeated n-grams after ")
         && message.contains(" recovery attempts")
 }
 
 fn classify_rate_limit(adapter: &str, stdout: &[u8], stderr: &[u8]) -> Option<RateLimitSignal> {
-    let known_adapter = matches!(
-        adapter,
-        "codewhale" | "opencode" | "kilo" | "mimo" | "omp" | "claude"
-    );
+    let known_adapter = matches!(adapter, "mimo" | "reasonix" | "codex");
     #[cfg(feature = "test-adapters")]
     let known_adapter = known_adapter || adapter == "fake";
     if !known_adapter {
         return None;
     }
-    if adapter != "omp"
-        && let Some(retry_after_seconds) = structured_rate_limit(stdout)
-    {
+    if let Some(retry_after_seconds) = structured_rate_limit(stdout) {
         return Some(RateLimitSignal {
             source: "adapter_structured_error",
             retry_after_seconds,
@@ -3480,15 +3752,6 @@ fn response_bytes_with_newline(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
-fn arbiter_from_lane(output: LaneOutput) -> ArbiterVerdict {
-    ArbiterVerdict {
-        arbiter_verdict_version: ARBITER_VERDICT_VERSION.into(),
-        summary: output.verdict.clone(),
-        recommendation: output.verdict,
-        residuals: output.residuals,
-    }
-}
-
 fn residual_fields_conflict(left: &Residual, right: &Residual) -> bool {
     left.disposition != right.disposition
         || left.closure_state != right.closure_state
@@ -3614,6 +3877,8 @@ counterpart arbiter: {}",
         action_scope: brief.action_scope.clone(),
         affected_paths: brief.affected_paths.clone(),
         action_binding_sha256: brief.action_binding_sha256.clone(),
+        seat_binding: manifest.seat_binding.clone(),
+        route_bindings: manifest.route_bindings.clone(),
         summary: primary_arbiter.summary.clone(),
         recommendation: primary_arbiter.recommendation.clone(),
         dissent,
@@ -3988,6 +4253,12 @@ pub fn wait(store: &Store, run_id: &str, poll_interval: Duration) -> anyhow::Res
             return Ok(status);
         }
         if status == RunStatus::WaitingPrimaryArbiter {
+            let policy: Value = read_json(&store.run_dir(run_id)?.join("input/policy.json"))?;
+            if policy.get("auto_primary_arbiter").and_then(Value::as_bool) == Some(true) {
+                bail!(
+                    "automatic Primary Arbiter run entered the manual handoff state; run `quinte resume {run_id}` to recover"
+                );
+            }
             return Ok(status);
         }
         ensure_worker_liveness(store, run_id)?;
@@ -4546,6 +4817,8 @@ mod retry_tests {
             runtime_sha256: format!("sha256:{}", "d".repeat(64)),
             protocol_version: "1.0".into(),
             effective_model: "mimo-v2.5-pro".into(),
+            seat_binding: Default::default(),
+            route_bindings: crate::model::legacy_route_bindings(),
             sandbox_mode: SandboxMode::Process,
             current_phase: Some("R3".into()),
             error: None,
@@ -4890,6 +5163,7 @@ mod retry_tests {
         let (output, error, retry) = evaluate_attempt_output(
             "fake",
             OutputKind::DirectJson,
+            adapters::OutputContract::Lane,
             &bytes,
             b"",
             None,
@@ -4898,13 +5172,17 @@ mod retry_tests {
             false,
             bytes.len(),
         );
-        assert_eq!(output.unwrap().verdict, "complete before timeout");
+        assert_eq!(
+            output.unwrap().into_lane().unwrap().verdict,
+            "complete before timeout"
+        );
         assert_eq!(error, None);
         assert_eq!(retry, RetryClass::Never);
 
         let (output, error, retry) = evaluate_attempt_output(
             "fake",
             OutputKind::DirectJson,
+            adapters::OutputContract::Lane,
             br#"{"lane_output_version":"1.0""#,
             b"",
             None,
@@ -4928,6 +5206,7 @@ mod retry_tests {
         let (output, error, retry) = evaluate_attempt_output(
             "mimo",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             &bytes,
             b"",
             Some(0),
@@ -4945,6 +5224,7 @@ mod retry_tests {
         let (_, error, retry) = evaluate_attempt_output(
             "mimo",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             &bytes,
             b"",
             Some(0),
@@ -4967,6 +5247,7 @@ mod retry_tests {
         let (_, error, retry) = evaluate_attempt_output(
             "mimo",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             &bytes,
             b"",
             Some(0),
@@ -4990,6 +5271,7 @@ mod retry_tests {
         let (output, error, retry) = evaluate_attempt_output(
             "codewhale",
             OutputKind::CodewhaleStream,
+            adapters::OutputContract::Lane,
             stdout.as_bytes(),
             b"",
             Some(0),
@@ -5009,6 +5291,7 @@ mod retry_tests {
         let (_, _, retry) = evaluate_attempt_output(
             "codewhale",
             OutputKind::CodewhaleStream,
+            adapters::OutputContract::Lane,
             truncated.to_string().as_bytes(),
             b"",
             Some(0),
@@ -5029,8 +5312,9 @@ mod retry_tests {
             serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
         );
         let (output, error, retry) = evaluate_attempt_output(
-            "opencode",
+            "mimo",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             stdout.as_bytes(),
             b"",
             Some(0),
@@ -5049,6 +5333,7 @@ mod retry_tests {
         let (_, _, retry) = evaluate_attempt_output(
             "opencode",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             no_terminal.to_string().as_bytes(),
             b"",
             Some(0),
@@ -5069,6 +5354,7 @@ mod retry_tests {
         let (output, error, retry) = evaluate_attempt_output(
             "mimo",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             malformed.as_bytes(),
             b"",
             Some(0),
@@ -5090,6 +5376,7 @@ mod retry_tests {
         let (_, error, retry) = evaluate_attempt_output(
             "opencode",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             schema_invalid.as_bytes(),
             b"",
             Some(0),
@@ -5115,8 +5402,9 @@ mod retry_tests {
             empty_text.as_bytes()
         ));
         let (output, error, retry) = evaluate_attempt_output(
-            "opencode",
+            "mimo",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             empty_text.as_bytes(),
             b"",
             Some(0),
@@ -5129,38 +5417,6 @@ mod retry_tests {
         assert!(error.unwrap().contains("no valid LaneOutput"));
         assert_eq!(retry, RetryClass::TransientAdapter);
 
-        // TextJson (omp) with corrupt quoting — unescaped double quotes inside
-        // a string value make the whole payload unparseable. That is a corrupt
-        // provider payload, transient, not a schema contract failure.
-        let corrupt =
-            br#"{"lane_output_version":"1.0","verdict":"bad "quote" inside","confidence":0.5}"#;
-        let (_, _, retry) = evaluate_attempt_output(
-            "omp",
-            OutputKind::TextJson,
-            corrupt,
-            b"",
-            Some(0),
-            false,
-            false,
-            false,
-            4096,
-        );
-        assert_eq!(retry, RetryClass::TransientAdapter);
-
-        // TextJson pure prose with no JSON candidate at all: same no-payload turn.
-        let (_, _, retry) = evaluate_attempt_output(
-            "omp",
-            OutputKind::TextJson,
-            b"plain prose, no payload",
-            b"",
-            Some(0),
-            false,
-            false,
-            false,
-            4096,
-        );
-        assert_eq!(retry, RetryClass::TransientAdapter);
-
         // Same empty completion with no text events at all (tool calls only).
         let no_text = format!(
             "{}\n{}\n",
@@ -5168,8 +5424,9 @@ mod retry_tests {
             serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
         );
         let (_, _, retry) = evaluate_attempt_output(
-            "kilo",
+            "mimo",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             no_text.as_bytes(),
             b"",
             Some(0),
@@ -5191,8 +5448,9 @@ mod retry_tests {
             schema_invalid.as_bytes()
         ));
         let (output, error, retry) = evaluate_attempt_output(
-            "opencode",
+            "mimo",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             schema_invalid.as_bytes(),
             b"",
             Some(0),
@@ -5221,8 +5479,9 @@ mod retry_tests {
             serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
         );
         let (output, error, retry) = evaluate_attempt_output(
-            "opencode",
+            "mimo",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             valid_stream.as_bytes(),
             b"",
             Some(0),
@@ -5231,7 +5490,7 @@ mod retry_tests {
             false,
             4096,
         );
-        assert_eq!(output.unwrap().verdict, "all good");
+        assert_eq!(output.unwrap().into_lane().unwrap().verdict, "all good");
         assert_eq!(error, None);
         assert_eq!(retry, RetryClass::Never);
     }
@@ -5252,6 +5511,7 @@ mod retry_tests {
         let (output, error, retry) = evaluate_attempt_output(
             "codewhale",
             OutputKind::CodewhaleStream,
+            adapters::OutputContract::Lane,
             stdout.as_bytes(),
             b"",
             Some(0),
@@ -5273,6 +5533,7 @@ mod retry_tests {
         let (_, _, retry) = evaluate_attempt_output(
             "codewhale",
             OutputKind::CodewhaleStream,
+            adapters::OutputContract::Lane,
             no_content.as_bytes(),
             b"",
             Some(0),
@@ -5304,6 +5565,7 @@ mod retry_tests {
         let (output, error, retry) = evaluate_attempt_output(
             "mimo",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             &bytes,
             b"",
             Some(0),
@@ -5332,6 +5594,7 @@ mod retry_tests {
             let (output, error, retry) = evaluate_attempt_output(
                 "mimo",
                 OutputKind::JsonEvents,
+                adapters::OutputContract::Lane,
                 error_event.to_string().as_bytes(),
                 b"",
                 exit_code,
@@ -5362,6 +5625,7 @@ mod retry_tests {
         let (output, error, retry) = evaluate_attempt_output(
             "mimo",
             OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
             event.to_string().as_bytes(),
             b"",
             Some(1),
@@ -5388,24 +5652,28 @@ mod retry_tests {
     #[test]
     fn rate_limit_classification_requires_failed_transport_evidence() {
         let structured = br#"{"error":{"type":"rate_limit_error","retry_after":7}}"#;
-        assert_eq!(
-            classify_rate_limit("mimo", structured, b""),
-            Some(RateLimitSignal {
-                source: "adapter_structured_error",
-                retry_after_seconds: Some(7),
-            })
-        );
-        assert_eq!(
-            classify_rate_limit(
-                "codewhale",
-                b"ordinary output",
-                b"HTTP 429 Too Many Requests\nRetry-After: 9\n",
-            ),
-            Some(RateLimitSignal {
-                source: "adapter_stderr_marker",
-                retry_after_seconds: Some(9),
-            })
-        );
+        for adapter in ["mimo", "reasonix", "codex"] {
+            assert_eq!(
+                classify_rate_limit(adapter, structured, b""),
+                Some(RateLimitSignal {
+                    source: "adapter_structured_error",
+                    retry_after_seconds: Some(7),
+                }),
+                "{adapter} did not classify a typed 429"
+            );
+            assert_eq!(
+                classify_rate_limit(
+                    adapter,
+                    b"ordinary output",
+                    b"HTTP 429 Too Many Requests\nRetry-After: 9\n",
+                ),
+                Some(RateLimitSignal {
+                    source: "adapter_stderr_marker",
+                    retry_after_seconds: Some(9),
+                }),
+                "{adapter} did not classify a transport 429"
+            );
+        }
         assert_eq!(
             classify_rate_limit("mimo", b"a model discussed 429", b""),
             None

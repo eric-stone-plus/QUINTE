@@ -383,7 +383,6 @@ pub(crate) fn parse_slash(line: &str) -> ReplAction {
         },
         "/agents" => ReplAction::Run(vec!["agents".into(), "list".into()]),
         "/policy" => ReplAction::Run(vec!["policy".into(), "show".into()]),
-        "/credential" => ReplAction::Run(vec!["credential".into(), "status".into()]),
         "/brief" => ReplAction::Run(vec!["brief".into(), "new".into()]),
         "/primary-request" => match arg {
             Some(id) => ReplAction::Run(vec!["primary-arbiter".into(), "request".into(), id]),
@@ -417,7 +416,6 @@ const HELP_TEXT: &str = "命令：
   /cancel <run_id>        取消 run
   /agents                 固定五席与裁决者
   /policy                 当前策略
-  /credential             Claude 凭据状态
   /primary-request <id>   导出 Primary Arbiter 请求
   /primary-submit <id> <file>  提交人工裁决
   /brief                  brief 向导（结束后可直接发起）
@@ -843,10 +841,6 @@ mod tests {
         assert_eq!(
             parse_slash("/policy"),
             ReplAction::Run(vec!["policy".into(), "show".into()])
-        );
-        assert_eq!(
-            parse_slash("/credential"),
-            ReplAction::Run(vec!["credential".into(), "status".into()])
         );
         assert_eq!(
             parse_slash("/primary-request x"),

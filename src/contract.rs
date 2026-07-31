@@ -4,11 +4,14 @@
 //! derive from the Cargo package version.
 
 pub const PROTOCOL_VERSION: &str = "1.0";
-pub const POLICY_VERSION: &str = "1.0";
+pub const POLICY_VERSION: &str = "2.0";
+pub const LEGACY_POLICY_VERSION: &str = "1.0";
 pub const BRIEF_VERSION: &str = "1.1";
 pub const LEGACY_BRIEF_VERSION: &str = "1.0";
-pub const RESULT_VERSION: &str = "2.0";
-pub const RUN_MANIFEST_VERSION: &str = "1.0";
+pub const RESULT_VERSION: &str = "2.1";
+pub const LEGACY_RESULT_VERSION: &str = "2.0";
+pub const RUN_MANIFEST_VERSION: &str = "2.0";
+pub const LEGACY_RUN_MANIFEST_VERSION: &str = "1.0";
 pub const RUN_EVENT_VERSION: &str = "1.0";
 pub const LANE_OUTPUT_VERSION: &str = "1.0";
 pub const SNAPSHOT_VERSION: &str = "1.0";
@@ -30,14 +33,18 @@ pub const RATE_STATE_VERSION: &str = "1.0";
 pub const BRIEF_SCHEMA: &str = include_str!("../schemas/brief.schema.json");
 pub const LEGACY_BRIEF_SCHEMA: &str = include_str!("../schemas/legacy/brief-1.0.schema.json");
 pub const LANE_OUTPUT_SCHEMA: &str = include_str!("../schemas/lane-output.schema.json");
+pub const ARBITER_VERDICT_SCHEMA: &str = include_str!("../schemas/arbiter-verdict.schema.json");
 pub const PRIMARY_ARBITER_RESPONSE_SCHEMA: &str =
     include_str!("../schemas/primary-arbiter-response.schema.json");
 pub const LEGACY_HM_RESPONSE_SCHEMA: &str =
     include_str!("../schemas/legacy/hm-response-1.0.schema.json");
 pub const R3_INPUT_RECEIPT_SCHEMA: &str = include_str!("../schemas/r3-input-receipt.schema.json");
 pub const RESULT_SCHEMA: &str = include_str!("../schemas/result.schema.json");
+pub const RESULT_2_0_SCHEMA: &str = include_str!("../schemas/legacy/result-2.0.schema.json");
 pub const LEGACY_RESULT_SCHEMA: &str = include_str!("../schemas/legacy/result-1.0.schema.json");
 pub const RUN_MANIFEST_SCHEMA: &str = include_str!("../schemas/run-manifest.schema.json");
+pub const RUN_MANIFEST_1_0_SCHEMA: &str =
+    include_str!("../schemas/legacy/run-manifest-1.0.schema.json");
 pub const RUN_EVENT_SCHEMA: &str = include_str!("../schemas/run-event.schema.json");
 
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +75,10 @@ const LANE_OUTPUT_REVISIONS: &[ContractRevision] = &[ContractRevision {
     version: LANE_OUTPUT_VERSION,
     schema: LANE_OUTPUT_SCHEMA,
 }];
+const ARBITER_VERDICT_REVISIONS: &[ContractRevision] = &[ContractRevision {
+    version: ARBITER_VERDICT_VERSION,
+    schema: ARBITER_VERDICT_SCHEMA,
+}];
 const PRIMARY_ARBITER_RESPONSE_REVISIONS: &[ContractRevision] = &[ContractRevision {
     version: PRIMARY_ARBITER_RESPONSE_VERSION,
     schema: PRIMARY_ARBITER_RESPONSE_SCHEMA,
@@ -86,14 +97,24 @@ const RESULT_REVISIONS: &[ContractRevision] = &[
         schema: LEGACY_RESULT_SCHEMA,
     },
     ContractRevision {
+        version: LEGACY_RESULT_VERSION,
+        schema: RESULT_2_0_SCHEMA,
+    },
+    ContractRevision {
         version: RESULT_VERSION,
         schema: RESULT_SCHEMA,
     },
 ];
-const RUN_MANIFEST_REVISIONS: &[ContractRevision] = &[ContractRevision {
-    version: RUN_MANIFEST_VERSION,
-    schema: RUN_MANIFEST_SCHEMA,
-}];
+const RUN_MANIFEST_REVISIONS: &[ContractRevision] = &[
+    ContractRevision {
+        version: LEGACY_RUN_MANIFEST_VERSION,
+        schema: RUN_MANIFEST_1_0_SCHEMA,
+    },
+    ContractRevision {
+        version: RUN_MANIFEST_VERSION,
+        schema: RUN_MANIFEST_SCHEMA,
+    },
+];
 const RUN_EVENT_REVISIONS: &[ContractRevision] = &[ContractRevision {
     version: RUN_EVENT_VERSION,
     schema: RUN_EVENT_SCHEMA,
@@ -139,14 +160,14 @@ pub const CONTRACT_REGISTRY: &[ContractSpec] = &[
         name: "result",
         version_field: "result_version",
         current_version: RESULT_VERSION,
-        accepted_versions: &["1.0", RESULT_VERSION],
+        accepted_versions: &["1.0", LEGACY_RESULT_VERSION, RESULT_VERSION],
         revisions: RESULT_REVISIONS,
     },
     ContractSpec {
         name: "run_manifest",
         version_field: "manifest_version",
         current_version: RUN_MANIFEST_VERSION,
-        accepted_versions: &[RUN_MANIFEST_VERSION],
+        accepted_versions: &[LEGACY_RUN_MANIFEST_VERSION, RUN_MANIFEST_VERSION],
         revisions: RUN_MANIFEST_REVISIONS,
     },
     ContractSpec {
@@ -160,7 +181,7 @@ pub const CONTRACT_REGISTRY: &[ContractSpec] = &[
         name: "policy",
         version_field: "policy_version",
         current_version: POLICY_VERSION,
-        accepted_versions: &[POLICY_VERSION],
+        accepted_versions: &[LEGACY_POLICY_VERSION, POLICY_VERSION],
         revisions: &[],
     },
     ContractSpec {
@@ -196,7 +217,7 @@ pub const CONTRACT_REGISTRY: &[ContractSpec] = &[
         version_field: "arbiter_verdict_version",
         current_version: ARBITER_VERDICT_VERSION,
         accepted_versions: &[ARBITER_VERDICT_VERSION],
-        revisions: &[],
+        revisions: ARBITER_VERDICT_REVISIONS,
     },
     ContractSpec {
         name: "trial_manifest",

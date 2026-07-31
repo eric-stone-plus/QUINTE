@@ -670,6 +670,7 @@ fn transition_allowed(from: RunStatus, to: RunStatus) -> bool {
             | (RunStatus::R2Gate, RunStatus::R3Cc)
             | (RunStatus::R2Gate, RunStatus::WaitingPrimaryArbiter)
             | (RunStatus::R3Cc, RunStatus::WaitingPrimaryArbiter)
+            | (RunStatus::R3Cc, RunStatus::Merging)
             | (RunStatus::WaitingPrimaryArbiter, RunStatus::Merging)
             | (RunStatus::Merging, RunStatus::Completed)
             | (RunStatus::Merging, RunStatus::Degraded)
@@ -696,7 +697,7 @@ mod tests {
 
     fn manifest(run_id: &str) -> RunManifest {
         RunManifest {
-            manifest_version: "1.0".into(),
+            manifest_version: "2.0".into(),
             run_id: run_id.into(),
             created_at: "2026-07-13T00:00:00.000Z".into(),
             updated_at: "2026-07-13T00:00:00.000Z".into(),
@@ -707,6 +708,8 @@ mod tests {
             runtime_sha256: format!("sha256:{}", "d".repeat(64)),
             protocol_version: "1.0".into(),
             effective_model: "mimo-v2.5-pro".into(),
+            seat_binding: Default::default(),
+            route_bindings: crate::model::legacy_route_bindings(),
             sandbox_mode: SandboxMode::Process,
             current_phase: None,
             error: None,
@@ -738,6 +741,28 @@ mod tests {
         assert_eq!(
             store.load_manifest(RUN_ID).unwrap().status,
             RunStatus::Queued
+        );
+    }
+
+    #[test]
+    fn automatic_arbitration_can_merge_without_a_manual_handoff() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = Store::new(temporary.path().join("home"));
+        store.create_run_dirs(RUN_ID).unwrap();
+        let mut manifest = manifest(RUN_ID);
+        manifest.status = RunStatus::R3Cc;
+        store.save_manifest(&manifest).unwrap();
+
+        assert_eq!(
+            store
+                .transition(
+                    &mut manifest,
+                    RunStatus::Merging,
+                    Some("R3"),
+                    json!({"submission": "automatic"}),
+                )
+                .unwrap(),
+            RunStatus::Merging
         );
     }
 

@@ -16,7 +16,7 @@ The product has one supported full-run path:
 ```text
 brief -> R1 (five independent lanes)
       -> R2 (five anonymous cross-review lanes)
-      -> R3 (Primary Arbiter `hm` + Counterpart Arbiter `cc`)
+      -> R3 (same-family Counterpart Arbiter + Primary Arbiter)
       -> deterministic merge -> result
 ```
 
@@ -28,29 +28,28 @@ it is not the full-run scheduler.
 QUINTE results are evidence. They cannot authorize a push, deletion, external
 message, protected write, or any other action outside the run state directory.
 
-## Fixed Participants
+## Fixed Roles And Seat Binding
 
-The v1 policy binds exactly these routes:
+Policy v2 binds exactly seven roles:
 
-| Protocol role | Native route | Rounds |
+| Protocol role | Rounds |
 | --- | --- | --- |
-| Party A | CodeWhale | R1, R2 |
-| Party B | OpenCode | R1, R2 |
-| Party C | Kilo | R1, R2 |
-| Party D | MiMo | R1, R2 |
-| Party E | OMP | R1, R2 |
-| Primary Arbiter | Hermes (`hm`) | R3 only |
-| Counterpart Arbiter | ClaudeCode (`cc`) | R3 only |
+| Party A-E | R1, R2 |
+| Counterpart Arbiter | R3 only |
+| Primary Arbiter | R3 only |
 
-All inference routes use the same MiMo token-plan family. Text-only runs use
-`mimo-v2.5-pro`; a validated image attachment selects `mimo-v2.5` for the
-entire run. The five lanes are controlled behavioral perturbations of one
-model family, not independent truth confirmation.
+Every role must equal the seat on `family`, `provider`, `text_model`, and
+`multimodal_model`. Production capability is deliberately narrow: MiMo uses an
+isolated MiMoCode provider document, DeepSeek uses Reasonix, and OpenAI uses
+Codex against a relay that implements the Responses API. The five lanes are
+scenario perturbations of one model family, not independent truth confirmation.
+Legacy policy v1 remains a read-only compatibility input and does not define
+current production routing. It cannot start a new run; migration is an explicit
+backup followed by `quinte init --force`.
 
-Codex, Kimi, Reasonix, Firecrawl agents, generic delegation, and nested agents
-are outside the protocol roster. Their output may be placed in the input
-evidence snapshot when the user separately authorizes it, but they never count
-toward a QUINTE phase gate.
+Generic delegation, Firecrawl agents, host subagents, and models outside the
+bound seat are not protocol roles. Their output may be placed in the evidence
+snapshot when separately authorized, but never counts toward a phase gate.
 
 ## Runtime Authority
 
@@ -60,8 +59,8 @@ The ownership chain is intentionally narrow:
 user intent
   -> host QUINTE skill (brief construction and CLI invocation only)
   -> quinte CLI (policy, scheduler, adapters, state, evidence gates)
-  -> fixed native routes
-  -> Primary Arbiter handshake
+  -> seven fixed same-family role bindings
+  -> automatic Primary Arbiter path (historical runs may retain a manual handoff)
   -> immutable result artifacts
 ```
 
@@ -110,7 +109,8 @@ not make the underlying model family independent.
 After R2 passes, the scheduler writes an evidence packet containing the bound
 question, accepted R1 and R2 outputs, and snapshot digest.
 
-Counterpart Arbiter runs through the fixed Claude Code route and returns a typed verdict.
+Counterpart Arbiter runs through the policy's same-family adapter and returns a
+typed `ArbiterVerdict`.
 The scheduler then creates a single-use Primary Arbiter challenge bound to:
 
 - run id;
@@ -120,10 +120,12 @@ The scheduler then creates a single-use Primary Arbiter challenge bound to:
 - action scope;
 - issue and expiry times.
 
-The run enters `waiting_primary_arbiter`. The Primary Arbiter reads the evidence packet and Counterpart Arbiter
-response, independently produces an `ArbiterVerdict`, and submits it through
-`quinte primary-arbiter submit`. Direct file placement, an agent-authored `primary_arbiter_approved`
-marker, or a claimed identity never advances the state machine.
+Production policy v2 requires `auto_primary_arbiter=true`: the scheduler invokes
+the same-family Primary Arbiter, validates its typed verdict, constructs the
+challenge-bound response, and proceeds to merge. An existing historical run
+already waiting under policy v1 can still accept a host verdict through
+`quinte primary-arbiter submit`. Direct file placement, an agent-authored
+approval marker, or a claimed identity never advances state.
 
 The challenge is consumed once. A mismatch, expiry, replay, or integrity drift
 is a policy failure.

@@ -14,6 +14,13 @@ const VALID_OUTPUT: &str = r#"{
   "uncertainties": []
 }"#;
 
+const VALID_ARBITER_OUTPUT: &str = r#"{
+  "arbiter_verdict_version": "1.0",
+  "summary": "The bounded arbitration completed.",
+  "recommendation": "Proceed with the bounded recommendation.",
+  "residuals": []
+}"#;
+
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if let Some(child) = std::env::var_os("FAKE_AGENT_RUNTIME_CHILD") {
@@ -33,6 +40,11 @@ fn main() {
         eprintln!("expected PHASE PARTY_ID PACKET_PATH");
         std::process::exit(64);
     }
+    let valid_output = if args.first().is_some_and(|phase| phase == "R3") {
+        VALID_ARBITER_OUTPUT
+    } else {
+        VALID_OUTPUT
+    };
 
     if let Some(path) = args_probe {
         fs::write(path, args.join("\0")).unwrap();
@@ -113,7 +125,7 @@ fn main() {
             );
             return;
         }
-        print!("{}", serde_json_string(VALID_OUTPUT));
+        print!("{}", serde_json_string(valid_output));
         return;
     }
 
@@ -125,7 +137,7 @@ fn main() {
     if args[0] == "R1"
         && fs::read_to_string(timeout_output_party).is_ok_and(|party| party.trim() == args[1])
     {
-        print!("{VALID_OUTPUT}");
+        print!("{valid_output}");
         io::stdout().flush().unwrap();
         loop {
             thread::sleep(Duration::from_secs(60));
@@ -155,6 +167,35 @@ fn main() {
         }
     }
 
+    let empty_once_party = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fake-agent-empty-once-party");
+    if fs::read_to_string(empty_once_party).is_ok_and(|party| party.trim() == args[1]) {
+        let counter = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fake-agent-empty-once-count");
+        let attempts = fs::read_to_string(&counter)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        fs::write(counter, (attempts + 1).to_string()).unwrap();
+        if attempts == 0 {
+            print!(
+                r#"{{"structured_output":null,"result":"","is_error":false}}"#
+            );
+            return;
+        }
+        print!(
+            "{{\"structured_output\":{},\"is_error\":false}}",
+            valid_output
+        );
+        return;
+    }
+
     let codewhale_invalid_party = std::env::current_exe()
         .unwrap()
         .parent()
@@ -177,7 +218,7 @@ fn main() {
         let content = if attempts == 0 {
             "analysis completed before a truncated final candidate\n```json\n{\"task_restatement\":\"cut off\"".to_string()
         } else {
-            VALID_OUTPUT.to_string()
+            valid_output.to_string()
         };
         println!(r#"{{"type":"content","content":{}}}"#, json_string(&content));
         println!(r#"{{"type":"metadata","meta":{{"status":"completed"}}}}"#);
@@ -193,7 +234,7 @@ fn main() {
     if fs::read_to_string(codewhale_party).is_ok_and(|party| party.trim() == args[1]) {
         println!(
             r#"{{"type":"content","content":{}}}"#,
-            json_string(VALID_OUTPUT)
+            json_string(valid_output)
         );
         println!(r#"{{"type":"metadata","meta":{{"status":"completed"}}}}"#);
         println!(r#"{{"type":"done"}}"#);
@@ -208,7 +249,7 @@ fn main() {
     if fs::read_to_string(invalid_party)
         .is_ok_and(|party| party.trim() == args[1])
     {
-        let output = VALID_OUTPUT.replace("\n}", ",\n  \"next_phase\": \"R3\"\n}");
+        let output = valid_output.replace("\n}", ",\n  \"next_phase\": \"R3\"\n}");
         print!("{output}");
         return;
     }
@@ -236,7 +277,7 @@ fn main() {
     if fs::read_to_string(invalid_evidence_party).is_ok_and(|party| party.trim() == args[1]) {
         print!(
             "{}",
-            VALID_OUTPUT.replace(
+            valid_output.replace(
                 "\"claims\": []",
                 r#""claims": [{"id":"claim-1","statement":"invalid evidence","evidence_refs":["snapshot://missing.txt"],"confidence":0.5,"category":"test"}]"#,
             )
@@ -308,17 +349,17 @@ fn main() {
         .unwrap()
         .join("fake-agent-prose-429-party");
     if fs::read_to_string(prose_429_party).is_ok_and(|party| party.trim() == args[1]) {
-        print!("{}", VALID_OUTPUT.replace("The bounded review completed.", "A cited claim contains 429 as ordinary prose."));
+        print!("{}", valid_output.replace("The bounded review completed.", "A cited claim contains 429 as ordinary prose."));
         return;
     }
 
     match std::env::var("FAKE_AGENT_MODE").as_deref() {
         Ok("invalid_utf8") => io::stdout().write_all(&[0xff, 0xfe]).unwrap(),
         Ok("unknown_field") => {
-            let output = VALID_OUTPUT.replace("\n}", ",\n  \"next_phase\": \"R3\"\n}");
+            let output = valid_output.replace("\n}", ",\n  \"next_phase\": \"R3\"\n}");
             print!("{output}");
         }
-        _ => print!("{VALID_OUTPUT}"),
+        _ => print!("{valid_output}"),
     }
 }
 

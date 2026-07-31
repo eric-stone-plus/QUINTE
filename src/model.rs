@@ -32,9 +32,17 @@ pub struct Brief {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
+    /// True only when this in-memory policy was normalized from an on-disk
+    /// policy v1 document. It is intentionally never serialized: provenance
+    /// must come from the source document, not a user-spoofable v2 field.
+    #[serde(skip)]
+    pub legacy_v1_source: bool,
     pub policy_version: String,
+    pub seat: SeatBinding,
     pub roster: Vec<RoutePolicy>,
     pub counterpart_arbiter: RoutePolicy,
+    pub primary_arbiter: RoutePolicy,
+    pub auto_primary_arbiter: bool,
     pub text_model: String,
     pub multimodal_model: String,
     pub max_parallel_r1: usize,
@@ -68,6 +76,58 @@ pub struct RoutePolicy {
     pub adapter: String,
     pub executable: String,
     pub required: bool,
+    pub family: String,
+    pub provider: String,
+    pub text_model: String,
+    pub multimodal_model: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub perspective: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SeatBinding {
+    pub seat_id: String,
+    pub family: String,
+    pub provider: String,
+    pub text_model: String,
+    pub multimodal_model: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RouteBinding {
+    pub party_id: String,
+    pub route_id: String,
+    pub adapter: String,
+    pub executable: String,
+    pub family: String,
+    pub provider: String,
+    pub text_model: String,
+    pub multimodal_model: String,
+    pub perspective: String,
+}
+
+impl From<&RoutePolicy> for RouteBinding {
+    fn from(route: &RoutePolicy) -> Self {
+        Self {
+            party_id: route.party_id.clone(),
+            route_id: route.route_id.clone(),
+            adapter: route.adapter.clone(),
+            executable: route.executable.clone(),
+            family: route.family.clone(),
+            provider: route.provider.clone(),
+            text_model: route.text_model.clone(),
+            multimodal_model: route.multimodal_model.clone(),
+            perspective: route.perspective.clone(),
+        }
+    }
+}
+
+impl Default for SeatBinding {
+    fn default() -> Self {
+        legacy_seat_binding()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -152,6 +212,10 @@ pub struct RunManifest {
     pub runtime_sha256: String,
     pub protocol_version: String,
     pub effective_model: String,
+    #[serde(default = "legacy_seat_binding")]
+    pub seat_binding: SeatBinding,
+    #[serde(default = "legacy_route_bindings")]
+    pub route_bindings: Vec<RouteBinding>,
     pub sandbox_mode: SandboxMode,
     pub current_phase: Option<String>,
     pub error: Option<RunError>,
@@ -161,6 +225,47 @@ pub struct RunManifest {
     #[serde(alias = "hm_submission")]
     pub primary_arbiter_submission: Option<PrimaryArbiterSubmissionReceipt>,
     pub result_sha256: Option<String>,
+}
+
+/// Deserialization fallback for manifests written before v2 persisted seat
+/// bindings. This is compatibility metadata, not production dispatch policy.
+pub fn legacy_seat_binding() -> SeatBinding {
+    SeatBinding {
+        seat_id: "legacy-mimo".into(),
+        family: "mimo".into(),
+        provider: "xiaomi-token-plan-cn".into(),
+        text_model: TEXT_MODEL.into(),
+        multimodal_model: MULTIMODAL_MODEL.into(),
+    }
+}
+
+/// Deserialization fallback for manifests written with the retired v1 roster.
+/// These route, adapter, and executable names are fixtures only; production v2
+/// obtains all seven active bindings from its validated policy.
+pub fn legacy_route_bindings() -> Vec<RouteBinding> {
+    let seat = legacy_seat_binding();
+    [
+        ("Party A", "codewhale", "codewhale", "codewhale"),
+        ("Party B", "opencode", "opencode", "opencode"),
+        ("Party C", "kilo", "kilo", "kilo"),
+        ("Party D", "mimo", "mimo", "mimo"),
+        ("Party E", "omp", "omp", "omp"),
+        ("Counterpart Arbiter", "cc", "claude", "claude"),
+        ("Primary Arbiter", "pa", "omp", "omp"),
+    ]
+    .into_iter()
+    .map(|(party_id, route_id, adapter, executable)| RouteBinding {
+        party_id: party_id.into(),
+        route_id: route_id.into(),
+        adapter: adapter.into(),
+        executable: executable.into(),
+        family: seat.family.clone(),
+        provider: seat.provider.clone(),
+        text_model: seat.text_model.clone(),
+        multimodal_model: seat.multimodal_model.clone(),
+        perspective: String::new(),
+    })
+    .collect()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -374,6 +479,8 @@ pub struct ResultEnvelope {
     pub action_scope: Option<String>,
     pub affected_paths: Vec<String>,
     pub action_binding_sha256: Option<String>,
+    pub seat_binding: SeatBinding,
+    pub route_bindings: Vec<RouteBinding>,
     pub summary: String,
     pub recommendation: String,
     pub dissent: Vec<String>,

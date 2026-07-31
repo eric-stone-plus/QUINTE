@@ -14,6 +14,11 @@ fn fake_route(executable: &std::path::Path) -> RoutePolicy {
         adapter: "fake".into(),
         executable: executable.display().to_string(),
         required: true,
+        family: "mimo".into(),
+        provider: "xiaomi-token-plan-cn".into(),
+        text_model: TEXT_MODEL.into(),
+        multimodal_model: "mimo-v2.5".into(),
+        perspective: String::new(),
     }
 }
 
@@ -112,6 +117,63 @@ fn fake_agent_runs_through_build_spawn_and_direct_json_parse() {
     let parsed = parse_output(invocation.output_kind, &output.stdout).unwrap();
     assert_eq!(parsed.confidence, 0.75);
     cleanup_sensitive(&invocation).unwrap();
+}
+
+#[test]
+fn invocation_inherits_proxy_variables_without_unrelated_provider_secrets() {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let _lock = LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let names = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "OPENAI_API_KEY",
+    ];
+    let saved = names
+        .iter()
+        .map(|name| ((*name).to_string(), std::env::var_os(name)))
+        .collect::<Vec<_>>();
+    unsafe {
+        for name in &names[..6] {
+            std::env::set_var(name, format!("proxy-{name}"));
+        }
+        std::env::set_var("OPENAI_API_KEY", "must-not-leak");
+    }
+
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let run_dir = temporary.path().join("run-proxy");
+    let packet = create_run_packet(&run_dir);
+    let lane_root = run_dir.join("lane");
+    let invocation = build(
+        &fake_route(&executable),
+        "R1",
+        TEXT_MODEL,
+        &packet,
+        &lane_root,
+        30,
+    )
+    .unwrap();
+
+    unsafe {
+        for (name, value) in saved {
+            if let Some(value) = value {
+                std::env::set_var(name, value);
+            } else {
+                std::env::remove_var(name);
+            }
+        }
+    }
+    for name in &names[..6] {
+        assert_eq!(invocation.env[*name], format!("proxy-{name}"));
+    }
+    assert!(!invocation.env.contains_key("OPENAI_API_KEY"));
 }
 
 #[cfg(windows)]

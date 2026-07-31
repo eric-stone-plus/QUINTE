@@ -1,17 +1,36 @@
 use std::fs;
 
 use assert_cmd::Command;
-use quinte::policy::default_policy;
 use serde_json::{Value, json};
 use tempfile::tempdir;
 
 fn legacy_policy() -> Value {
-    let mut policy = serde_json::to_value(default_policy()).unwrap();
-    let object = policy.as_object_mut().unwrap();
-    let mut arbiter = object.remove("counterpart_arbiter").unwrap();
-    arbiter["party_id"] = json!("Auditor B");
-    object.insert("auditor".into(), arbiter);
-    policy
+    json!({
+        "policy_version": "1.0",
+        "roster": [
+            {"party_id":"Party A","route_id":"codewhale","adapter":"codewhale","executable":"codewhale","required":true},
+            {"party_id":"Party B","route_id":"opencode","adapter":"opencode","executable":"opencode","required":true},
+            {"party_id":"Party C","route_id":"kilo","adapter":"kilo","executable":"kilo","required":true},
+            {"party_id":"Party D","route_id":"mimo","adapter":"mimo","executable":"mimo","required":true},
+            {"party_id":"Party E","route_id":"omp","adapter":"omp","executable":"omp","required":true}
+        ],
+        "auditor": {"party_id":"Auditor B","route_id":"cc","adapter":"claude","executable":"claude","required":true},
+        "text_model": "mimo-v2.5-pro",
+        "multimodal_model": "mimo-v2.5",
+        "max_parallel_r1": 5,
+        "max_parallel_r2": 1,
+        "r2_parallel": false,
+        "max_attempts": 3,
+        "timeout_seconds": 300,
+        "retry_backoff_seconds": 15,
+        "retry_backoff_max_seconds": 120,
+        "r2_min_interval_seconds": 10,
+        "max_output_bytes": 1048576,
+        "max_snapshot_files": 2000,
+        "max_snapshot_bytes": 20971520,
+        "max_attachment_bytes": 10485760,
+        "sandbox_mode": "process"
+    })
 }
 
 #[test]
@@ -45,6 +64,28 @@ fn legacy_arbiter_names_are_normalized_without_rewriting_policy() {
         effective["counterpart_arbiter"]["party_id"],
         "Counterpart Arbiter"
     );
+    assert_eq!(effective["policy_version"], "2.0");
+    assert_eq!(effective["auto_primary_arbiter"], false);
+    assert_eq!(effective["primary_arbiter"]["party_id"], "Primary Arbiter");
+    let seat = &effective["seat"];
+    let routes = effective["roster"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(std::iter::once(&effective["counterpart_arbiter"]))
+        .chain(std::iter::once(&effective["primary_arbiter"]));
+    for route in routes {
+        for field in ["family", "provider", "text_model", "multimodal_model"] {
+            assert_eq!(route[field], seat[field]);
+        }
+    }
+    assert_eq!(fs::read(&policy_path).unwrap(), original);
+
+    let error = quinte::policy::load_for_runtime(&policy_path)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("read-only compatible"));
+    assert!(error.contains("quinte init --force"));
     assert_eq!(fs::read(&policy_path).unwrap(), original);
 
     let output = Command::cargo_bin("quinte")
@@ -112,7 +153,7 @@ fn partial_legacy_arbiter_names_are_rejected() {
     let home = tempdir().unwrap();
     let policy_path = home.path().join("policy.json");
 
-    let mut canonical_field = serde_json::to_value(default_policy()).unwrap();
+    let mut canonical_field = serde_json::to_value(quinte::policy::default_policy()).unwrap();
     canonical_field["counterpart_arbiter"]["party_id"] = json!("Auditor B");
     fs::write(
         &policy_path,
@@ -131,6 +172,21 @@ fn partial_legacy_arbiter_names_are_rejected() {
     .unwrap();
     let error = quinte::policy::load(&policy_path).unwrap_err().to_string();
     assert!(error.contains("policy must bind required Counterpart Arbiter"));
+}
+
+#[test]
+fn v2_manual_primary_arbiter_policy_is_visible_but_cannot_start_new_runs() {
+    let home = tempdir().unwrap();
+    let policy_path = home.path().join("policy.json");
+    let mut policy = quinte::policy::default_policy();
+    policy.auto_primary_arbiter = false;
+    fs::write(&policy_path, serde_json::to_vec_pretty(&policy).unwrap()).unwrap();
+
+    quinte::policy::load(&policy_path).unwrap();
+    let error = quinte::policy::load_for_runtime(&policy_path)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("auto_primary_arbiter=true"));
 }
 
 #[test]
@@ -154,7 +210,7 @@ fn r2_parallel_defaults_false_for_legacy_policies_and_parses_when_present() {
     let policy_path = home.path().join("policy.json");
 
     // Pre-0.1.8 policy.json has no r2_parallel key; it must load as serial.
-    let mut legacy = serde_json::to_value(default_policy()).unwrap();
+    let mut legacy = legacy_policy();
     legacy.as_object_mut().unwrap().remove("r2_parallel");
     fs::write(&policy_path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
     let policy = quinte::policy::load(&policy_path).unwrap();

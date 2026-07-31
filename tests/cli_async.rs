@@ -123,7 +123,9 @@ fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::pro
 fn fake_policy(executable: &std::path::Path) -> Policy {
     let parties = ["Party A", "Party B", "Party C", "Party D", "Party E"];
     Policy {
-        policy_version: "1.0".into(),
+        legacy_v1_source: false,
+        policy_version: "2.0".into(),
+        seat: Default::default(),
         roster: parties
             .iter()
             .enumerate()
@@ -133,6 +135,11 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
                 adapter: "fake".into(),
                 executable: executable.display().to_string(),
                 required: true,
+                family: "mimo".into(),
+                provider: "xiaomi-token-plan-cn".into(),
+                text_model: TEXT_MODEL.into(),
+                multimodal_model: "mimo-v2.5".into(),
+                perspective: String::new(),
             })
             .collect(),
         counterpart_arbiter: quinte::model::RoutePolicy {
@@ -141,7 +148,25 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
             adapter: "fake".into(),
             executable: executable.display().to_string(),
             required: true,
+            family: "mimo".into(),
+            provider: "xiaomi-token-plan-cn".into(),
+            text_model: TEXT_MODEL.into(),
+            multimodal_model: "mimo-v2.5".into(),
+            perspective: String::new(),
         },
+        primary_arbiter: quinte::model::RoutePolicy {
+            party_id: "Primary Arbiter".into(),
+            route_id: "fake-pa".into(),
+            adapter: "fake".into(),
+            executable: executable.display().to_string(),
+            required: true,
+            family: "mimo".into(),
+            provider: "xiaomi-token-plan-cn".into(),
+            text_model: TEXT_MODEL.into(),
+            multimodal_model: "mimo-v2.5".into(),
+            perspective: String::new(),
+        },
+        auto_primary_arbiter: false,
         text_model: TEXT_MODEL.into(),
         multimodal_model: "mimo-v2.5".into(),
         max_parallel_r1: 5,
@@ -214,9 +239,16 @@ fn quinte(fixture: &Fixture) -> Command {
 }
 
 #[test]
-fn run_returns_queued_immediately_and_worker_reaches_waiting_primary_arbiter() {
+fn detached_auto_primary_run_never_exposes_manual_handoff() {
     let fixture = fixture(0);
-    let fixture_dir = fixture.executable.parent().unwrap();
+    let mut policy: Policy = quinte::util::read_json(&fixture.home.join("policy.json")).unwrap();
+    policy.auto_primary_arbiter = true;
+    write_json(&fixture.home.join("policy.json"), &policy).unwrap();
+    // The detached worker runs a separately built test binary, so derive the
+    // handshake directory from the policy executable rather than the cached
+    // fixture source path.
+    let fixture_dir = std::path::PathBuf::from(&policy.roster[0].executable);
+    let fixture_dir = fixture_dir.parent().unwrap();
     let started = fixture_dir.join("fake-agent-started");
     let release = fixture_dir.join("fake-agent-release");
     let _release_on_drop = ReleaseOnDrop(release.clone());
@@ -234,7 +266,7 @@ fn run_returns_queued_immediately_and_worker_reaches_waiting_primary_arbiter() {
     let stdout = read_in_background(child.stdout.take().unwrap());
     let stderr = read_in_background(child.stderr.take().unwrap());
     let parent_deadline = std::time::Instant::now() + Duration::from_secs(120);
-    let worker_deadline = std::time::Instant::now() + Duration::from_secs(300);
+    let worker_deadline = std::time::Instant::now() + Duration::from_secs(60);
     let mut parent_exited = false;
     while !parent_exited || !started.is_file() {
         if !parent_exited {
@@ -244,10 +276,32 @@ fn run_returns_queued_immediately_and_worker_reaches_waiting_primary_arbiter() {
                 "run CLI stayed attached to its background worker"
             );
         }
-        assert!(
-            started.is_file() || std::time::Instant::now() < worker_deadline,
-            "detached worker did not reach the fake-agent handshake"
-        );
+        if !started.is_file() && std::time::Instant::now() >= worker_deadline {
+            let parent_status = child.try_wait().unwrap();
+            let parent_stdout = if parent_status.is_some() {
+                stdout.recv_timeout(Duration::from_secs(2)).ok()
+            } else {
+                None
+            };
+            let parent_stderr = if parent_status.is_some() {
+                stderr.recv_timeout(Duration::from_secs(2)).ok()
+            } else {
+                None
+            };
+            let store = Store::new(fixture.home.clone());
+            let manifests = store.list_manifests().unwrap_or_default();
+            let diagnostics = manifests.first().map(|manifest| {
+                let run_dir = store.run_dir(&manifest.run_id).unwrap();
+                let events = fs::read_to_string(run_dir.join("events.jsonl")).unwrap_or_default();
+                let worker_log =
+                    fs::read_to_string(run_dir.join("diagnostics/worker.log")).unwrap_or_default();
+                format!("manifest={manifest:?} events={events} worker_log={worker_log}")
+            });
+            panic!(
+                "detached worker did not reach the fake-agent handshake: parent={parent_status:?} stdout={parent_stdout:?} stderr={parent_stderr:?} {}",
+                diagnostics.unwrap_or_else(|| "no manifest".into()),
+            );
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     let parent_status = child.wait().unwrap();
@@ -294,7 +348,21 @@ fn run_returns_queued_immediately_and_worker_reaches_waiting_primary_arbiter() {
         String::from_utf8_lossy(&waited.stderr)
     );
     let envelope: Value = serde_json::from_slice(&waited.stdout).unwrap();
-    assert_eq!(envelope["data"]["status"], "waiting_primary_arbiter");
+    assert_eq!(envelope["data"]["status"], "completed");
+    let events = store.events(&run_id).unwrap();
+    assert!(
+        !events.iter().any(|event| {
+            event.event_type == "run.transition"
+                && event.data["to"] == serde_json::json!(RunStatus::WaitingPrimaryArbiter)
+        }),
+        "automatic arbitration must not expose the manual handoff state"
+    );
+    assert!(events.iter().any(|event| {
+        event.event_type == "run.transition"
+            && event.data["from"] == serde_json::json!(RunStatus::R3Cc)
+            && event.data["to"] == serde_json::json!(RunStatus::Merging)
+            && event.data["detail"]["submission"] == "automatic"
+    }));
     assert!(
         Store::new(fixture.home.clone())
             .run_dir(&run_id)
@@ -431,4 +499,34 @@ fn wait_accepts_a_durable_waiting_primary_arbiter_state_after_worker_exit() {
     );
     let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["data"]["status"], "waiting_primary_arbiter");
+}
+
+#[test]
+fn wait_rejects_manual_handoff_for_an_automatic_primary_run() {
+    use quinte::run::{self, RunOptions};
+
+    let fixture = fixture(0);
+    let store = Store::new(fixture.home.clone());
+    let _fake_adapter_env = FakeAdapterEnv::enable();
+    let mut policy = fake_policy(&fixture.executable);
+    policy.auto_primary_arbiter = true;
+    let created = run::create(
+        &store,
+        &policy,
+        &RunOptions {
+            brief_path: fixture.brief.clone(),
+        },
+    )
+    .unwrap();
+    let mut manifest = store.load_manifest(&created.run_id).unwrap();
+    manifest.status = RunStatus::WaitingPrimaryArbiter;
+    store.save_manifest(&manifest).unwrap();
+
+    let error = run::wait(&store, &created.run_id, Duration::ZERO).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("automatic Primary Arbiter run entered the manual handoff state")
+    );
+    assert!(error.to_string().contains("quinte resume"));
 }

@@ -43,7 +43,6 @@ pub(crate) enum Command {
     PrimaryArbiter(PrimaryArbiterArgs),
     Agents(AgentArgs),
     Policy(PolicyArgs),
-    Credential(CredentialArgs),
     /// brief 向导与校验
     Brief(BriefArgs),
     /// 校验 brief/verdict 文件的语法与 schema（只读，不改任何状态）
@@ -52,9 +51,6 @@ pub(crate) enum Command {
     Completions(CompletionsArgs),
     #[command(name = "__worker", hide = true)]
     Worker(WorkerArgs),
-    /// Internal Claude Code apiKeyHelper entrypoint. Not a user command.
-    #[command(name = "__credential-helper", hide = true)]
-    CredentialHelper(CredentialHelperArgs),
 }
 #[derive(Debug, Args)]
 pub(crate) struct InitArgs {
@@ -163,26 +159,6 @@ pub(crate) enum PolicyCommand {
     Show(JsonArgs),
     Validate(JsonArgs),
 }
-#[derive(Debug, Args)]
-pub(crate) struct CredentialArgs {
-    #[command(subcommand)]
-    command: CredentialCommand,
-}
-#[derive(Debug, Subcommand)]
-pub(crate) enum CredentialCommand {
-    /// Report whether the Claude credential is available and isolated.
-    Status(JsonArgs),
-}
-#[derive(Debug, Args)]
-pub(crate) struct CredentialHelperArgs {
-    #[arg(long)]
-    service: String,
-    #[arg(long, value_name = "DIR")]
-    lane_root: PathBuf,
-    #[arg(long, value_name = "FILE")]
-    authorization: PathBuf,
-}
-
 #[derive(Debug, Args)]
 pub(crate) struct BriefArgs {
     #[command(subcommand)]
@@ -311,7 +287,7 @@ pub(crate) fn execute_command(
         }
         Command::Doctor(args) => {
             ensure_initialized(store)?;
-            let policy = load_policy(store)?;
+            let policy = policy::load(&store.policy_path())?;
             let report = doctor::run(&policy);
             let ok = report.ok;
             emit(args.json, &report, human_doctor(&report))?;
@@ -482,30 +458,6 @@ pub(crate) fn execute_command(
                     json!({"run_id": args.run_id, "status": status}),
                     format_status(&args.run_id, status),
                 )?;
-                // Post-completion: automatically run external audit via
-                // quinte-audit if available on PATH.  Non-blocking failure
-                // (audit is advisory — the run is already complete).
-                if status == RunStatus::Completed {
-                    let audit_result = std::process::Command::new("quinte-audit")
-                        .arg(&args.run_id)
-                        .status();
-                    match audit_result {
-                        Ok(es) if es.success() => {
-                            eprintln!("external audit: PASS (r3/external-audit.json)");
-                        }
-                        Ok(es) => {
-                            eprintln!(
-                                "external audit: exited {es} — read r3/external-audit.json"
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "external audit skipped ({e}); run manually: quinte-audit {}",
-                                args.run_id
-                            );
-                        }
-                    }
-                }
                 Ok(status_code(status))
             }
             PrimaryArbiterCommand::Amend(args) => {
@@ -524,7 +476,7 @@ pub(crate) fn execute_command(
             }
         },
         Command::Agents(args) => {
-            let policy = load_policy(store)?;
+            let policy = policy::load(&store.policy_path())?;
             match args.command {
                 AgentCommand::List(args) => {
                     emit(
@@ -553,7 +505,7 @@ pub(crate) fn execute_command(
             Ok(0)
         }
         Command::Policy(args) => {
-            let policy = load_policy(store)?;
+            let policy = policy::load(&store.policy_path())?;
             match args.command {
                 PolicyCommand::Show(args) => {
                     emit(args.json, &policy, "Effective QUINTE policy".into())?
@@ -579,33 +531,6 @@ pub(crate) fn execute_command(
                     Err(error.context(message))
                 }
             }
-        }
-        Command::Credential(args) => match args.command {
-            CredentialCommand::Status(args) => {
-                let status = crate::credential::probe(crate::credential::DEFAULT_CLAUDE_SERVICE);
-                emit(
-                    args.json,
-                    &status,
-                    format!(
-                        "Claude credential: available={} isolated={} ({})",
-                        status.available, status.isolated, status.message
-                    ),
-                )?;
-                Ok(if status.available { 0 } else { 2 })
-            }
-        },
-        Command::CredentialHelper(args) => {
-            crate::credential::authorize_helper(
-                &args.service,
-                &args.lane_root,
-                &args.authorization,
-            )?;
-            let secret = crate::credential::get_isolated(&args.service)?;
-            use std::io::Write;
-            let mut stdout = std::io::stdout().lock();
-            stdout.write_all(secret.as_bytes())?;
-            stdout.flush()?;
-            Ok(0)
         }
         Command::Brief(args) => match args.command {
             BriefCommand::New(args) => {
@@ -673,6 +598,7 @@ pub(crate) fn execute_command(
         },
     }
 }
+
 fn load_policy(store: &Store) -> anyhow::Result<Policy> {
     policy::load_for_runtime(&store.policy_path())
 }
@@ -966,7 +892,6 @@ fn doctor_hint(name: &str) -> String {
         "git" => "安装 git 以启用快照溯源（可选）",
         "process_group_supervision" => "当前平台不支持进程组监管，lane 退出可能残留子进程",
         "silent_child_launch" => "子进程静默启动不可用",
-        _ if name.contains("credential") => "运行 quinte credential status 检查凭据隔离",
         _ => "运行 quinte doctor --json 查看该检查详情",
     };
     ui::paint(Tone::Dim, &format!("提示: {hint}"))
@@ -983,30 +908,14 @@ fn human_doctor(report: &doctor::DoctorReport) -> String {
         ui::paint_bold(head_tone, &format!("QUINTE DOCTOR · {}", report.platform)),
         ui::paint(head_tone, head_mark)
     );
-    // 分组：agents（带 party_id）/ credential（名字含 credential）/ platform（其余）
-    let groups = ["agents", "credential", "platform"];
+    let groups = ["agents", "platform"];
     for group in groups {
         let checks: Vec<&Value> = report
             .checks
             .iter()
             .filter(|check| match group {
                 "agents" => check.get("party_id").is_some(),
-                "credential" => {
-                    check.get("party_id").is_none()
-                        && check
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .map(|n| n.contains("credential"))
-                            .unwrap_or(false)
-                }
-                _ => {
-                    check.get("party_id").is_none()
-                        && !check
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .map(|n| n.contains("credential"))
-                            .unwrap_or(false)
-                }
+                _ => check.get("party_id").is_none(),
             })
             .collect();
         if checks.is_empty() {
@@ -1080,36 +989,6 @@ fn map_error(error: anyhow::Error) -> QuinteError {
 }
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command};
-    use clap::Parser;
-    #[test]
-    fn credential_helper_rejects_a_token_argument() {
-        let parsed = Cli::try_parse_from([
-            "quinte",
-            "__credential-helper",
-            "--service",
-            "xiaomi-mimo-token-plan-api-key",
-            "--lane-root",
-            "/lane",
-            "--authorization",
-            "/lane/config/credential-helper-authorization.json",
-            "--token",
-            "secret",
-        ]);
-        assert!(parsed.is_err());
-        let parsed = Cli::try_parse_from([
-            "quinte",
-            "__credential-helper",
-            "--service",
-            "xiaomi-mimo-token-plan-api-key",
-            "--lane-root",
-            "/lane",
-            "--authorization",
-            "/lane/config/credential-helper-authorization.json",
-        ])
-        .unwrap();
-        assert!(matches!(parsed.command, Command::CredentialHelper(_)));
-    }
     // ---- A 阶段：人类输出样式 ----
     fn manifest_fixture(status: crate::model::RunStatus) -> crate::model::RunManifest {
         serde_json::from_value(serde_json::json!({

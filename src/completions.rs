@@ -1,6 +1,6 @@
 //! `quinte completions <bash|zsh|fish>` — 手写补全脚本（静态字符串，无外部 crate）。
 
-const SUBCOMMANDS: &str = "init status doctor run wait resume cancel inspect primary-arbiter agents policy credential brief validate completions";
+const SUBCOMMANDS: &str = "init status doctor run wait resume cancel inspect primary-arbiter agents policy brief validate completions";
 const COMMON_FLAGS: &str = "--brief --wait --json --response --verdict --force --kind --home";
 
 pub const BASH: &str = r#"# quinte bash completion — 安装：quinte completions bash > ~/.local/share/bash-completion/completions/quinte
@@ -29,12 +29,6 @@ _quinte() {
         policy)
             if [ "$cword" -eq 2 ]; then
                 COMPREPLY=($(compgen -W "show validate" -- "$cur"))
-                return 0
-            fi
-            ;;
-        credential)
-            if [ "$cword" -eq 2 ]; then
-                COMPREPLY=($(compgen -W "status" -- "$cur"))
                 return 0
             fi
             ;;
@@ -90,8 +84,6 @@ _quinte() {
             (( CURRENT == 3 )) && compadd list describe && return ;;
         policy)
             (( CURRENT == 3 )) && compadd show validate && return ;;
-        credential)
-            (( CURRENT == 3 )) && compadd status && return ;;
         brief)
             if (( CURRENT == 3 )); then
                 compadd new validate && return
@@ -132,7 +124,6 @@ end
 complete -f -c quinte -n '__fish_quinte_using_command primary-arbiter' -a 'request submit amend'
 complete -f -c quinte -n '__fish_quinte_using_command agents' -a 'list describe'
 complete -f -c quinte -n '__fish_quinte_using_command policy' -a 'show validate'
-complete -f -c quinte -n '__fish_quinte_using_command credential' -a 'status'
 complete -f -c quinte -n '__fish_quinte_using_command brief' -a 'new validate'
 complete -f -c quinte -n '__fish_quinte_using_command validate' -l kind -r -a 'brief verdict'
 complete -f -c quinte -n '__fish_quinte_using_command completions' -a 'bash zsh fish'
@@ -198,7 +189,6 @@ mod tests {
                 "primary-arbiter",
                 "agents",
                 "policy",
-                "credential",
                 "brief",
                 "validate",
                 "completions",
