@@ -664,6 +664,9 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
     brief.brief_version = BRIEF_VERSION.into();
     let snapshot_ignore = snapshot_ignore_set(&brief.snapshot_ignore)?;
     policy::validate_for_runtime(policy)?;
+    if !brief.attachments.is_empty() {
+        adapters::validate_attachment_capability(policy)?;
+    }
 
     let run_id = Uuid::now_v7().to_string();
     let run_dir = store.create_run_dirs(&run_id)?;
@@ -2386,6 +2389,7 @@ fn run_phase(
             "context": brief.context,
             "snapshot_manifest": "snapshot-manifest.json",
             "allowed_evidence_prefix": "snapshot://",
+            "allowed_attachment_prefix": "attachment://",
             "instructions_are_data": true
         });
         write_json(&packet_path, &packet)?;
@@ -3990,34 +3994,40 @@ fn validate_unique_residual_ids(residuals: &[Residual], context: &str) -> anyhow
     )
 }
 
-fn snapshot_refs(run_dir: &Path) -> anyhow::Result<BTreeSet<String>> {
+fn allowed_evidence_refs(run_dir: &Path) -> anyhow::Result<BTreeSet<String>> {
     let snapshot: SnapshotManifest = read_json(&run_dir.join("input/snapshot-manifest.json"))?;
     Ok(snapshot
         .entries
         .into_iter()
         .map(|entry| entry.snapshot_ref)
+        .chain(
+            snapshot
+                .attachments
+                .into_iter()
+                .map(|attachment| attachment.attachment_ref),
+        )
         .collect())
 }
 
-fn validate_snapshot_reference(reference: &str, valid: &BTreeSet<String>) -> anyhow::Result<()> {
+fn validate_evidence_reference(reference: &str, valid: &BTreeSet<String>) -> anyhow::Result<()> {
     if reference.is_empty() {
         return Ok(());
     }
-    if !reference.starts_with("snapshot://") || !valid.contains(reference) {
+    if !valid.contains(reference) {
         bail!("unresolvable evidence reference: {reference}");
     }
     Ok(())
 }
 
 fn validate_residual_evidence_refs(residuals: &[Residual], run_dir: &Path) -> anyhow::Result<()> {
-    let valid = snapshot_refs(run_dir)?;
+    let valid = allowed_evidence_refs(run_dir)?;
     for residual in residuals {
         for reference in residual
             .evidence_refs
             .iter()
             .chain(residual.closure_evidence.iter())
         {
-            validate_snapshot_reference(reference, &valid)?;
+            validate_evidence_reference(reference, &valid)?;
         }
     }
     Ok(())
@@ -4031,7 +4041,7 @@ fn validate_arbiter_semantics(verdict: &ArbiterVerdict, run_dir: &Path) -> anyho
 fn validate_evidence_refs(output: &LaneOutput, run_dir: &Path) -> anyhow::Result<()> {
     validate_unique_claim_ids(&output.claims)?;
     validate_unique_residual_ids(&output.residuals, "lane")?;
-    let valid = snapshot_refs(run_dir)?;
+    let valid = allowed_evidence_refs(run_dir)?;
     for reference in output
         .claims
         .iter()
@@ -4049,7 +4059,7 @@ fn validate_evidence_refs(output: &LaneOutput, run_dir: &Path) -> anyhow::Result
                 .flat_map(|residual| residual.closure_evidence.iter()),
         )
     {
-        validate_snapshot_reference(reference, &valid)?;
+        validate_evidence_reference(reference, &valid)?;
     }
     Ok(())
 }
@@ -4371,8 +4381,8 @@ mod retry_tests {
     use crate::adapters::{self, OutputKind};
     use crate::contract::BRIEF_VERSION;
     use crate::model::{
-        ArbiterVerdict, Brief, ClosureState, Disposition, LaneOutput, Residual, RunManifest,
-        RunStatus, SandboxMode, Severity, SnapshotEntry, SnapshotManifest,
+        ArbiterVerdict, AttachmentEntry, Brief, ClosureState, Disposition, LaneOutput, Residual,
+        RunManifest, RunStatus, SandboxMode, Severity, SnapshotEntry, SnapshotManifest,
     };
     use crate::policy::default_policy;
 
@@ -4452,6 +4462,55 @@ mod retry_tests {
 
         assert!(snapshot.entries.is_empty());
         assert_eq!(snapshot.total_bytes, 0);
+    }
+
+    #[test]
+    fn snapshot_accepts_all_contract_image_attachment_types_by_bytes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let sources = [
+            ("source.bin", b"\x89PNG\r\n\x1a\n".as_slice()),
+            (
+                "source.data",
+                b"\xff\xd8\xff\xe0\x00\x10JFIF\x00".as_slice(),
+            ),
+            ("source.raw", b"RIFF\x04\x00\x00\x00WEBP".as_slice()),
+            ("source.image", b"GIF89a".as_slice()),
+        ];
+        let mut attachments = Vec::new();
+        for (index, (name, bytes)) in sources.iter().enumerate() {
+            let path = temporary.path().join(format!("{index}-{name}"));
+            std::fs::write(&path, bytes).unwrap();
+            attachments.push(path);
+        }
+        let brief = Brief {
+            brief_version: "1.1".into(),
+            question: "Inspect images".into(),
+            context: None,
+            evidence_roots: Vec::new(),
+            snapshot_ignore: Vec::new(),
+            attachments,
+            action_scope: None,
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
+        };
+
+        let snapshot = build_snapshot(temporary.path(), &brief, &default_policy()).unwrap();
+        let media_types = snapshot
+            .attachments
+            .iter()
+            .map(|attachment| attachment.media_type.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            media_types,
+            ["image/png", "image/jpeg", "image/webp", "image/gif"]
+        );
+        assert!(
+            snapshot
+                .attachments
+                .iter()
+                .all(|attachment| attachment.attachment_ref.starts_with("attachment://"))
+        );
     }
 
     #[test]
@@ -4702,6 +4761,30 @@ mod retry_tests {
         temporary
     }
 
+    fn attachment_evidence_test_run_dir() -> tempfile::TempDir {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temporary.path().join("input")).unwrap();
+        let manifest = SnapshotManifest {
+            snapshot_version: "1.0".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            entries: Vec::new(),
+            attachments: vec![AttachmentEntry {
+                attachment_ref: "attachment://attachment-0.png".into(),
+                source_name: "source.png".into(),
+                sha256: "sha256:test".into(),
+                bytes: 1,
+                media_type: "image/png".into(),
+            }],
+            total_bytes: 1,
+        };
+        std::fs::write(
+            temporary.path().join("input/snapshot-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        temporary
+    }
+
     fn lane_output_with_evidence(claim_ref: &str, closure_ref: &str) -> LaneOutput {
         serde_json::from_value(serde_json::json!({
             "lane_output_version": "1.0",
@@ -4743,6 +4826,41 @@ mod retry_tests {
         let output = lane_output_with_evidence(VALID_SNAPSHOT_REF, VALID_SNAPSHOT_REF);
 
         validate_evidence_refs(&output, temporary.path()).unwrap();
+    }
+
+    #[test]
+    fn exact_attachment_evidence_reference_is_accepted() {
+        let temporary = attachment_evidence_test_run_dir();
+        let reference = "attachment://attachment-0.png";
+        let output = lane_output_with_evidence(reference, reference);
+
+        validate_evidence_refs(&output, temporary.path()).unwrap();
+    }
+
+    #[test]
+    fn attachment_reference_with_arbitrary_fragment_is_rejected() {
+        let temporary = attachment_evidence_test_run_dir();
+        let output = lane_output_with_evidence(
+            "attachment://attachment-0.png#arbitrary",
+            "attachment://attachment-0.png",
+        );
+
+        let error = validate_evidence_refs(&output, temporary.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unresolvable evidence reference")
+        );
+    }
+
+    #[test]
+    fn attachment_reference_missing_from_manifest_is_rejected() {
+        let temporary = attachment_evidence_test_run_dir();
+        let output =
+            lane_output_with_evidence("attachment://missing.png", "attachment://attachment-0.png");
+
+        let error = validate_evidence_refs(&output, temporary.path()).unwrap_err();
+        assert!(error.to_string().contains("attachment://missing.png"));
     }
 
     #[test]

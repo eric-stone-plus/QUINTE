@@ -3,7 +3,9 @@
 This document defines the public command boundary for the `quinte` Rust
 CLI. The CLI is the execution authority for a QUINTE run. A host may create a
 brief, invoke commands, and consume the result; it must not reproduce the
-scheduler with ad hoc agent calls.
+scheduler with ad hoc model calls. The product boundary is a single-model-family,
+multi-path, three-stage review runtime with seven execution bindings and
+contract gates.
 
 The protocol itself remains defined by [PROTOCOL.md](PROTOCOL.md).
 
@@ -30,7 +32,8 @@ QUINTE is built from source. The release build excludes all test-adapter code.
 
 QUINTE is not a hosted proxy. Policy v2 supports only the proven production
 bindings MiMoCode/MiMo, Reasonix/DeepSeek, and Codex/OpenAI. `doctor` checks all
-seven same-family roles and the selected provider environment pair.
+seven same-family execution bindings and the selected provider environment
+pair.
 
 ## Command Surface
 
@@ -51,19 +54,20 @@ quinte policy show [--json]
 quinte policy validate [--json]
 ```
 
-No public command runs an individual R1/R2 party. There is no phase-skip,
-substitution, arbitrary model, arbitrary adapter, or agent-selected transition
-command.
+No public command runs an individual R1/R2 binding. There is no phase-skip,
+substitution, arbitrary model, arbitrary adapter, or model-selected transition
+command. `Party` and `Arbiter` names on this command surface are fixed wire-role
+identifiers, not personas or scheduler authorities.
 
 ### `init`
 
 Creates the state root, `policy.json`, and `runs/`. It refuses to replace an
 existing policy unless `--force` is supplied.
 
-The generated policy has five parties, Counterpart Arbiter, and Primary
-Arbiter. All seven share one seat binding. `auto_primary_arbiter=true` is the
-default. Policy v1 is accepted read-only and normalized in memory without
-rewriting its historical file.
+The generated policy has five R1/R2 wire roles plus the `Counterpart Arbiter`
+and `Primary Arbiter` R3 wire roles. All seven share one seat binding.
+`auto_primary_arbiter=true` is the default. Policy v1 is accepted read-only and
+normalized in memory without rewriting its historical file.
 
 ### `status`
 
@@ -74,7 +78,11 @@ regardless of whether the reported run itself failed or was cancelled.
 ### `doctor`
 
 Checks that every executable required by the effective policy is discoverable
-and reports platform capabilities. A missing required executable exits `2`.
+and reports platform capabilities. Each route reports `attachment_input`, its
+native carrier, the four locally accepted image media types when applicable,
+and whether a live provider probe occurred. `provider_live_probe` is currently
+always `false`: `doctor` proves the local adapter/config contract, not endpoint
+multimodal behavior. A missing required executable exits `2`.
 
 The report intentionally warns that process isolation is not an OS sandbox. The warning does
 not by itself fail `doctor`; missing required routes do.
@@ -84,7 +92,8 @@ not by itself fail `doctor`; missing required routes do.
 Validates the brief, snapshots its evidence roots and attachments, creates a
 queued run, and starts a per-run background worker. Without `--wait`, the
 command returns the run id and `queued` status immediately; the worker owns
-advancement through R1, R2, both R3 arbiters, and deterministic merge.
+advancement through R1, R2, both R3 execution bindings, and deterministic
+merge.
 
 With `--wait`, the initiating process observes the manifest until it reaches a
 terminal state or `waiting_primary_arbiter`. The worker remains a separate process, so
@@ -135,9 +144,9 @@ integrating the Primary Arbiter.
 ### `agents`
 
 `agents list` reports the fixed R1/R2 roster. `agents describe ID` accepts a
-party id or route id and reports its configured adapter binding. It does not
-run the party. Counterpart Arbiter can be described but is not included in the R1/R2
-list.
+wire-role id or route id and reports its configured adapter binding. It does
+not execute that binding. `Counterpart Arbiter` can be described but is not
+included in the R1/R2 list.
 
 ### `policy`
 
@@ -182,7 +191,15 @@ pruned together with their contents.
 
 Attachments are identified from file bytes, not their extension. QUINTE accepts
 PNG, JPEG, WebP, and GIF within the configured size limit. An accepted image
-selects the multimodal model. The source files are not modified.
+selects the multimodal model. MiMo passes each image with `--file`; Codex passes
+each image with `--image`. Reasonix exposes no native image argument while
+QUINTE disables file tools, so DeepSeek/Reasonix policies reject a brief with
+attachments before creating a run. The source files are not modified.
+
+Each copied image receives an exact `attachment://attachment-N.<type>` entry in
+`snapshot-manifest.json`. Claims and residuals may cite that value, or an exact
+`snapshot://` value, in `evidence_refs` and `closure_evidence`. Arbitrary
+suffixes and paths not present in the manifest fail the output gate.
 
 ## State Machine
 
@@ -221,11 +238,12 @@ with exit `0`; callers must inspect the status value. Policy v1 and policy v2
 with automatic PA disabled cannot start a new production run.
 
 `completed`, `degraded`, `failed`, `failed_policy`, and `cancelled` are terminal
-states. A completed analysis still does not authorize any external action.
+states. A completed result still does not authorize any external action.
 
-## Primary Arbiter Paths
+## R3 Binding Paths
 
-Counterpart Arbiter runs first in R3. The scheduler then creates:
+The `Counterpart Arbiter` wire binding runs first in R3. The scheduler then
+creates:
 
 - `r3/evidence-packet.json`: the accepted R1/R2 evidence and snapshot binding
 - `r3/cc-response.json`: Counterpart Arbiter's typed verdict
@@ -233,9 +251,10 @@ Counterpart Arbiter runs first in R3. The scheduler then creates:
   the evidence packet, and the CC verdict
 - `r3/primary-arbiter-request.json`: the challenge the Primary Arbiter must answer
 
-With auto PA enabled, the scheduler gives the same-family Primary Arbiter the
-evidence and Counterpart verdict, validates `ArbiterVerdict`, constructs the
-bound response, and consumes the challenge without host submission.
+With auto PA enabled, the scheduler sends the evidence and counterpart verdict
+to the same-family `Primary Arbiter` wire binding, validates `ArbiterVerdict`,
+constructs the bound response, and consumes the challenge without host
+submission.
 
 For an existing historical run already waiting for manual PA,
 `quinte primary-arbiter request RUN_ID --json` returns the challenge. It contains:
@@ -252,8 +271,9 @@ expires_at
 consumed
 ```
 
-The external Primary Arbiter must read the evidence packet and Counterpart Arbiter response, independently
-draft its verdict, and write a response conforming to
+For a historical manual handoff, the external producer must use the evidence
+packet and counterpart response to create a typed verdict, then write a
+response conforming to
 [`schemas/primary-arbiter-response.schema.json`](../schemas/primary-arbiter-response.schema.json):
 
 ```json
@@ -267,8 +287,8 @@ draft its verdict, and write a response conforming to
   "action_scope": "exact value from primary-arbiter-request.json, including null",
   "verdict": {
     "arbiter_verdict_version": "1.0",
-    "summary": "Primary Arbiter evidence-based summary",
-    "recommendation": "Primary Arbiter recommendation",
+    "summary": "Evidence-based summary",
+    "recommendation": "Recommended actions",
     "residuals": []
   }
 }
@@ -280,8 +300,8 @@ Submit it only through:
 quinte primary-arbiter submit RUN_ID --verdict /path/to/arbiter-verdict.json --json
 ```
 
-`--verdict` is the preferred host boundary: the Primary Arbiter supplies only the
-`ArbiterVerdict`, and the CLI copies the challenge bindings into the
+`--verdict` is the preferred host boundary: the external producer supplies only
+the `ArbiterVerdict`, and the CLI copies the challenge bindings into the
 scheduler-owned response. The verdict file must be outside the run directory.
 The lower-level `--response` form remains for non-host API integrations but
 must likewise read an external file and match every challenge field exactly.
@@ -294,10 +314,11 @@ accepting a different response. A valid submission is copied into the run,
 recorded in the event log, and immediately advances through deterministic
 merge.
 
-Model text such as `primary_arbiter_approved` or a lane's self-reported identity is not a
-primary-arbiter acceptance signal. Directly placing `primary-arbiter-response.json` in the run directory is
-an unsupported internal operation and cannot bypass challenge validation;
-host integrations must use the handshake command.
+Model text such as `primary_arbiter_approved` or a lane's self-reported identity
+is not a primary-arbiter acceptance signal. Directly placing
+`primary-arbiter-response.json` in the run directory is an unsupported internal
+operation and cannot bypass challenge validation; host integrations must use
+the handshake command.
 
 Runs staged by the earlier HM-named runtime remain resumable: the scheduler
 validates `r3/hm-response.json` against its exact historical schema and receipt
@@ -310,8 +331,11 @@ identity of the process that wrote it. Protect access to the state root and use
 an authenticated host control channel when identity authentication is needed.
 
 During merge, conflicting residuals with the same id are retained as
-`unresolved` and `open`, and recommendation disagreement is preserved as
-dissent. The CLI writes `result.json` and `report.md` only after merge.
+`unresolved` and `open`, and unequal recommendation strings are preserved in
+the `dissent` compatibility field. `dissent`, `perspectives`, and the other
+trial-manifest names are RASHOMON Trace 1.1 data-contract compatibility fields;
+they do not control execution and do not make RASHOMON a runtime dependency.
+The CLI writes `result.json` and `report.md` only after merge.
 
 ## JSON Output
 

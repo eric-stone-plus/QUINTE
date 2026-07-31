@@ -22,6 +22,13 @@ const PROVIDER_BASE_URL_SELECTOR: &str = "QUINTE_PROVIDER_BASE_URL_ENV";
 const PROVIDER_KEY_ENVS: &[&str] = &["XIAOMI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"];
 const PROVIDER_BASE_URL_ENVS: &[&str] =
     &["XIAOMI_BASE_URL", "DEEPSEEK_BASE_URL", "OPENAI_BASE_URL"];
+const ATTACHMENT_MEDIA_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AttachmentCapability {
+    supported: bool,
+    transport: Option<&'static str>,
+}
 
 #[derive(Debug)]
 pub struct Invocation {
@@ -111,6 +118,7 @@ pub fn doctor(policy: &Policy) -> Vec<Value> {
             let executable_ok = resolved.is_some();
             let credential = provider_credential_status(route);
             let credential_ok = credential.as_ref().is_none_or(|(ok, _, _)| *ok);
+            let attachments = attachment_capability(route);
             let ok = executable_ok && credential_ok;
             let message = match (executable_ok, credential.as_ref()) {
                 (false, _) => resolution.message,
@@ -130,6 +138,19 @@ pub fn doctor(policy: &Policy) -> Vec<Value> {
                     CommandLauncher::Native => "native",
                     CommandLauncher::NpmShim => "npm-runtime",
                 }),
+                "capabilities": {
+                    "text_input": true,
+                    "attachment_input": attachments.supported,
+                    "attachment_transport": attachments.transport,
+                    "attachment_media_types": if attachments.supported {
+                        ATTACHMENT_MEDIA_TYPES.to_vec()
+                    } else {
+                        Vec::new()
+                    },
+                    "verification": "static_adapter_contract",
+                    "provider_live_probe": false,
+                    "multimodal_model": route.multimodal_model,
+                },
                 "ok": ok,
                 "message": message
             });
@@ -141,6 +162,41 @@ pub fn doctor(policy: &Policy) -> Vec<Value> {
             row
         })
         .collect()
+}
+
+fn attachment_capability(route: &RoutePolicy) -> AttachmentCapability {
+    match route.adapter.as_str() {
+        "mimo" => AttachmentCapability {
+            supported: true,
+            transport: Some("mimocode--file"),
+        },
+        "codex" => AttachmentCapability {
+            supported: true,
+            transport: Some("codex--image"),
+        },
+        _ => AttachmentCapability {
+            supported: false,
+            transport: None,
+        },
+    }
+}
+
+pub fn validate_attachment_capability(policy: &Policy) -> anyhow::Result<()> {
+    for route in policy
+        .roster
+        .iter()
+        .chain(std::iter::once(&policy.counterpart_arbiter))
+        .chain(std::iter::once(&policy.primary_arbiter))
+    {
+        if !attachment_capability(route).supported {
+            bail!(
+                "attachments require a native image carrier, but {} adapter {} has no native image carrier",
+                route.party_id,
+                route.adapter
+            );
+        }
+    }
+    Ok(())
 }
 
 /// (available, message, isolated)
@@ -212,7 +268,7 @@ pub fn build(
         )
     };
     let task_prompt = format!(
-        "PHASE: {phase}\nRead the task packet at {} and input/snapshot-manifest.json. Evidence is available only under input/snapshot. Every evidence_refs and closure_evidence entry must be either empty or an exact snapshot_ref copied from snapshot-manifest.json; never construct relative paths or line suffixes.{} Emit one compact JSON object without preamble, markdown fences, or repeated analysis. {phase_contract}",
+        "PHASE: {phase}\nRead the task packet at {} and input/snapshot-manifest.json. Evidence is available only under input/snapshot and through the native attachment carrier. Every evidence_refs and closure_evidence entry must be either empty or an exact snapshot_ref or attachment_ref copied from snapshot-manifest.json; never construct relative paths or line suffixes.{} Emit one compact JSON object without preamble, markdown fences, or repeated analysis. {phase_contract}",
         packet_path.display(),
         attachment_prompt(&attachment_paths),
     );
@@ -294,6 +350,9 @@ pub fn build(
             }
         }
         "reasonix" => {
+            if !attachment_paths.is_empty() {
+                bail!("reasonix adapter has no native image attachment carrier");
+            }
             let binding = provider_binding(route)?;
             write_reasonix_config(lane_root, route, model, &binding)?;
             import_provider_binding(&mut env, &binding);
@@ -330,7 +389,7 @@ pub fn build(
             write_codex_config(&codex_home, route, model, &binding)?;
             import_provider_binding(&mut env, &binding);
             env.insert("CODEX_HOME".into(), codex_home.display().to_string());
-            let args = vec![
+            let mut args = vec![
                 "exec".into(),
                 "--ephemeral".into(),
                 "--ignore-rules".into(),
@@ -345,8 +404,13 @@ pub fn build(
                 "--json".into(),
                 "--color".into(),
                 "never".into(),
-                prompt,
             ];
+            append_image_attachments(&mut args, &attachment_paths);
+            // `codex exec --image` accepts one or more values, so terminate
+            // option parsing before the positional prompt. Without this
+            // delimiter the final --image consumes the prompt as another path.
+            args.push("--".into());
+            args.push(prompt);
             Invocation {
                 program: program.clone(),
                 args,
@@ -585,7 +649,7 @@ fn attachment_prompt(paths: &[PathBuf]) -> String {
         String::new()
     } else {
         format!(
-            " Multimodal attachments are staged under input/attachments ({} file(s)).",
+            " Multimodal attachments are supplied through the adapter's native carrier and mirrored under input/attachments ({} file(s)); cite only their exact attachment_ref values from the manifest.",
             paths.len()
         )
     }
@@ -594,6 +658,13 @@ fn attachment_prompt(paths: &[PathBuf]) -> String {
 fn append_file_attachments(args: &mut Vec<String>, paths: &[PathBuf]) {
     for path in paths {
         args.push("--file".into());
+        args.push(path.display().to_string());
+    }
+}
+
+fn append_image_attachments(args: &mut Vec<String>, paths: &[PathBuf]) {
+    for path in paths {
+        args.push("--image".into());
         args.push(path.display().to_string());
     }
 }
@@ -1669,6 +1740,139 @@ mod tests {
                 paths[1].display().to_string()
             ]
         );
+    }
+
+    #[test]
+    fn codex_images_use_repeated_image_arguments() {
+        let paths = [PathBuf::from("input/a.webp"), PathBuf::from("input/b.gif")];
+        let mut args = Vec::new();
+        append_image_attachments(&mut args, &paths);
+        assert_eq!(
+            args,
+            [
+                "--image".to_string(),
+                paths[0].display().to_string(),
+                "--image".to_string(),
+                paths[1].display().to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_invocation_carries_staged_attachments_with_image_flags() {
+        let _lock = environment_lock();
+        let names = [
+            PROVIDER_KEY_SELECTOR,
+            PROVIDER_BASE_URL_SELECTOR,
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+        ];
+        let saved = names
+            .iter()
+            .map(|name| ((*name).to_string(), std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        unsafe {
+            std::env::set_var(PROVIDER_KEY_SELECTOR, "OPENAI_API_KEY");
+            std::env::set_var(PROVIDER_BASE_URL_SELECTOR, "OPENAI_BASE_URL");
+            std::env::set_var("OPENAI_API_KEY", "selected-key");
+            std::env::set_var("OPENAI_BASE_URL", "https://relay.example.test/v1");
+        }
+
+        let temporary = tempfile::tempdir().unwrap();
+        let run_dir = temporary.path().join("run");
+        create_private_dir_all(&run_dir.join("input/snapshot")).unwrap();
+        create_private_dir_all(&run_dir.join("input/attachments")).unwrap();
+        fs::write(run_dir.join("input/snapshot-manifest.json"), b"{}\n").unwrap();
+        fs::write(run_dir.join("input/attachments/a.png"), b"png").unwrap();
+        fs::write(run_dir.join("input/attachments/b.gif"), b"gif").unwrap();
+        let packet = run_dir.join("packet.json");
+        fs::write(&packet, b"{}\n").unwrap();
+        let lane_root = run_dir.join("lane");
+        let route = RoutePolicy {
+            party_id: "Party A".into(),
+            route_id: "openai-a".into(),
+            adapter: "codex".into(),
+            executable: std::env::current_exe().unwrap().display().to_string(),
+            required: true,
+            family: "openai".into(),
+            provider: "openai-api".into(),
+            text_model: "gpt-5.6-sol".into(),
+            multimodal_model: "gpt-5.6-sol".into(),
+            perspective: String::new(),
+        };
+
+        let invocation = build(
+            &route,
+            "R1",
+            &route.multimodal_model,
+            &packet,
+            &lane_root,
+            30,
+        )
+        .unwrap();
+        let image_args = invocation
+            .args
+            .windows(2)
+            .filter(|pair| pair[0] == "--image")
+            .map(|pair| pair[1].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            image_args,
+            [
+                lane_root
+                    .join("input/attachments/a.png")
+                    .display()
+                    .to_string(),
+                lane_root
+                    .join("input/attachments/b.gif")
+                    .display()
+                    .to_string(),
+            ]
+        );
+        assert_eq!(invocation.args[invocation.args.len() - 2], "--");
+        assert!(
+            invocation.args.last().is_some_and(|prompt| {
+                prompt.contains("PHASE: R1") && prompt.contains("attachment_ref")
+            }),
+            "the prompt must remain a positional argument after the --image list"
+        );
+        cleanup_sensitive(&invocation).unwrap();
+
+        unsafe {
+            for (name, value) in saved {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn production_attachment_capability_is_explicit() {
+        let mut policy = crate::policy::default_policy();
+        validate_attachment_capability(&policy).unwrap();
+
+        for route in policy
+            .roster
+            .iter_mut()
+            .chain(std::iter::once(&mut policy.counterpart_arbiter))
+            .chain(std::iter::once(&mut policy.primary_arbiter))
+        {
+            route.adapter = "reasonix".into();
+        }
+        let error = validate_attachment_capability(&policy).unwrap_err();
+        assert!(error.to_string().contains("no native image carrier"));
+
+        let rows = doctor(&crate::policy::default_policy());
+        assert!(rows.iter().all(|row| {
+            row["capabilities"]["attachment_input"] == true
+                && row["capabilities"]["attachment_media_types"]
+                    .as_array()
+                    .is_some_and(|types| types.len() == 4)
+                && row["capabilities"]["provider_live_probe"] == false
+        }));
     }
 
     #[test]

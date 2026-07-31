@@ -1,13 +1,15 @@
 ---
 name: quinte
-description: Run or continue a QUINTE adversarial review through the quinte CLI, including five-party R1/R2 analysis, two same-family R3 arbiters, run inspection, and recovery. Use when the user explicitly asks for QUINTE, a five-party structured review, cross-examination, residual exposure, or continuation or inspection of an existing QUINTE run. Do not use it as a generic delegator or to run one QUINTE role.
+description: Run or continue the QUINTE contract-gated review runtime through the quinte CLI, including five-path R1/R2 processing, two same-family R3 verdict bindings, run inspection, and recovery. Use when the user explicitly asks for QUINTE, a fixed multi-path review, anonymized R2 recheck, residual exposure, or continuation or inspection of an existing QUINTE run. Do not use it as a generic delegator or to run one QUINTE execution binding.
 ---
 
 # QUINTE CLI
 
-Use `quinte` as the sole execution authority. Do not recreate its phases with
-manual agent calls, `delegate_task`, shell loops, or any host phase dispatcher.
-Do not run, replace, or skip an individual party.
+Use `quinte` as the sole execution authority for its single-model-family,
+multi-path, three-stage pipeline. Do not recreate its phases with manual model
+calls, `delegate_task`, shell loops, or any host phase dispatcher. Do not run,
+replace, or skip an individual execution binding. `Party` and `Arbiter` names
+are wire-role identifiers only.
 
 Do not read any retired host overlay or archive record as a dispatch source.
 Commands come only from the installed `quinte` CLI.
@@ -49,7 +51,7 @@ When the user explicitly asks for a QUINTE review, actually invoke the
    `quinte-progress` on any recent id or check that no other run is
    `r1_running` / `r2_running`. If a prior run is still active, poll it or
    `quinte cancel <id> --json` after the user agrees — never stack a second
-   five-party fan-out (shared model backends → 429 and thrash).
+   five-path fan-out (shared model backends → 429 and thrash).
 2. **Never block the interactive session.** Do not use `quinte run --wait` or
    bare `quinte wait`. Start detached; poll `quinte-progress <run-id>` every
    30–60 s as **separate** tool calls and narrate each line. Do not wrap polls
@@ -59,8 +61,9 @@ When the user explicitly asks for a QUINTE review, actually invoke the
 3. **Compact evidence.** Extract essential text into a small evidence directory;
    avoid dumping large PDF trees. Prefer `.doc`/`.docx` text over scanned PDF
    OCR. Normalize trailing/nbsp filenames. Use `snapshot_ignore` for noise.
-   Parties may only cite exact `snapshot://` refs from the snapshot manifest —
-   invented paths fail R1 non-retryably and waste a full multi-party round.
+   Path outputs may only cite exact `snapshot://` or `attachment://` refs from
+   the snapshot manifest — invented paths fail R1 non-retryably and waste a
+   full run.
 4. **Fail once, fix brief, then re-run.** On `failed`, read
    `quinte status <id> --json` error text first. Do not immediately re-fire the
    same brief. Fix evidence/refs, cancel leftovers, then start one new run.
@@ -81,12 +84,19 @@ When the user explicitly asks for a QUINTE review, actually invoke the
    (`brief_version`, `question`, `context`, `evidence_roots`, `attachments`,
    `action_scope`) instead of probing the schema by trial and error. Do not
    infer a contract revision from the package version.
-   Then validate before spending a multi-party round:
+   Then validate before spending a full run:
    `quinte validate --kind brief <file> --json` — fix every reported field
    error first; a schema-invalid brief fails the run after lanes have already
    started. Also verify `evidence_roots` resolve to at least one readable
    file — an empty snapshot wastes a full round (run 019f710b produced 12
    P0/CRITICAL residuals on zero evidence).
+   If `attachments` is non-empty, inspect the seven `doctor --json` route rows:
+   every row must report `capabilities.attachment_input=true`. MiMo uses
+   `--file` and Codex uses `--image`; Reasonix has no native carrier and must
+   not be used for an attachment run. `provider_live_probe=false` means this is
+   a static carrier check, not proof that a configured endpoint accepted a
+   sample image. Outputs may cite exact `attachment://` values from the
+   snapshot manifest as well as exact `snapshot://` values.
 3. Start the run detached: `quinte run --brief <file> --json`, and record the
    returned run id. Create the brief and start `run` in the same execution
    action when possible; do not claim dispatch until a run id returns.
@@ -95,13 +105,13 @@ When the user explicitly asks for a QUINTE review, actually invoke the
    `quinte-progress <run-id> --watch` streams every 15 s.
 5. Branch on the returned `status`, not the exit code alone. A default detached
    run returns `queued`; current policies normally continue through the
-   automatic Primary Arbiter to `completed`.
+   automatic primary R3 binding to `completed`.
    Expected duration: R1 about 1–4 min (parallel, soft-staggered), R2 about
    3–8 min (serial + 10 s pacing), then automatic R3 arbitration.
 
 Legacy compatibility: `waiting_primary_arbiter` and the manual PA commands are
-historical surfaces only; production v2 uses automatic same-family arbitration
-and requires no host handoff.
+historical surfaces only; production v2 runs both same-family R3 bindings
+automatically and requires no host handoff.
 
 Use `quinte resume <run-id> --json` after an interrupted scheduler process,
 `quinte-progress <run-id>` to observe, and `quinte cancel <run-id> --json`
@@ -110,7 +120,7 @@ cancelling the run.
 
 ## External Audit (post-completion, explicit and optional)
 
-QUINTE never invokes an auditor as part of its state machine. After any run
+QUINTE never invokes an external audit process as part of its state machine. After any run
 reaches `completed`, a host may explicitly run
 `quinte-audit --home <state-root> <run-id>`. The auditor must be outside the
 seat family; MAGI owns that cross-family routing.
@@ -128,8 +138,8 @@ seat family; MAGI owns that cross-family routing.
 4. Exit codes are `0` PASS, `10` PASS_WITH_NOTES, `20` FAIL, and `2` operational
    or contract failure. Invocation is always explicit.
 
-Audit independence is the point — never substitute a roster member as the
-auditor.
+The routing requirement is mechanical: never use one of the seven bound routes
+as the external audit route.
 
 ## Contract Ownership
 
@@ -145,8 +155,8 @@ schema-valid result emitted by that CLI as the product outcome.
 
 ## Production seat binding
 
-All seven roles must match the seat's `family`, `provider`, `text_model`, and
-`multimodal_model`. Current production bindings are MiMo via isolated
+All seven execution bindings must match the seat's `family`, `provider`,
+`text_model`, and `multimodal_model`. Current production bindings are MiMo via isolated
 MiMoCode config/auth, DeepSeek via Reasonix, and OpenAI via Codex. The OpenAI
 relay must implement the Responses API. Provider key/base-URL selectors are
 allowlisted; HTTP, whitespace, and `.invalid` endpoints fail closed. Historical
@@ -176,9 +186,9 @@ trees. Briefs and artifact references stay portable; never add `\\?\` or
 - Normalize filenames with trailing or non-breaking spaces in a temporary
   evidence directory instead of hand-writing ambiguous paths.
 - Include relevant domain rules in `context`, `action_scope`, or the evidence
-  snapshot. Parties do not inherit local business knowledge across sessions.
-- A single-agent calculation may identify a residual, but it does not override
-  a completed QUINTE product result without new evidence and closure.
+  snapshot. Execution bindings receive only the persisted run inputs.
+- A standalone model calculation may identify a residual, but it does not
+  override a completed QUINTE result without new evidence and closure.
 
 QUINTE output is evidence, not authorization for a protected action. The runtime
 uses process/config isolation but does not provide an OS filesystem or network

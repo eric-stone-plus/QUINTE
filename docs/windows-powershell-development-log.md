@@ -5,8 +5,8 @@ Date: 2026-07-13
 ## Scope
 
 This non-normative historical record documents a Windows incident after the
-initial release: QUINTE could discover its fixed agents during `quinte doctor`
-but could not start four of them during R1. It intentionally excludes
+initial release: QUINTE could discover its fixed route executables during
+`quinte doctor` but could not start four of them during R1. It intentionally excludes
 host-specific paths, run IDs, credentials, and runtime artifacts.
 
 ## Incident Signature
@@ -119,8 +119,8 @@ and Linux keep their direct executable behavior.
 
 ## macOS Comparison
 
-The macOS technical profile was reviewed as a comparison, not as a source of
-truth. Its useful principle is that background processes need an explicit
+The macOS technical profile was reviewed as a comparison, not as an
+authoritative runtime specification. Its useful engineering constraint is that background processes need an explicit
 environment and PATH parity checks; editing `.zshrc` alone does not configure a
 worker process. Its shell, Homebrew, Keychain, launchd, PTY, and absolute-path
 patterns were not copied to Windows.

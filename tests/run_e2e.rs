@@ -276,6 +276,58 @@ fn invalid_snapshot_ignore_does_not_create_an_orphan_run_directory() {
 }
 
 #[test]
+fn reasonix_attachment_rejection_precedes_run_state_creation() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("home");
+    let store = Store::new(home.clone());
+    fs::create_dir_all(&home).unwrap();
+    let mut policy = quinte::policy::default_policy();
+    policy.seat.seat_id = "seat-deepseek".into();
+    policy.seat.family = "deepseek".into();
+    policy.seat.provider = "deepseek".into();
+    policy.seat.text_model = "deepseek-v4-pro".into();
+    policy.seat.multimodal_model = "deepseek-v4-pro".into();
+    policy.text_model = policy.seat.text_model.clone();
+    policy.multimodal_model = policy.seat.multimodal_model.clone();
+    for route in policy
+        .roster
+        .iter_mut()
+        .chain(std::iter::once(&mut policy.counterpart_arbiter))
+        .chain(std::iter::once(&mut policy.primary_arbiter))
+    {
+        route.adapter = "reasonix".into();
+        route.executable = "reasonix".into();
+        route.family = policy.seat.family.clone();
+        route.provider = policy.seat.provider.clone();
+        route.text_model = policy.seat.text_model.clone();
+        route.multimodal_model = policy.seat.multimodal_model.clone();
+    }
+    let attachment = temporary.path().join("evidence.png");
+    fs::write(&attachment, b"\x89PNG\r\n\x1a\n").unwrap();
+    let brief_path = temporary.path().join("attachment-brief.json");
+    write_json(
+        &brief_path,
+        &Brief {
+            brief_version: BRIEF_VERSION.into(),
+            question: "Inspect the image".into(),
+            context: None,
+            evidence_roots: Vec::new(),
+            snapshot_ignore: Vec::new(),
+            attachments: vec![attachment],
+            action_scope: None,
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
+        },
+    )
+    .unwrap();
+
+    let error = run::create(&store, &policy, &RunOptions { brief_path }).unwrap_err();
+
+    assert!(error.to_string().contains("no native image carrier"));
+    assert!(!store.runs_dir().exists());
+}
+
+#[test]
 fn legacy_brief_is_normalized_before_persistence_and_hashing() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
@@ -352,6 +404,21 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
         RunStatus::WaitingPrimaryArbiter,
         "run failed before Primary Arbiter handoff: {:?}",
         after_advance.error
+    );
+    let task_packet: serde_json::Value = read_json(
+        &store
+            .run_dir(&created.run_id)
+            .unwrap()
+            .join("input/task-packet.json"),
+    )
+    .unwrap();
+    assert_eq!(
+        task_packet["allowed_evidence_prefix"],
+        serde_json::json!("snapshot://")
+    );
+    assert_eq!(
+        task_packet["allowed_attachment_prefix"],
+        serde_json::json!("attachment://")
     );
 
     let challenge = store

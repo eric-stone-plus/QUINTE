@@ -4,7 +4,7 @@
 
 # QUINTE
 
-**A protocol-enforcing CLI for five-party adversarial review**
+**A single-model-family, multi-path review runtime with contract gates**
 
 [![Protocol](https://img.shields.io/badge/protocol-current-blue?style=flat)](specs/PROTOCOL.md)
 [![CLI](https://img.shields.io/badge/CLI-contract-orange?style=flat)](specs/CLI.md)
@@ -12,51 +12,63 @@
 
 </div>
 
-QUINTE exposes disagreements, omissions, evidence gaps, and unresolved risk
-before a host adopts a conclusion. It is not a generic agent delegator or an
-answer-voting system.
+QUINTE runs a fixed engineering review pipeline that detects conflicting
+findings, omissions, evidence gaps, and unresolved risk before a host adopts a
+conclusion. It is not a generic model delegator or an answer-voting system.
 
-The protocol has three rounds:
+The runtime has three stages:
 
-- **R1:** Party A-E produce independent analyses.
-- **R2:** the same five parties cross-review anonymized R1 outputs.
-- **R3:** the Primary Arbiter and the Counterpart Arbiter produce the dual verdict.
+- **R1:** five fixed paths (`Party A`-`Party E` in the wire contract) produce
+  typed first-pass outputs.
+- **R2:** the same five paths check an anonymized packet of accepted R1 outputs.
+- **R3:** two fixed verdict bindings (`Counterpart Arbiter` and `Primary
+  Arbiter`) produce typed inputs for deterministic merge.
 
 The Rust CLI owns the run state machine, fixed roster, typed output gates,
 retry boundary, artifacts, and Primary Arbiter handshake. The host invokes the CLI; it
 does not recreate QUINTE by launching the parties itself.
 
-## Design Vocabulary
+## Engineering Model
 
-QUINTE names its two layers deliberately:
+QUINTE is a **single-model-family, multi-path, three-stage review runtime with
+seven execution bindings and contract gates**:
 
-- **Scenario-oriented prompt layer.** The seven protocol roles are
-  scripted scenario positions, not objects with encapsulated behavior. A role
-  is a constructed situation — brief, evidence packet, output schema, and
-  constraints — inside which a model improvises an analysis. The protocol does
-  not program behavior; it stages situations and gates what returns.
-- **Contract-oriented orchestration layer.** Everything outside the scenario —
-  roster, rounds, state machine, typed output gates, retry boundary, and
-  SHA-256 artifact bindings — is deterministic and closed-schema. Scenario
-  text never advances the state machine; only typed artifacts do.
+- **Single model family:** all seven bindings share the same family, provider,
+  text model, and multimodal model within one run.
+- **Multiple paths:** five R1/R2 bindings apply fixed path-specific review
+  instructions to the same bounded evidence snapshot.
+- **Three stages:** R1 produces first-pass artifacts, R2 checks the accepted R1
+  packet, and R3 produces two typed verdict inputs for merge.
+- **Seven execution bindings:** five R1/R2 routes and two R3 routes are fixed by
+  policy before dispatch.
+- **Contract gates:** the scheduler alone owns phase transitions, closed-schema
+  validation, retries, receipts, and SHA-256 artifact bindings.
 
-Object-oriented programming encapsulated behavior in objects. QUINTE induces
-behavior in scenarios and arbitrates it with contracts.
+`Party A`-`Party E`, `Counterpart Arbiter`, and `Primary Arbiter` are protocol
+wire-role identifiers. They name execution slots and artifact ownership; they
+do not denote personas, role-playing, or autonomous control of the scheduler.
+Likewise, result fields such as `perspectives` and `dissent` are serialized
+compatibility names, not behavioral concepts.
+
+QUINTE preserves the applicable result field names for compatibility with the
+RASHOMON Trace 1.1 data contract. That compatibility is limited to the data
+shape; QUINTE has no runtime dependency on RASHOMON.
 
 ## Runtime Boundary
 
 Policy v2 binds all seven roles to one seat identity. The four binding axes
 (`family`, `provider`, `text_model`, `multimodal_model`) must match exactly:
 
-| Seat family | Adapter for Party A-E and both arbiters | Requirement |
-| --- | --- | --- |
-| MiMo | MiMoCode | isolated config/auth from selected Xiaomi key and base URL |
-| DeepSeek | Reasonix | stateless provider config from selected DeepSeek key and base URL |
-| OpenAI | Codex | relay must implement the Responses API |
+| Seat family | Adapter for all seven execution bindings | Image carrier | Requirement |
+| --- | --- | --- | --- |
+| MiMo | MiMoCode | repeated `--file` | isolated config/auth from selected Xiaomi key and base URL |
+| DeepSeek | Reasonix | none | stateless provider config from selected DeepSeek key and base URL |
+| OpenAI | Codex | repeated `--image` | relay must implement the Responses API image input |
 
-Party A-E provide policy-defined scenario perspectives; they are not different
-model families. Both R3 arbiters use the same seat family too. Cross-family
-comparison belongs to an outer orchestrator such as MAGI, not one QUINTE run.
+The five R1/R2 bindings use policy-defined path instructions; they are not
+different model families. Both R3 bindings use the same seat family too.
+Cross-family comparison belongs to an outer orchestrator such as MAGI, not one
+QUINTE run.
 Legacy policy v1 remains readable without rewrite, but its historical native
 harness roster is a compatibility surface, not the production v2 default. It
 cannot start a new run; back up the file and run `quinte init --force` to
@@ -157,7 +169,10 @@ and exactly one selected provider key/base URL pair. Set
 `QUINTE_PROVIDER_KEY_ENV` and `QUINTE_PROVIDER_BASE_URL_ENV` to the appropriate
 allowlisted names (`XIAOMI_*`, `DEEPSEEK_*`, or `OPENAI_*`). HTTPS is required;
 whitespace and `.invalid` placeholders fail closed. `quinte doctor --json`
-checks all seven roles before dispatch.
+checks all seven bindings before dispatch. Each route row also reports its
+static attachment carrier, accepted media types, and `provider_live_probe:
+false`; `doctor` verifies local routing/configuration, not a live multimodal
+request to the provider.
 
 Create a brief such as `brief.json`:
 
@@ -180,7 +195,7 @@ quinte run --brief brief.json --json
 ```
 
 The default command returns immediately with a queued run while a supervised
-background worker advances R1, R2, both arbiters, and deterministic merge:
+background worker advances R1, R2, both R3 bindings, and deterministic merge:
 
 ```json
 {"cli_envelope_version":"1.0","ok":true,"data":{"run_id":"...","status":"queued","run_dir":"..."}}
@@ -248,9 +263,14 @@ trees. Built-in exclusions for credentials and common generated trees remain
 in force.
 
 Production v2 adapters receive validated attachments through their native
-read-only input mechanisms. They start from a fresh per-attempt HOME/config
-tree; selected provider state is constructed from the allowlisted environment
-pair and no host agent profile is copied.
+read-only input mechanisms. PNG, JPEG, WebP, and GIF are recognized from bytes,
+copied into `input/attachments`, hashed in `snapshot-manifest.json`, and exposed
+as exact `attachment://` references. MiMo and Codex have native carriers;
+Reasonix currently does not, so a DeepSeek/Reasonix run with attachments fails
+before a run directory is created. The accepted file list and local carrier do
+not constitute a live provider capability probe. Adapters start from a fresh
+per-attempt HOME/config tree; selected provider state is constructed from the
+allowlisted environment pair and no host profile is copied.
 
 ## Isolation and Authorization
 
@@ -270,7 +290,7 @@ that authority.
 
 ## Repository Contracts
 
-- [Protocol specification](specs/PROTOCOL.md) defines the debate invariants.
+- [Protocol specification](specs/PROTOCOL.md) defines the runtime invariants.
 - [CLI specification](specs/CLI.md) defines the executable boundary.
 - [Windows PowerShell development log](docs/windows-powershell-development-log.md)
   records the native process-launch design and regression boundary.

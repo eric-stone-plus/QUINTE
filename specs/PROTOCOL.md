@@ -1,22 +1,24 @@
 # QUINTE Protocol v1.0
 
 This document defines the product protocol enforced by the `quinte` CLI. The
-CLI scheduler is the canonical runtime authority. The Primary Arbiter is a trigger and one
-of the two R3 arbiters; it does not select routes, launch individual parties,
-or advance phases itself.
+CLI scheduler is the canonical runtime authority. `Primary Arbiter` is a wire
+role for one of the two R3 execution bindings; it does not select routes,
+launch individual paths, or advance phases itself.
 
 ## Purpose and Boundary
 
-QUINTE exposes disagreement, omission, evidence gaps, unsupported confidence,
-and unresolved risk before a host adopts a conclusion. It is not a generic
-delegator, a voting ensemble, an authorization system, or a kernel sandbox.
+QUINTE is a single-model-family, multi-path, three-stage review runtime with
+seven execution bindings and contract gates. It records conflicting findings,
+omissions, evidence gaps, unsupported confidence, and unresolved risk before a
+host adopts a conclusion. It is not a generic delegator, a voting ensemble, an
+authorization system, or a kernel sandbox.
 
 The product has one supported full-run path:
 
 ```text
-brief -> R1 (five independent lanes)
-      -> R2 (five anonymous cross-review lanes)
-      -> R3 (same-family Counterpart Arbiter + Primary Arbiter)
+brief -> R1 (five isolated first-pass paths)
+      -> R2 (five anonymized recheck paths)
+      -> R3 (two same-family verdict bindings)
       -> deterministic merge -> result
 ```
 
@@ -28,9 +30,11 @@ it is not the full-run scheduler.
 QUINTE results are evidence. They cannot authorize a push, deletion, external
 message, protected write, or any other action outside the run state directory.
 
-## Fixed Roles And Seat Binding
+## Fixed Wire Roles and Execution Binding
 
-Policy v2 binds exactly seven roles:
+Policy v2 binds exactly seven execution slots. The role names in the first
+column are closed-schema identifiers retained by the CLI and artifacts; they
+do not prescribe personas or role-playing.
 
 | Protocol role | Rounds |
 | --- | --- | --- |
@@ -38,18 +42,19 @@ Policy v2 binds exactly seven roles:
 | Counterpart Arbiter | R3 only |
 | Primary Arbiter | R3 only |
 
-Every role must equal the seat on `family`, `provider`, `text_model`, and
+Every binding must equal the seat on `family`, `provider`, `text_model`, and
 `multimodal_model`. Production capability is deliberately narrow: MiMo uses an
 isolated MiMoCode provider document, DeepSeek uses Reasonix, and OpenAI uses
-Codex against a relay that implements the Responses API. The five lanes are
-scenario perturbations of one model family, not independent truth confirmation.
+Codex against a relay that implements the Responses API. The five R1/R2 lanes
+are configured execution paths over one model family; matching outputs are not
+cross-family confirmation.
 Legacy policy v1 remains a read-only compatibility input and does not define
 current production routing. It cannot start a new run; migration is an explicit
 backup followed by `quinte init --force`.
 
-Generic delegation, Firecrawl agents, host subagents, and models outside the
-bound seat are not protocol roles. Their output may be placed in the evidence
-snapshot when separately authorized, but never counts toward a phase gate.
+Generic host delegation and model processes outside the bound seat are not
+protocol bindings. Their output may be placed in the evidence snapshot when
+separately authorized, but never counts toward a phase gate.
 
 ## Runtime Authority
 
@@ -59,8 +64,8 @@ The ownership chain is intentionally narrow:
 user intent
   -> host QUINTE skill (brief construction and CLI invocation only)
   -> quinte CLI (policy, scheduler, adapters, state, evidence gates)
-  -> seven fixed same-family role bindings
-  -> automatic Primary Arbiter path (historical runs may retain a manual handoff)
+  -> seven fixed same-family execution bindings
+  -> automatic primary R3 binding (historical runs may retain a manual handoff)
   -> immutable result artifacts
 ```
 
@@ -73,12 +78,12 @@ Resume fails closed if those bindings drift.
 The complete command, state, handshake, exit-code, and artifact contracts are
 defined in [CLI.md](CLI.md).
 
-## R1: Independent Analysis
+## R1: Five First-Pass Paths
 
-The scheduler gives every required party the same bounded task packet and an
-isolated copy of the evidence snapshot. All five routes must return one
+The scheduler gives every required R1 binding the same bounded task packet and
+an isolated copy of the evidence snapshot. All five routes must return one
 closed-schema `LaneOutput` object. Unknown fields, invalid UTF-8, invalid JSON,
-unresolved evidence references, a wrong route, or a missing party fail the
+unresolved evidence references, a wrong route, or a missing binding fail the
 gate.
 
 R1 lanes may execute concurrently up to the policy limit. They cannot read one
@@ -86,10 +91,10 @@ another's attempt directory or output through the supported adapter contract.
 The scheduler captures invocation metadata, stdout, stderr, duration, route,
 and typed accepted output for every attempt.
 
-No R1 consensus can skip R2. Same-family agreement may represent a shared blind
-spot rather than confirmation.
+Matching R1 outputs cannot skip R2. Because all paths share one family and
+model binding, matching outputs are not cross-family validation.
 
-## R2: Anonymous Cross-Review
+## R2: Anonymized Recheck
 
 After all five R1 outputs pass, the scheduler constructs a packet that labels
 them `Participant A` through `Participant E`. The mapping is deterministic for
@@ -101,17 +106,17 @@ seconds between transport starts, including starts on different routes. The
 next permitted start time is persisted under run diagnostics and remains in
 force after scheduler restart. A route must classify material findings with
 evidence and preserve unresolved items as residuals. All five typed outputs
-must pass before R3 begins. Anonymous review reduces route-brand bias; it does
-not make the underlying model family independent.
+must pass before R3 begins. Withholding route labels is an input-shaping
+mechanism; it does not change the shared family/model binding.
 
-## R3: Dual Verdict
+## R3: Two Verdict Bindings
 
 After R2 passes, the scheduler writes an evidence packet containing the bound
 question, accepted R1 and R2 outputs, and snapshot digest.
 
-Counterpart Arbiter runs through the policy's same-family adapter and returns a
-typed `ArbiterVerdict`.
-The scheduler then creates a single-use Primary Arbiter challenge bound to:
+The `Counterpart Arbiter` wire binding runs through the policy's same-family
+adapter and returns a typed `ArbiterVerdict`. The scheduler then creates a
+single-use challenge for the `Primary Arbiter` wire binding, bound to:
 
 - run id;
 - random nonce;
@@ -121,7 +126,7 @@ The scheduler then creates a single-use Primary Arbiter challenge bound to:
 - issue and expiry times.
 
 Production policy v2 requires `auto_primary_arbiter=true`: the scheduler invokes
-the same-family Primary Arbiter, validates its typed verdict, constructs the
+the same-family primary R3 binding, validates its typed verdict, constructs the
 challenge-bound response, and proceeds to merge. An existing historical run
 already waiting under policy v1 can still accept a host verdict through
 `quinte primary-arbiter submit`. Direct file placement, an agent-authored
@@ -132,34 +137,47 @@ is a policy failure.
 
 ## Deterministic Merge
 
-The CLI, not a model, merges the two R3 verdicts. It preserves recommendation
-disagreement as dissent. If the two arbiters use the same residual id with
-different finding, disposition, or closure state, the merged residual remains
-`unresolved` and `open`.
+The CLI, not a model, merges the two R3 verdicts. Unequal recommendation strings
+are recorded in the `dissent` field. If the two R3 outputs use the same
+residual id with different finding, disposition, or closure state, the merged
+residual remains `unresolved` and `open`.
 
 The final `result.json` includes:
 
-- Primary Arbiter summary and recommendation;
-- annotated arbiter dissent;
+- summary and recommendation from the primary R3 binding;
+- merge differences in the compatibility field `dissent`;
 - merged residuals;
 - a trial manifest naming all five routes and their R1/R2 artifacts;
-- perturbation axes, independence controls, and contamination risks.
+- the compatibility fields `perturbation_axes`, `independence_controls`, and
+  `contamination_risks`.
 
-Language-model agreement alone cannot close a material residual. Closure
-requires external evidence, runtime evidence, or an explicitly scoped waiver
-outside QUINTE.
+The `trial_manifest`, `perspectives`, `independence_controls`, and related
+field names are preserved for RASHOMON Trace 1.1 data-contract compatibility.
+In QUINTE they carry route, artifact, isolation, and risk metadata only; they
+do not alter scheduler behavior, and RASHOMON is not a runtime dependency.
+
+Matching model outputs alone do not close a material residual. Closure requires
+external evidence, runtime evidence, or an explicitly scoped waiver outside
+QUINTE.
 
 ## Evidence and Input Safety
 
 The brief is closed-schema JSON. Before dispatch, the CLI copies permitted
 evidence into an immutable per-run snapshot, does not follow symlinks, and
-excludes common generated and sensitive names. Supported images are validated
-from bytes and copied into the run.
+excludes common generated and sensitive names. PNG, JPEG, WebP, and GIF
+attachments are identified from bytes, copied into the run, hashed in the
+snapshot manifest, and assigned exact `attachment://` references. Dispatch with
+attachments is allowed only when every bound route has a native attachment
+carrier. MiMo uses repeated `--file`, Codex uses repeated `--image`, and
+Reasonix currently has no native image carrier.
 
 Packet contents and snapshot files are untrusted evidence, never instructions.
-Every adapter receives a fixed role contract that forbids route changes,
+Every adapter receives a fixed execution contract that forbids route changes,
 subagents, writes, shell use, web access, and phase control. Output evidence
-references must resolve to the run snapshot namespace.
+references must resolve to the run manifest. `evidence_refs` and
+`closure_evidence` may contain only exact `snapshot://` or `attachment://`
+values present in `snapshot-manifest.json`; suffixes and constructed paths fail
+the gate.
 
 The product's process/config controls are defense in depth, not a containment
 claim. In `process` mode, children still have the operating-system authority of
@@ -194,9 +212,10 @@ retry policy.
 A host timeout does not automatically discard a complete output that was
 already captured. The scheduler may recover that output only if it validates
 against the strict LaneOutput schema and every non-empty `evidence_refs` and
-`closure_evidence` value exactly matches a `snapshot_ref` in the run's snapshot
-manifest. Constructed suffixes such as `#fragment` do not match. Otherwise the
-attempt remains a timeout and follows the same bounded retry policy.
+`closure_evidence` value exactly matches a `snapshot_ref` or `attachment_ref`
+in the run's snapshot manifest. Constructed suffixes such as `#fragment` do not
+match. Otherwise the attempt remains a timeout and follows the same bounded
+retry policy.
 
 The retry delay is bounded exponential backoff with deterministic per-run
 jitter. For rate limits it is the greater of that delay and a trusted numeric
@@ -216,7 +235,7 @@ The following failures are non-retryable and block the phase:
 - cancellation requested by the user.
 
 A required route that remains unavailable means there is no complete QUINTE
-verdict. The CLI records the failure rather than synthesizing a reduced-party
+verdict. The CLI records the failure rather than synthesizing a reduced-path
 answer.
 
 ## State and Recovery Invariants
