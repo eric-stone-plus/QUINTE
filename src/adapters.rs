@@ -1163,6 +1163,21 @@ fn normalize_lane_shape(value: &mut Value) {
             }
         }
     }
+    // Claims: an explicit null on the optional 0.1.8 fields warrant/qualifier
+    // is the model saying "absent", not a string value. Drop the key so intake
+    // schema validation and the typed contract agree (kilo R2 in the MAGI P0
+    // emitted exactly this shape and broke the strict downstream validation).
+    if let Some(claims) = value.get_mut("claims").and_then(Value::as_array_mut) {
+        for claim in claims.iter_mut() {
+            if let Some(object) = claim.as_object_mut() {
+                for key in ["warrant", "qualifier"] {
+                    if object.get(key).is_some_and(Value::is_null) {
+                        object.remove(key);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Parse a lane payload: JSON parse → shape coercion → schema validate →
@@ -2705,6 +2720,34 @@ mod tests {
         let payload = minimal_lane_payload(r#"["a","b"]"#, r#"["c"]"#);
         let output = parse_lane_output(payload.as_bytes()).expect("plain");
         assert_eq!(output.uncertainties, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn claims_omitting_warrant_qualifier_roundtrip_without_nulls() {
+        // The 0.1.8 optional fields: when the model omits them, serde default
+        // yields None — re-serializing must omit the keys rather than write
+        // null, because the lane-output schema types them as string and
+        // raw-schema validation of accepted artifacts rejects null.
+        let payload = r#"{"lane_output_version":"1.0","task_restatement":"t","verdict":"v","confidence":0.5,"claims":[{"id":"C1","statement":"s","evidence_refs":[],"confidence":0.5,"category":"c"}],"residuals":[],"uncertainties":[],"limitations":[]}"#;
+        let output = parse_lane_output(payload.as_bytes()).expect("parses");
+        let value = serde_json::to_value(&output).unwrap();
+        let claim = &value["claims"][0];
+        assert!(claim.get("warrant").is_none());
+        assert!(claim.get("qualifier").is_none());
+        validate_value(&value, LANE_OUTPUT_SCHEMA).expect("roundtrip stays schema-clean");
+    }
+
+    #[test]
+    fn claims_with_explicit_null_warrant_qualifier_are_dropped() {
+        // An explicit null is the model saying "absent": drop the key before
+        // validation so intake schema and typed contract agree (MAGI P0:
+        // a kilo R2 lane emitted this and broke the strict downstream gate).
+        let payload = r#"{"lane_output_version":"1.0","task_restatement":"t","verdict":"v","confidence":0.5,"claims":[{"id":"C1","statement":"s","evidence_refs":[],"confidence":0.5,"category":"c","warrant":null,"qualifier":null}],"residuals":[],"uncertainties":[],"limitations":[]}"#;
+        let output = parse_lane_output(payload.as_bytes()).expect("null dropped");
+        assert!(output.claims[0].warrant.is_none());
+        assert!(output.claims[0].qualifier.is_none());
+        let value = serde_json::to_value(&output).unwrap();
+        validate_value(&value, LANE_OUTPUT_SCHEMA).expect("schema-clean");
     }
 
     #[test]

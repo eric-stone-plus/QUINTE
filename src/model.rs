@@ -211,11 +211,14 @@ pub struct Claim {
     pub category: String,
     /// Toulmin warrant (0.1.8): why the cited evidence supports this claim.
     /// Missing in pre-0.1.8 lane artifacts; defaults to `None`.
-    #[serde(default)]
+    /// Never serialize `None` as null: the lane-output schema types this as
+    /// `string`, and raw-schema validation of accepted artifacts rejects null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warrant: Option<String>,
     /// Toulmin qualifier (0.1.8): scope and preconditions bounding the claim.
     /// Missing in pre-0.1.8 lane artifacts; defaults to `None`.
-    #[serde(default)]
+    /// Never serialize `None` as null (see `warrant`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualifier: Option<String>,
 }
 
