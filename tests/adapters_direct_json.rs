@@ -170,8 +170,18 @@ fn invocation_inherits_proxy_variables_without_unrelated_provider_secrets() {
             }
         }
     }
+    #[cfg(not(windows))]
     for name in &names[..6] {
         assert_eq!(invocation.env[*name], format!("proxy-{name}"));
+    }
+    #[cfg(windows)]
+    for (canonical, alias) in [
+        ("HTTP_PROXY", "http_proxy"),
+        ("HTTPS_PROXY", "https_proxy"),
+        ("NO_PROXY", "no_proxy"),
+    ] {
+        assert_eq!(invocation.env[canonical], format!("proxy-{alias}"));
+        assert!(!invocation.env.contains_key(alias));
     }
     assert!(!invocation.env.contains_key("OPENAI_API_KEY"));
 }
