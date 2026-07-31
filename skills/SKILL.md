@@ -9,16 +9,17 @@ Use `quinte` as the sole execution authority. Do not recreate its phases with
 manual agent calls, `delegate_task`, shell loops, or any host phase dispatcher.
 Do not run, replace, or skip an individual party.
 
-Do not read `shimei-host-overlay.json` or any archive overlay as a dispatch
-source. Commands come only from the installed `quinte` CLI.
+Do not read any retired host overlay or archive record as a dispatch source.
+Commands come only from the installed `quinte` CLI.
 
 ## Install prerequisites (host must verify)
 
-QUINTE is **source-built only** (no GitHub prebuilt Releases). Before the first
-run in a session, confirm the host environment:
+Prefer an immutable, checksummed GitHub Release binary for the host platform;
+source builds remain supported for development. Before the first run in a
+session, confirm the host environment:
 
-1. `quinte --version` resolves on PATH to the binary built from this checkout
-   (`cargo build --release` → install/copy onto PATH).
+1. `quinte --version` resolves on PATH to the expected released or source-built
+   version. For a release install, verify the archive against `SHA256SUMS`.
 2. `quinte-progress` and `quinte-run` are on PATH (from repo `scripts/`;
    symlink into `~/.local/bin` preferred so pulls stay in sync).
 3. `quinte doctor --json` is green after install, rebuild, or `git pull`.

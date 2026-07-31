@@ -85,9 +85,9 @@ are empty or exactly match snapshot refs in the run's snapshot manifest.
 
 ## Quick Start
 
-Build from source (prebuilt GitHub Releases are not published). Source on
-`main` is the only install channel, so a rebuild is how you stay current with
-upstream.
+For a stable host install, use the immutable GitHub Release for your platform
+and verify its archive against the published `SHA256SUMS`. Build from source
+when developing or when testing an unreleased `main` commit.
 
 ### macOS / Linux
 
