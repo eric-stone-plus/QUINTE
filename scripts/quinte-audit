@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
-"""quinte-audit — external audit of a completed QUINTE run via reasonix.
+"""quinte-audit — external audit of a completed QUINTE run.
 
 Host-layer, post-protocol step: the QUINTE state machine is never touched.
-Reads <run>/result.json (+ r3/cc-response.json when present), asks reasonix
-(default model: deepseek-v4-pro) to independently audit the verdict, and
-writes the report as <run>/r3/external-audit.json — an ADDITIVE artifact;
-result.json, manifest.json and the hash chain are never modified.
+Reads <run>/result.json (+ r3/cc-response.json when present), asks an
+independent auditor model to audit the verdict, and writes the report as
+<run>/r3/external-audit.json — an ADDITIVE artifact; result.json,
+manifest.json and the hash chain are never modified.
+
+Auditors (--auditor, default: env QUINTE_AUDITOR or "reasonix"):
+  reasonix  reasonix CLI; default model deepseek-v4-pro; --effort max 写死不降档。
+            留给单独使用——不进 MAGI 席位自动化的交叉审计绑定。
+  omp       omp CLI(多 provider)。调用形态复刻 QUINTE adapter 已验证参数
+            (-p --mode text --thinking xhigh --no-session --no-skills …,
+            output TextJson);--model 原样透传,省略时用 omp 配置的默认模型。
+            MAGI 席交叉审计走这里(M←deepseek、D←mimo、G←mimo,
+            见 MAGI poc/route-audit.md §4)。
 
 Usage:
-  quinte-audit <run-id> [--model NAME] [--timeout SEC] [--json]
-                    [--mode {standard,paradigm}]
-  quinte-audit --latest [--model NAME]
+  quinte-audit <run-id> [--auditor NAME] [--model NAME] [--timeout SEC]
+                    [--json] [--mode {standard,paradigm}]
+  quinte-audit --latest [--auditor omp --model deepseek-v4-pro]
 
 Modes: standard audits the verdict (composition/evidence/blind spots/
 actionability/rhetoric); paradigm attacks the shared methodological
@@ -20,13 +29,14 @@ Exit codes: 0 audit completed (any verdict), 2 audit could not run.
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 RUNS_DIR = Path.home() / ".quinte" / "runs"
-DEFAULT_MODEL = "deepseek-v4-pro"
+DEFAULT_REASONIX_MODEL = "deepseek-v4-pro"
 DEFAULT_TIMEOUT = 600
 
 INSTRUCTION_STANDARD = """你是一名独立外部审计师。你没有参与以下结论的产生，也不知道参与方的身份。
@@ -105,12 +115,58 @@ def build_brief(result: dict, cc_response: dict | None, instruction: str) -> str
     return "\n".join(lines)
 
 
+def build_cmd(auditor: str, model: str | None, brief: str, run_dir: Path,
+              timeout: int) -> tuple[list, int]:
+    """返回 (cmd, subprocess_timeout)。各 auditor 的调用形态保持与 QUINTE adapter 一致。"""
+    if auditor == "reasonix":
+        cmd = ["reasonix", "-p", brief, "--output-format", "json", "--effort", "max"]
+        if model != DEFAULT_REASONIX_MODEL:
+            cmd[1:1] = ["--model", model]
+        return cmd, timeout
+    # omp:复刻 src/adapters.rs 的已验证 lane 参数,output kind TextJson(裸文本)
+    cmd = ["omp", "-p", "--mode", "text"]
+    if model:
+        cmd += ["--model", model]
+    cmd += [
+        "--thinking", "xhigh",
+        "--cwd", str(run_dir),
+        "--no-session", "--no-skills", "--no-rules", "--no-extensions",
+        "--no-lsp", "--no-pty",
+        "--tools", "read,grep,glob",
+        "--max-time", str(timeout),
+        brief,
+    ]
+    # --max-time 是 omp 内部门限;外层多给 120s 让其干净退出
+    return cmd, timeout + 120
+
+
+def extract(auditor: str, proc: subprocess.CompletedProcess):
+    """返回 (raw_text, session_id, cost_usd, usage) 或 SystemExit。"""
+    if proc.returncode != 0:
+        raise SystemExit(f"{auditor} failed (exit {proc.returncode}): {proc.stderr[:500]}")
+    if auditor == "reasonix":
+        try:
+            envelope = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            raise SystemExit(f"reasonix returned non-JSON output: {proc.stdout[:500]}")
+        if envelope.get("is_error"):
+            raise SystemExit(f"reasonix error: {envelope.get('result', '')[:500]}")
+        return (str(envelope.get("result", "")), envelope.get("session_id"),
+                envelope.get("total_cost_usd"), envelope.get("usage"))
+    # omp TextJson:stdout 即正文
+    return proc.stdout, None, None, None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="quinte-audit",
-                                 description="external audit of a completed QUINTE run via reasonix")
+                                 description="external audit of a completed QUINTE run")
     ap.add_argument("run_id", nargs="?", help="run id or unique prefix")
     ap.add_argument("--latest", action="store_true", help="audit the latest completed run")
-    ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--auditor", choices=["reasonix", "omp"],
+                    default=os.environ.get("QUINTE_AUDITOR", "reasonix"),
+                    help="default: env QUINTE_AUDITOR or reasonix")
+    ap.add_argument("--model", default=None,
+                    help=f"default: {DEFAULT_REASONIX_MODEL} (reasonix) / omp configured default (omp)")
     ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     ap.add_argument("--mode", choices=["standard", "paradigm"], default="standard",
                     help="standard: audit the verdict; paradigm: attack the shared methodological framework")
@@ -139,27 +195,18 @@ def main() -> int:
         except Exception:
             pass
 
+    model = args.model or (DEFAULT_REASONIX_MODEL if args.auditor == "reasonix" else None)
     instruction = INSTRUCTION_PARADIGM if args.mode == "paradigm" else INSTRUCTION_STANDARD
     brief = build_brief(result, cc_response, instruction)
-    cmd = ["reasonix", "-p", brief, "--output-format", "json", "--effort", "max"]
-    if args.model != DEFAULT_MODEL:
-        cmd[1:1] = ["--model", args.model]
+    cmd, proc_timeout = build_cmd(args.auditor, model, brief, run_dir, args.timeout)
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=proc_timeout,
+                              cwd=str(run_dir) if args.auditor == "omp" else None)
     except subprocess.TimeoutExpired:
-        raise SystemExit(f"reasonix timed out after {args.timeout}s")
-    if proc.returncode != 0:
-        raise SystemExit(f"reasonix failed (exit {proc.returncode}): {proc.stderr[:500]}")
+        raise SystemExit(f"{args.auditor} timed out after {proc_timeout}s")
+    raw_text, session_id, cost_usd, usage = extract(args.auditor, proc)
 
-    try:
-        envelope = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        raise SystemExit(f"reasonix returned non-JSON output: {proc.stdout[:500]}")
-    if envelope.get("is_error"):
-        raise SystemExit(f"reasonix error: {envelope.get('result', '')[:500]}")
-
-    raw_text = str(envelope.get("result", ""))
     parsed = None
     start, end = raw_text.find("{"), raw_text.rfind("}")
     if start != -1 and end > start:
@@ -172,11 +219,11 @@ def main() -> int:
         "audit_version": "1.0",
         "run_id": result.get("run_id", run_dir.name),
         "audited_at": datetime.now(timezone.utc).isoformat(),
-        "auditor": f"reasonix/{args.model}",
+        "auditor": f"{args.auditor}/{model or 'default'}",
         "mode": args.mode,
-        "reasonix_session_id": envelope.get("session_id"),
-        "cost_usd": envelope.get("total_cost_usd"),
-        "usage": envelope.get("usage"),
+        "reasonix_session_id": session_id,
+        "cost_usd": cost_usd,
+        "usage": usage,
         "audit": parsed,
         "audit_raw": None if parsed else raw_text,
         "note": "additive artifact; result.json/manifest.json/hash chain untouched",
@@ -195,7 +242,8 @@ def main() -> int:
         verdict = (parsed or {}).get("verdict", "UNPARSED")
         print(f"run:      {run_dir.name}")
         print(f"mode:     {args.mode}")
-        print(f"auditor:  reasonix/{args.model} (cost ${envelope.get('total_cost_usd', 0):.4f})")
+        cost_str = f" (cost ${cost_usd:.4f})" if cost_usd is not None else ""
+        print(f"auditor:  {args.auditor}/{model or 'default'}{cost_str}")
         print(f"verdict:  {verdict}")
         if parsed and parsed.get("summary"):
             print(f"summary:  {parsed['summary']}")
