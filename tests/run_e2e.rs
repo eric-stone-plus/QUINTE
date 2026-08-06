@@ -562,6 +562,38 @@ fn completed_result_tampering_is_rejected() {
 }
 
 #[test]
+fn result_integrity_hashes_and_parses_one_stable_byte_snapshot() {
+    // This regression locks the implementation to the single-read path: a
+    // result whose digest is bound in the manifest must be accepted from the
+    // exact bytes that were hashed, while a later on-disk rewrite is rejected
+    // on the next observation.
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, response) =
+        create_waiting_run(temporary.path(), &executable, "single-result-snapshot");
+    let response_path = temporary.path().join("single-result-snapshot-response.json");
+    write_json(&response_path, &response).unwrap();
+    assert_eq!(
+        run::submit_primary_arbiter(&store, &run_id, &response_path).unwrap(),
+        RunStatus::Completed
+    );
+
+    let result_path = store.run_dir(&run_id).unwrap().join("result.json");
+    let original = fs::read(&result_path).unwrap();
+    let manifest = store.load_manifest(&run_id).unwrap();
+    assert_eq!(manifest.result_sha256.as_deref(), Some(sha256_file(&result_path).unwrap().as_str()));
+    assert!(run::verify_result_integrity(&store, &run_id).unwrap().is_some());
+
+    // Any rewrite is observed on the next call and cannot be paired with the
+    // previous digest/parse operation.
+    let mut tampered: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    tampered["summary"] = serde_json::json!("tampered after the bound snapshot");
+    write_json(&result_path, &tampered).unwrap();
+    assert!(run::verify_result_integrity(&store, &run_id).is_err());
+}
+
+#[test]
 fn completed_result_identity_must_match_its_manifest_even_when_rehashed() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();

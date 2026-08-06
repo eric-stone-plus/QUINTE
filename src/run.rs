@@ -4387,12 +4387,20 @@ pub fn verify_result_integrity(
         .as_deref()
         .ok_or_else(|| anyhow!("completed run is missing its result digest"))?;
     let path = store.run_dir(run_id)?.join("result.json");
-    let actual = sha256_file(&path).context("completed run result is missing")?;
+    // Read the result exactly once.  Hashing the path and parsing it via two
+    // independent opens creates a TOCTOU window in which a concurrent amend
+    // (or an attacker with write access to the state root) can swap the bytes
+    // between the integrity check and semantic validation.
+    let result_bytes = fs::read(&path).context("completed run result is missing")?;
+    let actual = sha256_bytes(&result_bytes);
     if actual != expected {
         bail!("completed run result integrity check failed");
     }
     let result_contract = contract("result").expect("result contract is registered");
-    let result: Value = read_json(&path)?;
+    let result_text = std::str::from_utf8(&result_bytes)
+        .with_context(|| format!("{} is not strict UTF-8", path.display()))?;
+    let result: Value = serde_json::from_str(result_text)
+        .with_context(|| format!("invalid JSON syntax in {}", path.display()))?;
     let revision = crate::schema::validate_versioned_value(&result, result_contract)?;
     if result.get("run_id").and_then(Value::as_str) != Some(run_id) {
         bail!("completed run result identity does not match its manifest");
