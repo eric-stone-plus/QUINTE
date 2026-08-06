@@ -278,6 +278,17 @@ host wrapper or by weakening the fail-closed rules above:
 - Provider `NO_PROXY` normalization and relative state-root binding need
   platform-specific review (especially IPv6 authorities and lexical versus
   canonical path identity) before being widened.
+- The host scan should eventually reject a symlinked `runs` root itself rather
+  than relying only on child-entry checks; a state-root replacement race must
+  never make an external tree part of reconciliation.
+- Retry-deadline projection currently ignores non-directory entries beneath a
+  phase. Future fail-closed validation should distinguish an absent route from
+  malformed scheduler state, and event-derived `route_id` values should be
+  checked against the manifest binding before being exposed in a receipt.
+- Result integrity binds the result bytes to the manifest digest, but the
+  manifest and result are still two independently read files. A future amend
+  transaction should expose a single generation or lock so a cross-file
+  snapshot cannot straddle versions.
 - The external HIGHBALL/builder path still needs execution receipts and fuller
   observed OCI fields; those are separate provenance contracts, not QUINTE
   scheduler responsibilities.
