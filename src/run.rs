@@ -4391,7 +4391,8 @@ pub fn verify_result_integrity(
     // independent opens creates a TOCTOU window in which a concurrent amend
     // (or an attacker with write access to the state root) can swap the bytes
     // between the integrity check and semantic validation.
-    let result_bytes = fs::read(&path).context("completed run result is missing")?;
+    let io_path = filesystem_path(&path)?;
+    let result_bytes = fs::read(&io_path).context("completed run result is missing")?;
     let actual = sha256_bytes(&result_bytes);
     if actual != expected {
         bail!("completed run result integrity check failed");
