@@ -158,9 +158,10 @@ Copy or symlink it into the host’s live skill directory after install or pull
 `…/skills/multi-agent-debate/quinte/SKILL.md`). Host trees under `~/.hermes`
 are not version-controlled; **the repo file is the source of truth**.
 
-Interactive hosts must not use `quinte run --wait` or bare `quinte wait`. Use
-detached `quinte run --brief … --json` and poll `quinte-progress`, or stream
-with `quinte-run --brief …`. Keep **one active run** at a time.
+External agents must use the stable `quinte host` surface. It owns the global
+launch lock, fail-closed one-active check, detached start receipt, one-shot
+status, terminal integrity verification, and ambiguous-launch reconciliation.
+`quinte-progress`/`quinte-run` remain human display helpers, not machine APIs.
 
 ### Credentials and roster
 
@@ -168,7 +169,11 @@ The CLI is self-contained, but a production policy needs the matching adapter
 and exactly one selected provider key/base URL pair. Set
 `QUINTE_PROVIDER_KEY_ENV` and `QUINTE_PROVIDER_BASE_URL_ENV` to the appropriate
 allowlisted names (`XIAOMI_*`, `DEEPSEEK_*`, or `OPENAI_*`). HTTPS is required;
-whitespace and `.invalid` placeholders fail closed. `quinte doctor --json`
+whitespace and `.invalid` placeholders fail closed. Provider traffic inherits
+the host proxy environment by default. Set `QUINTE_PROVIDER_PROXY_MODE=direct`
+only when the selected provider endpoint is explicitly intended and verified
+to bypass that proxy; `direct` adds only that endpoint host to both `NO_PROXY`
+casings. Unknown modes fail closed. `quinte doctor --json`
 checks all seven bindings before dispatch. Each route row also reports its
 static attachment carrier, accepted media types, and `provider_live_probe:
 false`; `doctor` verifies local routing/configuration, not a live multimodal
@@ -188,23 +193,32 @@ Create a brief such as `brief.json`:
 }
 ```
 
-Start the run with machine-readable output:
+Start through the machine-readable host contract:
 
 ```bash
-quinte run --brief brief.json --json
+quinte host preflight --json
+quinte host start --brief brief.json --json
+quinte host status RUN_ID --json
+quinte host inspect RUN_ID --json
+# if the start response was lost:
+quinte host reconcile --json
 ```
 
-The default command returns immediately with a queued run while a supervised
+`host start` returns immediately with a durable receipt while a supervised
 background worker advances R1, R2, both R3 bindings, and deterministic merge:
 
 ```json
-{"cli_envelope_version":"1.0","ok":true,"data":{"run_id":"...","status":"queued","run_dir":"..."}}
+{"cli_envelope_version":"1.0","ok":true,"data":{"host_receipt_version":"1.0","operation":"start","invocation_id":"...","run_id":"...","state":{"code":"started","active_run_ids":["..."]},"manifest":{"status":"queued"}}}
 ```
 
-Use `--wait` only for a human terminal that wants state observation (not worker
-ownership). Production policy v2 requires `auto_primary_arbiter=true`, so a new
-run normally returns `completed`. Historical runs created under policy v1 may
-still expose:
+`host preflight` is advisory and does not reserve a launch slot. `host start`
+rechecks doctor results and active runs under its launch lock, so callers must
+not treat a prior `ready` receipt as authorization to launch.
+
+The low-level `--wait` flag is only for a human using `quinte run`; machine
+hosts do not use it. Production policy v2 requires
+`auto_primary_arbiter=true`, so a new run normally reaches `completed`.
+Historical runs created under policy v1 may still expose:
 
 ```json
 {"cli_envelope_version":"1.0","ok":true,"data":{"run_id":"...","status":"waiting_primary_arbiter","run_dir":"..."}}
@@ -220,8 +234,8 @@ quinte primary-arbiter submit RUN_ID --verdict primary-arbiter-verdict.json --js
 quinte inspect RUN_ID --json
 ```
 
-`quinte wait RUN_ID` observes the same boundary. Ctrl-C interrupts only the
-wait and leaves the background run active.
+The low-level `quinte wait RUN_ID` observes the same boundary for humans.
+Ctrl-C interrupts only that wait and leaves the background run active.
 
 See [CLI.md](specs/CLI.md) for the complete command contract, Primary Arbiter response
 schema, state transitions, exit codes, and artifact layout.

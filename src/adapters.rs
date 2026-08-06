@@ -19,6 +19,7 @@ const ROLE_CONTRACT: &str = r#"You are one fixed role in QUINTE. Analyze only th
 const MAX_ADAPTER_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const PROVIDER_KEY_SELECTOR: &str = "QUINTE_PROVIDER_KEY_ENV";
 const PROVIDER_BASE_URL_SELECTOR: &str = "QUINTE_PROVIDER_BASE_URL_ENV";
+const PROVIDER_PROXY_MODE_SELECTOR: &str = "QUINTE_PROVIDER_PROXY_MODE";
 const PROVIDER_KEY_ENVS: &[&str] = &["XIAOMI_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"];
 const PROVIDER_BASE_URL_ENVS: &[&str] =
     &["XIAOMI_BASE_URL", "DEEPSEEK_BASE_URL", "OPENAI_BASE_URL"];
@@ -75,6 +76,13 @@ struct ProviderBinding {
     key: String,
     base_url_env: String,
     base_url: String,
+    proxy_mode: ProviderProxyMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderProxyMode {
+    Inherit,
+    Direct,
 }
 
 impl Drop for Invocation {
@@ -303,7 +311,7 @@ pub fn build(
                 "MIMOCODE_CONFIG_CONTENT".into(),
                 serde_json::to_string(&config)?,
             );
-            import_provider_binding(&mut env, &binding);
+            import_provider_binding(&mut env, &binding)?;
             env.insert(
                 "MIMOCODE_AUTH_CONTENT".into(),
                 serde_json::to_string(&json!({
@@ -355,7 +363,7 @@ pub fn build(
             }
             let binding = provider_binding(route)?;
             write_reasonix_config(lane_root, route, model, &binding)?;
-            import_provider_binding(&mut env, &binding);
+            import_provider_binding(&mut env, &binding)?;
             let args = vec![
                 "-p".into(),
                 "--model".into(),
@@ -387,7 +395,7 @@ pub fn build(
             create_private_dir_all(&codex_home)?;
             let binding = provider_binding(route)?;
             write_codex_config(&codex_home, route, model, &binding)?;
-            import_provider_binding(&mut env, &binding);
+            import_provider_binding(&mut env, &binding)?;
             env.insert("CODEX_HOME".into(), codex_home.display().to_string());
             let mut args = vec![
                 "exec".into(),
@@ -1531,13 +1539,29 @@ fn provider_binding(route: &RoutePolicy) -> anyhow::Result<ProviderBinding> {
     }
     let base_url =
         std::env::var(&base_url_env).with_context(|| format!("{base_url_env} is unavailable"))?;
-    validate_provider_base_url(&base_url)?;
+    provider_base_url_host(&base_url)?;
+    let proxy_mode = provider_proxy_mode()?;
     Ok(ProviderBinding {
         key_env,
         key,
         base_url_env,
         base_url,
+        proxy_mode,
     })
+}
+
+fn provider_proxy_mode() -> anyhow::Result<ProviderProxyMode> {
+    match std::env::var(PROVIDER_PROXY_MODE_SELECTOR) {
+        Ok(value) if value == "inherit" => Ok(ProviderProxyMode::Inherit),
+        Ok(value) if value == "direct" => Ok(ProviderProxyMode::Direct),
+        Ok(value) => bail!(
+            "{PROVIDER_PROXY_MODE_SELECTOR} must be `inherit` or `direct`, not {value:?}"
+        ),
+        Err(std::env::VarError::NotPresent) => Ok(ProviderProxyMode::Inherit),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("{PROVIDER_PROXY_MODE_SELECTOR} must be valid UTF-8")
+        }
+    }
 }
 
 fn selected_environment_name(selector: &str, allowed: &[&str]) -> anyhow::Result<String> {
@@ -1578,9 +1602,85 @@ fn validate_provider_base_url(base_url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn import_provider_binding(env: &mut BTreeMap<String, String>, binding: &ProviderBinding) {
+fn import_provider_binding(
+    env: &mut BTreeMap<String, String>,
+    binding: &ProviderBinding,
+) -> anyhow::Result<()> {
+    let endpoint_host = provider_base_url_host(&binding.base_url)?;
     env.insert(binding.key_env.clone(), binding.key.clone());
     env.insert(binding.base_url_env.clone(), binding.base_url.clone());
+    if binding.proxy_mode == ProviderProxyMode::Direct {
+        merge_provider_no_proxy(env, &endpoint_host);
+    }
+    Ok(())
+}
+
+fn provider_base_url_host(base_url: &str) -> anyhow::Result<String> {
+    validate_provider_base_url(base_url)?;
+    let authority = base_url
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or_default();
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        let close = bracketed
+            .find(']')
+            .context("provider base URL has an invalid IPv6 authority")?;
+        let suffix = &bracketed[close + 1..];
+        if !suffix.is_empty()
+            && (!suffix.starts_with(':')
+                || suffix[1..].is_empty()
+                || suffix[1..].parse::<u16>().is_err())
+        {
+            bail!("provider base URL has an invalid port");
+        }
+        &bracketed[..close]
+    } else if let Some((host, port)) = authority.rsplit_once(':') {
+        if host.contains(':') || port.is_empty() || port.parse::<u16>().is_err() {
+            bail!("provider base URL has an invalid authority or port");
+        }
+        host
+    } else {
+        authority
+    };
+    if host.is_empty()
+        || host
+            .chars()
+            .any(|character| {
+                character.is_whitespace()
+                    || character.is_control()
+                    || matches!(character, '/' | '?' | '#' | ',' | '\\')
+            })
+    {
+        bail!("provider base URL has an invalid host");
+    }
+    Ok(host.to_ascii_lowercase())
+}
+
+fn merge_provider_no_proxy(env: &mut BTreeMap<String, String>, endpoint_host: &str) {
+    let mut entries = Vec::<String>::new();
+    for value in [env.get("NO_PROXY"), env.get("no_proxy")]
+        .into_iter()
+        .flatten()
+    {
+        for entry in value.split(',').map(str::trim).filter(|entry| !entry.is_empty()) {
+            if !entries
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(entry))
+            {
+                entries.push(entry.to_string());
+            }
+        }
+    }
+    if !entries
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(endpoint_host))
+    {
+        entries.push(endpoint_host.to_string());
+    }
+    let merged = entries.join(",");
+    env.insert("NO_PROXY".into(), merged.clone());
+    #[cfg(not(windows))]
+    env.insert("no_proxy".into(), merged);
 }
 
 fn minimal_environment() -> BTreeMap<String, String> {
@@ -1961,6 +2061,7 @@ mod tests {
         let names = [
             PROVIDER_KEY_SELECTOR,
             PROVIDER_BASE_URL_SELECTOR,
+            PROVIDER_PROXY_MODE_SELECTOR,
             "XIAOMI_API_KEY",
             "XIAOMI_BASE_URL",
             "OPENAI_API_KEY",
@@ -1973,6 +2074,7 @@ mod tests {
         unsafe {
             std::env::set_var(PROVIDER_KEY_SELECTOR, "XIAOMI_API_KEY");
             std::env::set_var(PROVIDER_BASE_URL_SELECTOR, "XIAOMI_BASE_URL");
+            std::env::set_var(PROVIDER_PROXY_MODE_SELECTOR, "direct");
             std::env::set_var("XIAOMI_API_KEY", "selected-key");
             std::env::set_var("XIAOMI_BASE_URL", "https://api.xiaomi.test/v1");
             std::env::set_var("OPENAI_API_KEY", "must-not-leak");
@@ -1992,9 +2094,16 @@ mod tests {
         };
         let binding = provider_binding(&route).unwrap();
         let mut environment = minimal_environment();
-        import_provider_binding(&mut environment, &binding);
+        import_provider_binding(&mut environment, &binding).unwrap();
         assert_eq!(environment["XIAOMI_API_KEY"], "selected-key");
         assert_eq!(environment["XIAOMI_BASE_URL"], "https://api.xiaomi.test/v1");
+        assert!(
+            environment["NO_PROXY"]
+                .split(',')
+                .any(|entry| entry == "api.xiaomi.test")
+        );
+        #[cfg(not(windows))]
+        assert_eq!(environment["no_proxy"], environment["NO_PROXY"]);
         assert!(!environment.contains_key("OPENAI_API_KEY"));
         unsafe {
             std::env::set_var(PROVIDER_KEY_SELECTOR, "OPENAI_API_KEY");
@@ -2009,6 +2118,163 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn provider_proxy_mode_defaults_to_inherit_and_rejects_unknown_values() {
+        let _lock = environment_lock();
+        let saved = std::env::var_os(PROVIDER_PROXY_MODE_SELECTOR);
+        unsafe {
+            std::env::remove_var(PROVIDER_PROXY_MODE_SELECTOR);
+        }
+        assert_eq!(provider_proxy_mode().unwrap(), ProviderProxyMode::Inherit);
+        unsafe {
+            std::env::set_var(PROVIDER_PROXY_MODE_SELECTOR, "direct");
+        }
+        assert_eq!(provider_proxy_mode().unwrap(), ProviderProxyMode::Direct);
+        unsafe {
+            std::env::set_var(PROVIDER_PROXY_MODE_SELECTOR, "automatic");
+        }
+        assert!(provider_proxy_mode().is_err());
+        unsafe {
+            if let Some(value) = saved {
+                std::env::set_var(PROVIDER_PROXY_MODE_SELECTOR, value);
+            } else {
+                std::env::remove_var(PROVIDER_PROXY_MODE_SELECTOR);
+            }
+        }
+    }
+
+    #[test]
+    fn inherited_proxy_mode_does_not_bypass_the_provider_endpoint() {
+        let mut environment = BTreeMap::from([
+            (
+                "NO_PROXY".to_string(),
+                "localhost,127.0.0.1".to_string(),
+            ),
+            (
+                "HTTPS_PROXY".to_string(),
+                "http://proxy.example.test:8080".to_string(),
+            ),
+        ]);
+        let binding = ProviderBinding {
+            key_env: "OPENAI_API_KEY".into(),
+            key: "selected-key".into(),
+            base_url_env: "OPENAI_BASE_URL".into(),
+            base_url: "https://provider.example.test/v1".into(),
+            proxy_mode: ProviderProxyMode::Inherit,
+        };
+
+        import_provider_binding(&mut environment, &binding).unwrap();
+
+        assert_eq!(environment["NO_PROXY"], "localhost,127.0.0.1");
+        assert_eq!(
+            environment["HTTPS_PROXY"],
+            "http://proxy.example.test:8080"
+        );
+    }
+
+    #[test]
+    fn provider_endpoint_is_merged_into_both_no_proxy_casings() {
+        let mut environment = BTreeMap::from([
+            (
+                "NO_PROXY".to_string(),
+                "localhost, API.OLD.TEST".to_string(),
+            ),
+            (
+                "no_proxy".to_string(),
+                "127.0.0.1,localhost".to_string(),
+            ),
+            (
+                "HTTPS_PROXY".to_string(),
+                "http://proxy.example.test:8080".to_string(),
+            ),
+        ]);
+        let binding = ProviderBinding {
+            key_env: "OPENAI_API_KEY".into(),
+            key: "selected-key".into(),
+            base_url_env: "OPENAI_BASE_URL".into(),
+            base_url: "https://Provider.Example.Test:8443/v1".into(),
+            proxy_mode: ProviderProxyMode::Direct,
+        };
+
+        import_provider_binding(&mut environment, &binding).unwrap();
+
+        assert_eq!(
+            environment["NO_PROXY"],
+            "localhost,API.OLD.TEST,127.0.0.1,provider.example.test"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(environment["no_proxy"], environment["NO_PROXY"]);
+        assert_eq!(
+            environment["HTTPS_PROXY"],
+            "http://proxy.example.test:8080"
+        );
+        assert_eq!(environment["OPENAI_API_KEY"], "selected-key");
+        assert_eq!(
+            environment["OPENAI_BASE_URL"],
+            "https://Provider.Example.Test:8443/v1"
+        );
+    }
+
+    #[test]
+    fn provider_endpoint_no_proxy_merge_is_case_insensitive_and_idempotent() {
+        let mut environment = BTreeMap::from([
+            (
+                "NO_PROXY".to_string(),
+                "LOCALHOST,Provider.Example.Test".to_string(),
+            ),
+            (
+                "no_proxy".to_string(),
+                "localhost,provider.example.test".to_string(),
+            ),
+        ]);
+
+        merge_provider_no_proxy(&mut environment, "provider.example.test");
+        merge_provider_no_proxy(&mut environment, "PROVIDER.EXAMPLE.TEST");
+
+        assert_eq!(environment["NO_PROXY"], "LOCALHOST,Provider.Example.Test");
+        #[cfg(not(windows))]
+        assert_eq!(environment["no_proxy"], environment["NO_PROXY"]);
+    }
+
+    #[test]
+    fn provider_endpoint_host_is_generic_and_rejects_invalid_authorities() {
+        assert_eq!(
+            provider_base_url_host("https://relay.example.test:8443/v1").unwrap(),
+            "relay.example.test"
+        );
+        assert_eq!(
+            provider_base_url_host("https://[2001:db8::1]:443/v1").unwrap(),
+            "2001:db8::1"
+        );
+        for invalid in [
+            "https://relay.example.test:not-a-port/v1",
+            "https://[2001:db8::1/v1",
+            "https://relay.example.test?query=/v1",
+            "https://relay.example.test,localhost/v1",
+            "https://relay.example.test\\localhost/v1",
+        ] {
+            assert!(
+                provider_base_url_host(invalid).is_err(),
+                "accepted invalid provider endpoint {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_provider_endpoint_is_rejected_before_credentials_are_imported() {
+        let mut environment = BTreeMap::new();
+        let binding = ProviderBinding {
+            key_env: "OPENAI_API_KEY".into(),
+            key: "selected-key".into(),
+            base_url_env: "OPENAI_BASE_URL".into(),
+            base_url: "https://relay.example.test:not-a-port/v1".into(),
+            proxy_mode: ProviderProxyMode::Direct,
+        };
+
+        assert!(import_provider_binding(&mut environment, &binding).is_err());
+        assert!(environment.is_empty());
     }
 
     #[test]
@@ -2030,6 +2296,7 @@ mod tests {
             key: "secret".into(),
             base_url_env: "XIAOMI_BASE_URL".into(),
             base_url: "https://api.xiaomi.test/v1".into(),
+            proxy_mode: ProviderProxyMode::Inherit,
         };
         let config = mimo_config(&route, &route.text_model, Some(&binding));
         assert_eq!(config["enabled_providers"], json!(["xiaomi"]));
@@ -2053,6 +2320,7 @@ mod tests {
             key: "must-not-be-persisted".into(),
             base_url_env: "OPENAI_BASE_URL".into(),
             base_url: "https://relay.example.test/v1".into(),
+            proxy_mode: ProviderProxyMode::Inherit,
         };
         let route = RoutePolicy {
             party_id: "Party A".into(),
@@ -2079,6 +2347,7 @@ mod tests {
             key: binding.key.clone(),
             base_url_env: "DEEPSEEK_BASE_URL".into(),
             base_url: "https://deepseek.example.test/v1".into(),
+            proxy_mode: ProviderProxyMode::Inherit,
         };
         write_reasonix_config(
             &reasonix_root,

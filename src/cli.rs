@@ -1,5 +1,6 @@
 use crate::doctor;
 use crate::error::{QuinteError, Result};
+use crate::host;
 use crate::model::{ArbiterVerdict, Brief, CliEnvelope, Policy, RunManifest, RunStatus};
 use crate::policy;
 use crate::run::{self, RunOptions};
@@ -39,6 +40,8 @@ pub(crate) enum Command {
     Resume(IdArgs),
     Cancel(IdArgs),
     Inspect(IdArgs),
+    /// Stable detached machine boundary for external orchestrators.
+    Host(HostArgs),
     #[command(name = "primary-arbiter")]
     PrimaryArbiter(PrimaryArbiterArgs),
     Agents(AgentArgs),
@@ -86,6 +89,37 @@ pub(crate) struct WorkerArgs {
 #[derive(Debug, Args)]
 pub(crate) struct IdArgs {
     run_id: String,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Args)]
+pub(crate) struct HostArgs {
+    #[command(subcommand)]
+    command: HostCommand,
+}
+#[derive(Debug, Subcommand)]
+pub(crate) enum HostCommand {
+    /// Validate runtime readiness and report active runs without launching.
+    Preflight(JsonArgs),
+    /// Atomically enforce one-active and start a detached run.
+    Start(HostStartArgs),
+    /// Return a one-shot machine receipt for a run.
+    Status(IdArgs),
+    /// Verify terminal result integrity when available.
+    Inspect(IdArgs),
+    /// Recover launch identity after an ambiguous host-side interruption.
+    Reconcile(HostReconcileArgs),
+}
+#[derive(Debug, Args)]
+pub(crate) struct HostStartArgs {
+    #[arg(long, value_name = "FILE")]
+    brief: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Args)]
+pub(crate) struct HostReconcileArgs {
+    run_id: Option<String>,
     #[arg(long)]
     json: bool,
 }
@@ -429,6 +463,86 @@ pub(crate) fn execute_command(
             )?;
             Ok(status_code(manifest.status))
         }
+        Command::Host(args) => match args.command {
+            HostCommand::Preflight(args) => {
+                ensure_initialized(store)?;
+                let observed = host::preflight(store)?;
+                let code = observed.receipt["state"]["code"]
+                    .as_str()
+                    .unwrap_or("unknown");
+                emit(
+                    args.json,
+                    &observed.receipt,
+                    format!(
+                        "QUINTE host preflight: {code}; receipt {}",
+                        observed.receipt_path.display()
+                    ),
+                )?;
+                Ok(if code == "ready" { 0 } else { 2 })
+            }
+            HostCommand::Start(args) => {
+                ensure_initialized(store)?;
+                let started = host::start(store, &args.brief)?;
+                let run_id = started.receipt["run_id"]
+                    .as_str()
+                    .unwrap_or("unknown");
+                emit(
+                    args.json,
+                    &started.receipt,
+                    format!(
+                        "QUINTE host started {run_id}; receipt {}",
+                        started.receipt_path.display()
+                    ),
+                )?;
+                Ok(0)
+            }
+            HostCommand::Status(args) => {
+                ensure_initialized(store)?;
+                let observed = host::status(store, &args.run_id)?;
+                let status = store.load_manifest(&args.run_id)?.status;
+                emit(
+                    args.json,
+                    &observed.receipt,
+                    format!(
+                        "{}; receipt {}",
+                        format_status(&args.run_id, status),
+                        observed.receipt_path.display()
+                    ),
+                )?;
+                Ok(0)
+            }
+            HostCommand::Inspect(args) => {
+                ensure_initialized(store)?;
+                let observed = host::inspect(store, &args.run_id)?;
+                let status = store.load_manifest(&args.run_id)?.status;
+                emit(
+                    args.json,
+                    &observed.receipt,
+                    format!(
+                        "QUINTE host inspection: {}; receipt {}",
+                        format_status(&args.run_id, status),
+                        observed.receipt_path.display()
+                    ),
+                )?;
+                Ok(status_code(status))
+            }
+            HostCommand::Reconcile(args) => {
+                ensure_initialized(store)?;
+                let observed = host::reconcile(store, args.run_id.as_deref())?;
+                let code = observed.receipt["state"]["code"]
+                    .as_str()
+                    .unwrap_or("unknown");
+                emit(
+                    args.json,
+                    &observed.receipt,
+                    format!(
+                        "QUINTE host reconcile: {code}; receipt {}",
+                        observed.receipt_path.display()
+                    ),
+                )?;
+                Ok(if code == "ambiguous_active_runs" { 2 } else { 0 })
+            }
+        },
         Command::PrimaryArbiter(args) => match args.command {
             PrimaryArbiterCommand::Request(args) => {
                 let path = store

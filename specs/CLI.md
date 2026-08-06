@@ -46,6 +46,11 @@ quinte wait RUN_ID [--json]
 quinte resume RUN_ID [--json]
 quinte cancel RUN_ID [--json]
 quinte inspect RUN_ID [--json]
+quinte host preflight [--json]
+quinte host start --brief FILE [--json]
+quinte host status RUN_ID [--json]
+quinte host inspect RUN_ID [--json]
+quinte host reconcile [RUN_ID] [--json]
 quinte primary-arbiter request RUN_ID [--json]
 quinte primary-arbiter submit RUN_ID (--verdict FILE | --response FILE) [--json]
 quinte agents list [--json]
@@ -58,6 +63,10 @@ No public command runs an individual R1/R2 binding. There is no phase-skip,
 substitution, arbitrary model, arbitrary adapter, or model-selected transition
 command. `Party` and `Arbiter` names on this command surface are fixed wire-role
 identifiers, not personas or scheduler authorities.
+
+The `host` group is the supported external-orchestrator boundary. It adds a
+global launch lock, fail-closed one-active guard, durable receipts and
+reconciliation without taking ownership of QUINTE phases. See [HOST.md](HOST.md).
 
 ### `init`
 
@@ -471,6 +480,14 @@ selected names must match the seat family: `XIAOMI_*`, `DEEPSEEK_*`, or
 `OPENAI_*`. Only that pair is copied into a lane environment. URLs must be
 configured HTTPS endpoints without whitespace or `.invalid`; OpenAI relays
 must support the Responses API used by Codex.
+
+`QUINTE_PROVIDER_PROXY_MODE` selects provider egress behavior. It defaults to
+`inherit`, preserving the allowlisted `HTTP(S)_PROXY`/`NO_PROXY` environment
+for mandatory container or host gateways. `direct` preserves the proxy values
+but appends the selected provider endpoint host to `NO_PROXY` and `no_proxy`.
+Use `direct` only after an endpoint-specific reachability check; it is never
+inferred from the provider family or current model. Any other value fails
+before provider credentials are imported into a lane environment.
 
 The removed historical credential command and helper are not part of policy-v1
 inspection or the production v2 command surface.

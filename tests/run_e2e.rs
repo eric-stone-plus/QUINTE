@@ -14,6 +14,7 @@ use quinte::store::Store;
 use quinte::util::{read_json, sha256_file, write_json};
 
 mod common;
+use common::tempfile;
 
 struct FakeAdapterEnv {
     previous: Option<std::ffi::OsString>,
@@ -557,6 +558,28 @@ fn completed_result_tampering_is_rejected() {
         RunStatus::Completed
     );
     fs::write(store.run_dir(&run_id).unwrap().join("result.json"), b"{}\n").unwrap();
+    assert!(run::verify_result_integrity(&store, &run_id).is_err());
+}
+
+#[test]
+fn completed_result_identity_must_match_its_manifest_even_when_rehashed() {
+    let _fake_env = FakeAdapterEnv::enable();
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let (store, run_id, response) =
+        create_waiting_run(temporary.path(), &executable, "identity-bind");
+    let response_path = temporary.path().join("identity-bind-response.json");
+    write_json(&response_path, &response).unwrap();
+    run::submit_primary_arbiter(&store, &run_id, &response_path).unwrap();
+
+    let result_path = store.run_dir(&run_id).unwrap().join("result.json");
+    let mut result: serde_json::Value = read_json(&result_path).unwrap();
+    result["run_id"] = serde_json::json!("019fd896-7769-7c62-a3c3-e4f34fbc09f2");
+    write_json(&result_path, &result).unwrap();
+    let mut manifest = store.load_manifest(&run_id).unwrap();
+    manifest.result_sha256 = Some(sha256_file(&result_path).unwrap());
+    write_json(&store.manifest_path(&run_id).unwrap(), &manifest).unwrap();
+
     assert!(run::verify_result_integrity(&store, &run_id).is_err());
 }
 

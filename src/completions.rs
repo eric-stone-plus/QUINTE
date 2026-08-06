@@ -1,6 +1,6 @@
 //! `quinte completions <bash|zsh|fish>` — 手写补全脚本（静态字符串，无外部 crate）。
 
-const SUBCOMMANDS: &str = "init status doctor run wait resume cancel inspect primary-arbiter agents policy brief validate completions";
+const SUBCOMMANDS: &str = "init status doctor run wait resume cancel inspect host primary-arbiter agents policy brief validate completions";
 const COMMON_FLAGS: &str = "--brief --wait --json --response --verdict --force --kind --home";
 
 pub const BASH: &str = r#"# quinte bash completion — 安装：quinte completions bash > ~/.local/share/bash-completion/completions/quinte
@@ -14,6 +14,12 @@ _quinte() {
         return 0
     fi
     case "${words[1]}" in
+        host)
+            if [ "$cword" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "preflight start status inspect reconcile" -- "$cur"))
+                return 0
+            fi
+            ;;
         primary-arbiter)
             if [ "$cword" -eq 2 ]; then
                 COMPREPLY=($(compgen -W "request submit amend" -- "$cur"))
@@ -78,6 +84,8 @@ _quinte() {
         return
     fi
     case "$words[2]" in
+        host)
+            (( CURRENT == 3 )) && compadd preflight start status inspect reconcile && return ;;
         primary-arbiter)
             (( CURRENT == 3 )) && compadd request submit amend && return ;;
         agents)
@@ -122,6 +130,7 @@ for sub in SUBCOMMANDS_LIST
     complete -f -c quinte -n __fish_quinte_needs_command -a $sub
 end
 complete -f -c quinte -n '__fish_quinte_using_command primary-arbiter' -a 'request submit amend'
+complete -f -c quinte -n '__fish_quinte_using_command host' -a 'preflight start status inspect reconcile'
 complete -f -c quinte -n '__fish_quinte_using_command agents' -a 'list describe'
 complete -f -c quinte -n '__fish_quinte_using_command policy' -a 'show validate'
 complete -f -c quinte -n '__fish_quinte_using_command brief' -a 'new validate'
@@ -186,6 +195,7 @@ mod tests {
                 "resume",
                 "cancel",
                 "inspect",
+                "host",
                 "primary-arbiter",
                 "agents",
                 "policy",

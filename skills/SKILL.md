@@ -1,199 +1,117 @@
 ---
 name: quinte
-description: Run or continue the QUINTE contract-gated review runtime through the quinte CLI, including five-path R1/R2 processing, two same-family R3 verdict bindings, run inspection, and recovery. Use when the user explicitly asks for QUINTE, a fixed multi-path review, anonymized R2 recheck, residual exposure, or continuation or inspection of an existing QUINTE run. Do not use it as a generic delegator or to run one QUINTE execution binding.
+description: Invoke, observe, inspect, or recover the QUINTE single-model-family adversarial review through its stable host CLI contract. Use when the user explicitly asks for QUINTE, a fixed five-path R1/R2 review with two same-family R3 verdict bindings, residual exposure, or continuation of an existing QUINTE run. Do not use it as a generic delegator or to invoke an individual execution binding.
 ---
 
-# QUINTE CLI
+# QUINTE Host
 
-Use `quinte` as the sole execution authority for its single-model-family,
-multi-path, three-stage pipeline. Do not recreate its phases with manual model
-calls, `delegate_task`, shell loops, or any host phase dispatcher. Do not run,
-replace, or skip an individual execution binding. `Party` and `Arbiter` names
-are wire-role identifiers only.
+Use the installed `quinte` CLI as the sole execution authority. External agents
+must use the `quinte host` command group. Do not recreate R1/R2/R3 with model
+calls, delegation, shell loops, provider calls, or individual Party/Arbiter
+commands. Party and Arbiter names are wire-role identifiers, not separate
+business agents.
 
-Do not read any retired host overlay or archive record as a dispatch source.
-Commands come only from the installed `quinte` CLI.
+QUINTE has one declared model family per run: five independent R1 paths, five
+anonymized R2 rechecks, a Counterpart Arbiter, and a Primary Arbiter. The
+effective provider and model names come from the validated policy and may
+change between installations; never encode the current binding as a permanent
+plan, seat, or protocol promise.
 
-## Install prerequisites (host must verify)
+## Preflight
 
-Prefer an immutable, checksummed GitHub Release binary for the host platform;
-source builds remain supported for development. Before the first run in a
-session, confirm the host environment:
+1. Confirm `quinte --version` and `quinte host --help` resolve from PATH.
+2. Run `quinte host preflight --json`. Initialize once with
+   `quinte init --json` only when the state root is uninitialized, then rerun
+   preflight. Never use `init --force` without an explicit migration reason.
+3. Require `data.state.code=ready` only as an advisory snapshot. It is not a
+   reservation or authorization ticket: state can change after preflight, and
+   `host start` must acquire its launch lock and rerun doctor/active-run checks.
+   `active_run_present` means observe or recover that run; it is not permission
+   to start another one.
+4. Remember that doctor checks local executables, credentials, and adapter
+   contracts. A route reporting `provider_live_probe=false` has not proved
+   endpoint reachability.
+5. Leave provider proxy mode at its default `inherit` unless the endpoint has
+   been explicitly verified for direct egress. `QUINTE_PROVIDER_PROXY_MODE=direct`
+   is an endpoint routing choice, never a model-family property.
 
-1. `quinte --version` resolves on PATH to the expected released or source-built
-   version. For a release install, verify the archive against `SHA256SUMS`.
-2. `quinte-progress` and `quinte-run` are on PATH (from repo `scripts/`;
-   symlink into `~/.local/bin` preferred so pulls stay in sync).
-3. `quinte doctor --json` is green after install, rebuild, or `git pull`.
-4. This skill file matches the repo copy at `skills/SKILL.md` (Hermes live
-   paths under `~/.hermes` are not version-controlled — re-sync after pull).
+## Brief
 
-If progress helpers are missing, do not fall back to `quinte run --wait` or a
-sleeping shell loop; install the scripts first. See the repository README
-Quick Start for full install and update steps.
+Write a current Brief outside the run directory using the installed schema or
+canonical example. Include only the question, context, evidence roots,
+attachments, action scope, and affected paths the user placed in scope.
 
-R2 anti-429 handling is CLI-owned. The scheduler keeps R2 serial with 10-second
-pacing, soft-staggers R1 starts, makes at most three same-route attempts, and
-applies typed 15-to-120-second bounded backoff. Do not add sleeps, retries, or
-lane logic in the host skill.
+Validate before spending a run:
 
-Policy switch `r2_parallel` (default `false`) opts into parallel R2: lanes fan
-out with the same soft-stagger as R1 instead of serial pacing. The switch
-changes only the rate-limit profile, never a lane's information set — in both
-modes every R2 lane sees only the anonymized R1 packet, never other R2 outputs.
+```bash
+quinte validate --kind brief BRIEF.json --json
+```
 
-When the user explicitly asks for a QUINTE review, actually invoke the
-`quinte` CLI. Manual analysis must not be presented as a QUINTE result.
+Keep evidence bounded and readable. Use `snapshot_ignore` for generated or
+irrelevant trees. Outputs may cite only exact `snapshot://` and
+`attachment://` references from the persisted snapshot manifest. If the Brief
+contains attachments, require every bound route in preflight to report the
+needed native attachment capability.
 
-## Efficiency (no 429, no frozen session)
+## Start and observe
 
-1. **One active run at a time.** Before `quinte run`, scan with
-   `quinte-progress` on any recent id or check that no other run is
-   `r1_running` / `r2_running`. If a prior run is still active, poll it or
-   `quinte cancel <id> --json` after the user agrees — never stack a second
-   five-path fan-out (shared model backends → 429 and thrash).
-2. **Never block the interactive session.** Do not use `quinte run --wait` or
-   bare `quinte wait`. Start detached; poll `quinte-progress <run-id>` every
-   30–60 s as **separate** tool calls and narrate each line. Do not wrap polls
-   in one shell `for`/`sleep` loop. Prefer `quinte-run --brief <file>` when the
-   host streams stdout; interpret its final status instead of treating an exit
-   code as proof of completion.
-3. **Compact evidence.** Extract essential text into a small evidence directory;
-   avoid dumping large PDF trees. Prefer `.doc`/`.docx` text over scanned PDF
-   OCR. Normalize trailing/nbsp filenames. Use `snapshot_ignore` for noise.
-   Path outputs may only cite exact `snapshot://` or `attachment://` refs from
-   the snapshot manifest — invented paths fail R1 non-retryably and waste a
-   full run.
-4. **Fail once, fix brief, then re-run.** On `failed`, read
-   `quinte status <id> --json` error text first. Do not immediately re-fire the
-   same brief. Fix evidence/refs, cancel leftovers, then start one new run.
-5. **Narrate liveness.** `quinte-progress` shows `act Ns ago` from worker
-   heartbeat/events (not only manifest transitions). If `act` stays high and
-   lanes show no change for several polls, report that and consider
-   `quinte resume` / `cancel` rather than silent waiting.
+Start detached through the atomic host boundary:
 
-## Run
+```bash
+quinte host start --brief BRIEF.json --json
+```
 
-1. Run `quinte doctor --json`. If it reports that QUINTE is not initialized,
-   run `quinte init --json` once and rerun `doctor`; stop on any other nonzero
-   exit. Never use `--force` without an explicit reason.
-2. Write a current Brief JSON file containing the question and only the evidence
-   roots, attachments, context, and action scope the user placed in scope.
-   Schema-valid minimal examples ship at `examples/brief.json` and, after
-   `quinte init`, at `~/.quinte/canary/brief.json`; copy their field set
-   (`brief_version`, `question`, `context`, `evidence_roots`, `attachments`,
-   `action_scope`) instead of probing the schema by trial and error. Do not
-   infer a contract revision from the package version.
-   Then validate before spending a full run:
-   `quinte validate --kind brief <file> --json` — fix every reported field
-   error first; a schema-invalid brief fails the run after lanes have already
-   started. Also verify `evidence_roots` resolve to at least one readable
-   file — an empty snapshot wastes a full round (run 019f710b produced 12
-   P0/CRITICAL residuals on zero evidence).
-   If `attachments` is non-empty, inspect the seven `doctor --json` route rows:
-   every row must report `capabilities.attachment_input=true`. MiMo uses
-   `--file` and Codex uses `--image`; Reasonix has no native carrier and must
-   not be used for an attachment run. `provider_live_probe=false` means this is
-   a static carrier check, not proof that a configured endpoint accepted a
-   sample image. Outputs may cite exact `attachment://` values from the
-   snapshot manifest as well as exact `snapshot://` values.
-3. Start the run detached: `quinte run --brief <file> --json`, and record the
-   returned run id. Create the brief and start `run` in the same execution
-   action when possible; do not claim dispatch until a run id returns.
-4. Track progress with `quinte-progress <run-id>` (scripts on PATH). Poll every
-   30–60 s and narrate. For a human terminal,
-   `quinte-progress <run-id> --watch` streams every 15 s.
-5. Branch on the returned `status`, not the exit code alone. A default detached
-   run returns `queued`; current policies normally continue through the
-   automatic primary R3 binding to `completed`.
-   Expected duration: R1 about 1–4 min (parallel, soft-staggered), R2 about
-   3–8 min (serial + 10 s pacing), then automatic R3 arbitration.
+Record `data.invocation_id`, `data.run_id`, the receipt path, and the manifest
+hashes. The QUINTE-owned launch lock and fail-closed run scan enforce one active
+run for callers that use this boundary. Never use low-level `quinte run` for
+agent automation, and never use `run --wait` or bare `wait` in an interactive
+agent turn.
 
-Legacy compatibility: `waiting_primary_arbiter` and the manual PA commands are
-historical surfaces only; production v2 runs both same-family R3 bindings
-automatically and requires no host handoff.
+Observe with separate one-shot calls, normally 30–60 seconds apart:
 
-Use `quinte resume <run-id> --json` after an interrupted scheduler process,
-`quinte-progress <run-id>` to observe, and `quinte cancel <run-id> --json`
-only for an explicit cancellation. Ctrl-C on `wait` returns `130` without
-cancelling the run.
+```bash
+quinte host status RUN_ID --json
+```
 
-## External Audit (post-completion, explicit and optional)
+Do not wrap observations in a sleeping shell loop. Branch on
+`data.manifest.status`, not exit code or `state.code` alone. Human display
+helpers may supplement the receipt but are not the machine API.
 
-QUINTE never invokes an external audit process as part of its state machine. After any run
-reaches `completed`, a host may explicitly run
-`quinte-audit --home <state-root> <run-id>`. The auditor must be outside the
-seat family; MAGI owns that cross-family routing.
+## Recovery
 
-1. The script reads `result.json` (+ `r3/cc-response.json` when present), asks
-   the auditor to check composition fidelity, evidence support, blind spots,
-   and actionability.
-2. It writes an immutable timestamped artifact and updates the mode-specific
-   `r3/external-audit-*.json` pointer; `result.json`, `manifest.json`, and the
-   hash chain are never modified.
-3. Verdicts: `PASS` (adopt), `PASS_WITH_NOTES` (adopt after reading findings),
-   `FAIL` (do NOT adopt — route the findings back as a new brief or amend).
-   `UNPARSED` means the auditor's output was not clean JSON; read
-   `audit_raw` in the artifact and re-run once before trusting it.
-4. Exit codes are `0` PASS, `10` PASS_WITH_NOTES, `20` FAIL, and `2` operational
-   or contract failure. Invocation is always explicit.
+If the start response is lost, do not launch again:
 
-The routing requirement is mechanical: never use one of the seven bound routes
-as the external audit route.
+```bash
+quinte host reconcile --json
+```
 
-## Contract Ownership
+Reconcile identifies durable state; it never advances, retries, resumes, or
+cancels a run. Use `quinte resume RUN_ID --json` only after observing a dead or
+interrupted scheduler. Use `quinte cancel RUN_ID --json` only with explicit
+cancellation authority. Never retry an individual lane or edit scheduler-owned
+manifests, events, receipts, attempt directories, or results.
 
-Policy migration, normalization, schemas, identity validation, model binding,
-retry, and process cleanup are owned by the installed CLI. Do not edit or
-reinterpret `policy.json`; stop if `quinte policy validate --json` fails.
+On failure, retain stderr and exit code because CLI errors do not guarantee a
+JSON envelope. Inspect the stored manifest error and attempt events before
+changing the Brief, policy, network, or provider configuration. Fix the cause,
+then create one new run only after the previous run is terminal.
 
-The installed CLI's contract registry owns the Brief revision independently of
-the package version. Copy contract discriminators from the canonical
-schema/example rather than hand-writing numeric revisions. Unknown fields are
-rejected. Write the brief outside the run directory, and treat only a
-schema-valid result emitted by that CLI as the product outcome.
+## Accept a result
 
-## Production seat binding
+Queued, running, waiting, failed, cancelled, static HTML, and partial artifacts
+are not QUINTE results. At `completed` or `degraded`, run:
 
-All seven execution bindings must match the seat's `family`, `provider`,
-`text_model`, and `multimodal_model`. Current production bindings are MiMo via isolated
-MiMoCode config/auth, DeepSeek via Reasonix, and OpenAI via Codex. The OpenAI
-relay must implement the Responses API. Provider key/base-URL selectors are
-allowlisted; HTTP, whitespace, and `.invalid` endpoints fail closed. Historical
-v1 policies/results remain inspectable, but their retired adapters cannot be
-dispatched by a new run. Back up a v1 `policy.json`, then run
-`quinte init --force` to install the production v2 default.
+```bash
+quinte host inspect RUN_ID --json
+```
 
-## Pitfall: R2 timeout 与证据精简
+Require `data.result.verified=true`, a matching manifest/result digest, and the
+expected result contract. `result.actionable` describes contract currency, not
+authorization for an external write, deployment, purchase, deletion, or other
+protected action. Preserve dissent, limitations, uncertainties, and open
+residuals.
 
-**症状：** R2 反复 timeout（3 次后 run failed），`"code": "r2_failed", "message": "Party A failed in R2: timeout"`。
-
-**根因：** policy `timeout_seconds` 默认 300，对大证据集（>50KB 文本，特别是合同全文）不够。
-
-**修复：**
-1. 精简证据——裁剪合同到滞期费相关条款（ODA/dispatch/demurrage），移除空 PDF 提取（扫描件 pdftotext 输出 <10 bytes）
-2. `timeout_seconds` 提到 600（上限，policy validation 硬限制）
-
-## Windows Snapshot Paths
-
-Windows builds use internal verbatim paths for deep snapshot and lane-input
-trees. Briefs and artifact references stay portable; never add `\\?\` or
-`\\?\UNC\` yourself. Use `snapshot_ignore` for unrelated or generated subtrees.
-
-## Evidence Preparation
-
-- Prefer native `.doc`/`.docx` text extraction before scanned PDF OCR.
-- Normalize filenames with trailing or non-breaking spaces in a temporary
-  evidence directory instead of hand-writing ambiguous paths.
-- Include relevant domain rules in `context`, `action_scope`, or the evidence
-  snapshot. Execution bindings receive only the persisted run inputs.
-- A standalone model calculation may identify a residual, but it does not
-  override a completed QUINTE result without new evidence and closure.
-
-QUINTE output is evidence, not authorization for a protected action. The runtime
-uses process/config isolation but does not provide an OS filesystem or network
-sandbox.
-
-Read [the CLI contract](../specs/CLI.md) for commands, exit codes, state, and
-artifact details. Read [the protocol](../specs/PROTOCOL.md) only when protocol
-interpretation is required.
+An external cross-family audit is explicit, optional, and post-completion. It
+is not a QUINTE phase and must never be presented as part of automatic QUINTE
+completion. Read `specs/HOST.md` for host receipts and `specs/PROTOCOL.md` only
+when protocol interpretation is required.

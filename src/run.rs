@@ -36,7 +36,7 @@ use crate::model::{
 use crate::policy;
 use crate::schema::{
     LANE_OUTPUT_SCHEMA, LEGACY_HM_RESPONSE_SCHEMA, PRIMARY_ARBITER_RESPONSE_SCHEMA,
-    R3_INPUT_RECEIPT_SCHEMA, RESULT_SCHEMA, validate_file, validate_value, validate_versioned_file,
+    R3_INPUT_RECEIPT_SCHEMA, RESULT_SCHEMA, validate_file, validate_value,
 };
 use crate::store::{ActiveProcess, Store};
 #[cfg(windows)]
@@ -656,7 +656,18 @@ fn wait_cancellable(run_dir: &Path, duration: Duration) -> bool {
 
 pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::Result<RunCreated> {
     let brief_contract = contract("brief").expect("brief contract is registered");
-    let mut brief: Brief = validate_versioned_file(&options.brief_path, brief_contract)?;
+    let brief_bytes = fs::read(&options.brief_path)
+        .with_context(|| format!("cannot read {}", options.brief_path.display()))?;
+    create_from_brief_bytes(store, policy, &brief_bytes, brief_contract)
+}
+
+pub(crate) fn create_from_brief_bytes(
+    store: &Store,
+    policy: &Policy,
+    brief_bytes: &[u8],
+    brief_contract: &'static crate::contract::ContractSpec,
+) -> anyhow::Result<RunCreated> {
+    let mut brief: Brief = crate::schema::parse_versioned(brief_bytes, brief_contract)?;
     if !brief_version_supported(&brief.brief_version) || brief.question.trim().is_empty() {
         bail!("brief contract revision is unsupported or question is empty");
     }
@@ -669,62 +680,135 @@ pub fn create(store: &Store, policy: &Policy, options: &RunOptions) -> anyhow::R
     }
 
     let run_id = Uuid::now_v7().to_string();
-    let run_dir = store.create_run_dirs(&run_id)?;
-    let canonical_brief = serde_json::to_vec(&brief)?;
-    let canonical_policy = serde_json::to_vec(policy)?;
-    let brief_sha256 = sha256_bytes(&canonical_brief);
-    let policy_sha256 = sha256_bytes(&canonical_policy);
-    write_json(&run_dir.join("input/brief.json"), &brief)?;
-    write_json(&run_dir.join("input/policy.json"), policy)?;
-
-    let snapshot = build_snapshot_with_ignore(&run_dir, &brief, policy, &snapshot_ignore)?;
-    let snapshot_bytes = serde_json::to_vec(&snapshot)?;
-    let snapshot_sha256 = sha256_bytes(&snapshot_bytes);
-    write_json(&run_dir.join("input/snapshot-manifest.json"), &snapshot)?;
-
-    let effective_model = if snapshot.attachments.is_empty() {
-        policy.text_model.as_str()
-    } else {
-        policy.multimodal_model.as_str()
+    let run_dir = store.run_dir(&run_id)?;
+    // `create_run_dirs` normally cannot fail after it has created the run
+    // directory, but a permissions/filesystem error in one of the nested
+    // components can leave a partial tree behind.  Remember whether this
+    // exact UUID path existed before we started so cleanup can never remove a
+    // pre-existing run after a UUID collision.
+    let existed_before = match fs::symlink_metadata(&run_dir) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
     };
-    let runtime_sha256 = runtime_sha256()?;
-    let now = utc_now();
-    let manifest = RunManifest {
-        manifest_version: RUN_MANIFEST_VERSION.into(),
-        run_id: run_id.clone(),
-        created_at: now.clone(),
-        updated_at: now,
-        status: RunStatus::Queued,
-        brief_sha256,
-        policy_sha256,
-        snapshot_sha256,
-        runtime_sha256,
-        protocol_version: PROTOCOL_VERSION.into(),
-        effective_model: effective_model.to_string(),
-        seat_binding: policy.seat.clone(),
-        route_bindings: policy_route_bindings(policy),
-        sandbox_mode: policy.sandbox_mode,
-        current_phase: None,
-        error: None,
-        r3_input_receipt: None,
-        primary_arbiter_challenge: None,
-        primary_arbiter_submission: None,
-        result_sha256: None,
+    if let Err(error) = store.create_run_dirs(&run_id) {
+        if !existed_before {
+            if let Err(cleanup) = cleanup_unpublished_run_dir(store, &run_id, &run_dir) {
+                return Err(error.context(format!("run directory cleanup failed: {cleanup:#}")));
+            }
+        }
+        return Err(error);
+    }
+
+    // Everything below is creation-time state, not a published run yet.  If
+    // evidence copying, hashing, manifest validation, or event publication
+    // fails, remove this exact unpublished UUID tree before returning.  This
+    // prevents a normal bad Brief/evidence error from poisoning the host's
+    // fail-closed run scan on the next launch.
+    let creation = (|| -> anyhow::Result<RunCreated> {
+        let canonical_brief = serde_json::to_vec(&brief)?;
+        let canonical_policy = serde_json::to_vec(policy)?;
+        let brief_sha256 = sha256_bytes(&canonical_brief);
+        let policy_sha256 = sha256_bytes(&canonical_policy);
+        write_json(&run_dir.join("input/brief.json"), &brief)?;
+        write_json(&run_dir.join("input/policy.json"), policy)?;
+
+        let snapshot = build_snapshot_with_ignore(&run_dir, &brief, policy, &snapshot_ignore)?;
+        let snapshot_bytes = serde_json::to_vec(&snapshot)?;
+        let snapshot_sha256 = sha256_bytes(&snapshot_bytes);
+        write_json(&run_dir.join("input/snapshot-manifest.json"), &snapshot)?;
+
+        let effective_model = if snapshot.attachments.is_empty() {
+            policy.text_model.as_str()
+        } else {
+            policy.multimodal_model.as_str()
+        };
+        let runtime_sha256 = runtime_sha256()?;
+        let now = utc_now();
+        let manifest = RunManifest {
+            manifest_version: RUN_MANIFEST_VERSION.into(),
+            run_id: run_id.clone(),
+            created_at: now.clone(),
+            updated_at: now,
+            status: RunStatus::Queued,
+            brief_sha256,
+            policy_sha256,
+            snapshot_sha256,
+            runtime_sha256,
+            protocol_version: PROTOCOL_VERSION.into(),
+            effective_model: effective_model.to_string(),
+            seat_binding: policy.seat.clone(),
+            route_bindings: policy_route_bindings(policy),
+            sandbox_mode: policy.sandbox_mode,
+            current_phase: None,
+            error: None,
+            r3_input_receipt: None,
+            primary_arbiter_challenge: None,
+            primary_arbiter_submission: None,
+            result_sha256: None,
+        };
+        store.save_manifest(&manifest)?;
+        store.event(
+            &run_id,
+            "run.created",
+            None,
+            None,
+            None,
+            json!({"brief_sha256": manifest.brief_sha256, "policy_sha256": manifest.policy_sha256}),
+        )?;
+        Ok(RunCreated {
+            run_id: run_id.clone(),
+            status: RunStatus::Queued,
+            run_dir: run_dir.clone(),
+        })
+    })();
+
+    match creation {
+        Ok(created) => Ok(created),
+        Err(error) => {
+            if let Err(cleanup) = cleanup_unpublished_run_dir(store, &run_id, &run_dir) {
+                return Err(error.context(format!("run directory cleanup failed: {cleanup:#}")));
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Remove only a run tree created by the current, not-yet-published creation
+/// transaction.  The path is checked both lexically and via symlink metadata;
+/// in particular, a replaced run directory is never followed or recursively
+/// deleted.  A worker/active-process marker means the tree has escaped the
+/// creation window and must be reconciled manually instead.
+fn cleanup_unpublished_run_dir(store: &Store, run_id: &str, run_dir: &Path) -> anyhow::Result<()> {
+    let expected = store.run_dir(run_id)?;
+    if run_dir != expected {
+        bail!("refusing to clean a run directory outside its canonical path");
+    }
+    let metadata = match fs::symlink_metadata(run_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
     };
-    store.save_manifest(&manifest)?;
-    store.event(
-        &run_id,
-        "run.created",
-        None,
-        None,
-        None,
-        json!({"brief_sha256": manifest.brief_sha256, "policy_sha256": manifest.policy_sha256}),
-    )?;
-    Ok(RunCreated {
-        run_id,
-        status: RunStatus::Queued,
-        run_dir,
-    })
+    if !metadata.file_type().is_dir() {
+        bail!("refusing to clean a run path that is not a directory");
+    }
+    for relative in [
+        "active-pids.json",
+        "diagnostics/worker.json",
+        "diagnostics/worker-heartbeat",
+        "diagnostics/worker-finished",
+    ] {
+        let marker = run_dir.join(relative);
+        match fs::symlink_metadata(&marker) {
+            Ok(_) => bail!(
+                "refusing to clean run {run_id}: worker state was published ({relative})"
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    fs::remove_dir_all(run_dir)
+        .with_context(|| format!("cannot remove unpublished run directory {}", run_dir.display()))
 }
 
 fn policy_route_bindings(policy: &Policy) -> Vec<RouteBinding> {
@@ -739,6 +823,10 @@ fn policy_route_bindings(policy: &Policy) -> Vec<RouteBinding> {
 
 /// Starts the scheduler in a separate process so the creating CLI can return immediately.
 pub(crate) fn spawn_worker(store: &Store, run_id: &str) -> anyhow::Result<u32> {
+    #[cfg(feature = "test-adapters")]
+    if std::env::var_os("QUINTE_TEST_FAIL_WORKER_LAUNCH").is_some() {
+        bail!("fault-injected worker launch failure");
+    }
     let run_dir = store.run_dir(run_id)?;
     let diagnostics_dir = run_dir.join("diagnostics");
     create_private_dir_all(&diagnostics_dir)?;
@@ -1149,6 +1237,10 @@ pub fn record_worker_failure(
     run_id: &str,
     message: &str,
 ) -> anyhow::Result<RunStatus> {
+    #[cfg(feature = "test-adapters")]
+    if std::env::var_os("QUINTE_TEST_FAIL_WORKER_FAILURE_RECORD").is_some() {
+        bail!("fault-injected worker failure record error");
+    }
     let _lock = store.lock(run_id)?;
     let mut manifest = store.load_manifest(run_id)?;
     if manifest.status.terminal()
@@ -4302,6 +4394,31 @@ pub fn verify_result_integrity(
     let result_contract = contract("result").expect("result contract is registered");
     let result: Value = read_json(&path)?;
     let revision = crate::schema::validate_versioned_value(&result, result_contract)?;
+    if result.get("run_id").and_then(Value::as_str) != Some(run_id) {
+        bail!("completed run result identity does not match its manifest");
+    }
+    if result.get("status").and_then(Value::as_str)
+        != serde_json::to_value(manifest.status)?.as_str()
+    {
+        bail!("completed run result status does not match its manifest");
+    }
+    if result.get("brief_sha256").is_some()
+        && result.get("brief_sha256").and_then(Value::as_str)
+            != Some(manifest.brief_sha256.as_str())
+    {
+        bail!("completed run result brief digest does not match its manifest");
+    }
+    if result.get("seat_binding").is_some()
+        && result.get("seat_binding") != Some(&serde_json::to_value(&manifest.seat_binding)?)
+    {
+        bail!("completed run result seat binding does not match its manifest");
+    }
+    if result.get("route_bindings").is_some()
+        && result.get("route_bindings")
+            != Some(&serde_json::to_value(&manifest.route_bindings)?)
+    {
+        bail!("completed run result bindings do not match its manifest");
+    }
     Ok(Some(ResultIntegrity {
         contract_version: revision.version,
         actionable: revision.version == RESULT_VERSION,

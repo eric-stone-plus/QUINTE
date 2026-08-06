@@ -29,6 +29,7 @@ pub const EVIDENCE_PACKET_VERSION: &str = "1.0";
 pub const TASK_PACKET_VERSION: &str = "1.0";
 pub const RETRY_STATE_VERSION: &str = "1.0";
 pub const RATE_STATE_VERSION: &str = "1.0";
+pub const HOST_RECEIPT_VERSION: &str = "1.0";
 
 pub const BRIEF_SCHEMA: &str = include_str!("../schemas/brief.schema.json");
 pub const LEGACY_BRIEF_SCHEMA: &str = include_str!("../schemas/legacy/brief-1.0.schema.json");
@@ -46,6 +47,7 @@ pub const RUN_MANIFEST_SCHEMA: &str = include_str!("../schemas/run-manifest.sche
 pub const RUN_MANIFEST_1_0_SCHEMA: &str =
     include_str!("../schemas/legacy/run-manifest-1.0.schema.json");
 pub const RUN_EVENT_SCHEMA: &str = include_str!("../schemas/run-event.schema.json");
+pub const HOST_RECEIPT_SCHEMA: &str = include_str!("../schemas/host-invocation.schema.json");
 
 #[derive(Clone, Copy, Debug)]
 pub struct ContractRevision {
@@ -119,8 +121,19 @@ const RUN_EVENT_REVISIONS: &[ContractRevision] = &[ContractRevision {
     version: RUN_EVENT_VERSION,
     schema: RUN_EVENT_SCHEMA,
 }];
+const HOST_RECEIPT_REVISIONS: &[ContractRevision] = &[ContractRevision {
+    version: HOST_RECEIPT_VERSION,
+    schema: HOST_RECEIPT_SCHEMA,
+}];
 
 pub const CONTRACT_REGISTRY: &[ContractSpec] = &[
+    ContractSpec {
+        name: "host_receipt",
+        version_field: "host_receipt_version",
+        current_version: HOST_RECEIPT_VERSION,
+        accepted_versions: &[HOST_RECEIPT_VERSION],
+        revisions: HOST_RECEIPT_REVISIONS,
+    },
     ContractSpec {
         name: "brief",
         version_field: "brief_version",

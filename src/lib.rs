@@ -8,6 +8,7 @@ pub mod completions;
 pub mod contract;
 pub mod doctor;
 pub mod error;
+pub mod host;
 pub mod model;
 pub mod policy;
 pub mod repl;
