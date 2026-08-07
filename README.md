@@ -163,6 +163,17 @@ launch lock, fail-closed one-active check, detached start receipt, one-shot
 status, terminal integrity verification, and ambiguous-launch reconciliation.
 `quinte-progress`/`quinte-run` remain human display helpers, not machine APIs.
 
+For an ordered queue of Briefs, `scripts/contest_supervisor.py` is the
+canonical optional outer-host pattern. It is one-shot and fail-closed: it
+requires absolute `QUINTE_HOME`/`QUINTE_BIN` paths plus a SHA-256 pin, uses a
+separate nonblocking lock, defaults to dry-run, and only accepts the next
+contiguous sequence after a separate `host inspect` proves
+`result.verified=true` and `result.actionable=true`. A failed, degraded,
+ambiguous, malformed, or digest-drifted observation atomically creates a
+`HALTED` sentinel. It never launches individual lanes or resumes old runs.
+See [HOST.md](specs/HOST.md#ordered-outer-supervision) and the offline tests for
+the complete boundary.
+
 ### Credentials and roster
 
 The CLI is self-contained, but a production policy needs the matching adapter

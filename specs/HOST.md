@@ -241,6 +241,43 @@ check. Failed or cancelled runs have no result handoff and require an explicit
 operator decision after inspection of the stored failure; any retry or relaunch
 must use the supported explicit workflow rather than an implicit chain.
 
+### Ordered outer supervision
+
+For a queue of independent Briefs, the repository includes the deliberately
+small, one-shot `scripts/contest_supervisor.py`. It is an outer host helper,
+not a second scheduler: it never starts a lane, calls `resume`, edits a run
+artifact, or sleeps in a polling loop. The default invocation is a dry run;
+`--execute` is required for one detached `host start`.
+
+The supervisor requires all of the following pins on every invocation:
+
+```bash
+export QUINTE_HOME=/absolute/path/to/quinte-state
+export QUINTE_BIN=/absolute/path/to/quinte
+RUNTIME_SHA256="sha256:$(sha256sum "$QUINTE_BIN" | awk '{print $1}')"
+python3 scripts/contest_supervisor.py \
+  --plan /absolute/path/to/plan.json \
+  --state /absolute/path/to/supervisor-state.json \
+  --home "$QUINTE_HOME" --quinte-bin "$QUINTE_BIN" \
+  --runtime-sha256 "$RUNTIME_SHA256" --json
+```
+
+The plan must use schema `quinte.contest.plan.v1`, explicitly bind the same
+`state_root` and `runtime_sha256`, and list entries with contiguous
+`sequence` values beginning at 1. Brief canonical digests are checked before
+any launch. A nonblocking supervisor lock prevents two coordinators from
+advancing the queue concurrently. After a run reaches a terminal status, the
+next invocation performs a separate `host inspect` and admits the sequence
+only when `result.verified=true`, `result.actionable=true`, the result bytes
+match their digest, and the state root/runtime digest still match their pins.
+
+Any malformed receipt, active-run ambiguity, failed/degraded/cancelled status,
+digest drift, sequence gap, or interrupted launch intent is fail-closed. The
+supervisor writes an atomic `HALTED` sentinel beside its state file; an
+operator must inspect and explicitly create a new state/plan before continuing.
+The offline tests in `tests/test_contest_supervisor.py` inject receipts and do
+not contact a provider or launch a QUINTE run.
+
 The start/inspect receipt preserves the provenance chain:
 
 ```text
