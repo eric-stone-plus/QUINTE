@@ -92,6 +92,39 @@ lock. Two different launch surfaces therefore cannot be assumed to serialize
 with each other. A deployment that requires the invariant must route all new
 runs through `quinte host start` (or an outer lock using the same discipline).
 
+### Linux systemd lifecycle boundary
+
+`host start` returns after it has persisted the start receipt and spawned the
+per-run worker. A systemd service that invokes it is therefore a short-lived
+coordinator, not the QUINTE worker service. Detaching the worker from the
+caller's process group does not by itself move it out of the caller's systemd
+cgroup.
+
+If a `Type=oneshot` coordinator invokes `quinte host start` directly and the
+worker remains in that same cgroup, configure the coordinator with
+`KillMode=process`. The default `control-group` mode can reap the worker when
+the oneshot exits, and `KillMode=mixed` does not preserve it: after handling
+the main process, systemd can still send the final kill signal to remaining
+cgroup members. `KillMode=process` is an intentional, narrow exception here;
+it makes the coordinator process the unit's lifecycle boundary while QUINTE
+continues to own its recorded worker.
+
+`KillMode=mixed` is appropriate for the coordinator only when the QUINTE
+worker has already been durably delegated to a separate systemd unit or scope
+before the coordinator exits. In that topology, mixed mode can clean up
+unintended descendants of the coordinator without targeting the independently
+owned worker. Do not select mixed merely because the CLI calls the worker
+"detached", and do not use `KillMode=none` as a substitute for explicit
+ownership.
+
+Stopping or disabling the timer/coordinator only prevents or interrupts outer
+observations and launches; it is not QUINTE cancellation. Use
+`quinte cancel RUN_ID --json` for an authorized cancellation. If the
+coordinator was interrupted around launch, use `quinte host reconcile --json`
+to bind the durable state before taking another action; reconcile observes but
+does not terminate or resume the worker. Never use `systemctl kill`, cgroup
+scans, or process-name matching as a replacement for QUINTE's worker contract.
+
 Enumeration is fail-closed. A non-directory entry, a non-UTF-8 or non-UUIDv7
 run directory, a missing manifest, an invalid manifest, or a directory/manifest
 ID mismatch is not equivalent to “no active run”. Start must refuse and direct
