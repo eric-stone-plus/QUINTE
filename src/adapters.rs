@@ -1284,7 +1284,15 @@ fn collect_strings(value: &Value, strings: &mut Vec<String>) {
 fn json_object_block(text: &str) -> Option<&str> {
     let start = text.find('{')?;
     let end = text.rfind('}')?;
-    (end >= start).then_some(&text[start..=end])
+    // `then_some` evaluates its argument eagerly.  Slicing before checking
+    // the ordering panics when prose contains a closing brace before the
+    // first JSON object (observed in a real R3 arbiter stream).  Keep the
+    // parser fail-closed and panic-free for arbitrary model text.
+    if end >= start {
+        Some(&text[start..=end])
+    } else {
+        None
+    }
 }
 
 const LANE_OUTPUT_REQUIRED_KEY_MASK: u8 = (1 << 7) - 1;
@@ -2682,6 +2690,21 @@ mod tests {
 
         let parsed = parse_output(OutputKind::CodewhaleStream, stream.as_bytes()).unwrap();
         assert_eq!(parsed.verdict, "accepted despite later prose braces");
+    }
+
+    #[test]
+    fn json_object_block_rejects_reversed_braces_without_panicking() {
+        // Arbitrary model/tool-preview strings can contain a closing brace
+        // before their first opening brace.  The extractor must fail closed,
+        // never evaluate an invalid byte slice while reporting no candidate.
+        assert_eq!(json_object_block("preview } before candidate {"), None);
+        let stream = serde_json::json!({
+            "type": "text",
+            "part": {"text": "preview } before candidate {"}
+        })
+        .to_string();
+        let error = parse_output(OutputKind::JsonEvents, stream.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("no valid LaneOutput"));
     }
 
     #[test]
