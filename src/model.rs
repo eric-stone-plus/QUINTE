@@ -58,6 +58,17 @@ pub struct Policy {
     pub r2_parallel: bool,
     pub max_attempts: usize,
     pub timeout_seconds: u64,
+    /// Per-phase timeout overrides. When set to `Some(value)`, these override
+    /// `timeout_seconds` for the respective phase. When `None`, the global
+    /// `timeout_seconds` is used. This allows R2/R3 reviews (which analyze
+    /// existing typed outputs) to have shorter timeouts than R1 first-pass
+    /// reviews. Missing in pre-0.2.4 policy files; defaults to `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r1_timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r2_timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r3_timeout_seconds: Option<u64>,
     pub retry_backoff_seconds: u64,
     pub retry_backoff_max_seconds: u64,
     pub r2_min_interval_seconds: u64,
@@ -120,6 +131,19 @@ impl From<&RoutePolicy> for RouteBinding {
             text_model: route.text_model.clone(),
             multimodal_model: route.multimodal_model.clone(),
             perspective: route.perspective.clone(),
+        }
+    }
+}
+
+impl Policy {
+    /// Returns the effective timeout for a given phase.
+    /// Uses the per-phase override if set, otherwise falls back to the global timeout.
+    pub fn timeout_for_phase(&self, phase: &str) -> u64 {
+        match phase {
+            "R1" => self.r1_timeout_seconds.unwrap_or(self.timeout_seconds),
+            "R2" => self.r2_timeout_seconds.unwrap_or(self.timeout_seconds),
+            "R3" => self.r3_timeout_seconds.unwrap_or(self.timeout_seconds),
+            _ => self.timeout_seconds,
         }
     }
 }

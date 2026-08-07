@@ -32,6 +32,12 @@ struct CompatiblePolicy {
     r2_parallel: bool,
     max_attempts: usize,
     timeout_seconds: u64,
+    #[serde(default)]
+    r1_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    r2_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    r3_timeout_seconds: Option<u64>,
     retry_backoff_seconds: u64,
     retry_backoff_max_seconds: u64,
     r2_min_interval_seconds: u64,
@@ -104,6 +110,12 @@ pub fn default_policy() -> Policy {
         // stuck adapters faster without starving healthy long reviews; R2 stays
         // serial with fixed 10s pacing so this does not increase 429 pressure.
         timeout_seconds: 300,
+        // Per-phase timeout overrides: None means use the global timeout_seconds.
+        // R2/R3 reviews analyze existing typed outputs and may complete faster
+        // than R1 first-pass reviews. Set to Some(value) to override per-phase.
+        r1_timeout_seconds: None,
+        r2_timeout_seconds: None,
+        r3_timeout_seconds: None,
         retry_backoff_seconds: 15,
         retry_backoff_max_seconds: 120,
         r2_min_interval_seconds: 10,
@@ -227,6 +239,9 @@ fn read_compatible(path: &Path) -> anyhow::Result<Policy> {
         r2_parallel: compatible.r2_parallel,
         max_attempts: compatible.max_attempts,
         timeout_seconds: compatible.timeout_seconds,
+        r1_timeout_seconds: compatible.r1_timeout_seconds,
+        r2_timeout_seconds: compatible.r2_timeout_seconds,
+        r3_timeout_seconds: compatible.r3_timeout_seconds,
         retry_backoff_seconds: compatible.retry_backoff_seconds,
         retry_backoff_max_seconds: compatible.retry_backoff_max_seconds,
         r2_min_interval_seconds: compatible.r2_min_interval_seconds,
@@ -380,6 +395,18 @@ fn validate_with_options(policy: &Policy, allow_fake: bool) -> anyhow::Result<()
     }
     if policy.timeout_seconds < 5 || policy.timeout_seconds > 3600 {
         bail!("timeout_seconds must be between 5 and 3600");
+    }
+    // Validate per-phase timeout overrides
+    for (name, value) in [
+        ("r1_timeout_seconds", policy.r1_timeout_seconds),
+        ("r2_timeout_seconds", policy.r2_timeout_seconds),
+        ("r3_timeout_seconds", policy.r3_timeout_seconds),
+    ] {
+        if let Some(t) = value {
+            if t < 5 || t > 3600 {
+                bail!("{name} must be between 5 and 3600 when set");
+            }
+        }
     }
     if allow_fake {
         if policy.retry_backoff_seconds > 300 {

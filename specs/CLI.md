@@ -210,6 +210,22 @@ Each copied image receives an exact `attachment://attachment-N.<type>` entry in
 `snapshot://` value, in `evidence_refs` and `closure_evidence`. Arbitrary
 suffixes and paths not present in the manifest fail the output gate.
 
+## Environment Variables
+
+The following environment variables control runtime behavior:
+
+- `QUINTE_R1_STAGGER_MS`: Soft-stagger delay in milliseconds between parallel
+  lane starts in R1 and R2 (when `r2_parallel=true`). Default: 2000 (2 seconds).
+  Set to 0 to disable staggering (not recommended for production with same-family
+  routes). This variable is an implementation detail and does not affect the
+  protocol-level semantics.
+
+- `QUINTE_HOME`: Override the default state root (`~/.quinte`). Takes precedence
+  over the default but is overridden by the global `--home` option.
+
+- `QUINTE_ALLOW_FAKE_ADAPTERS`: Enable test adapters for e2e testing. Only
+  effective when the `test-adapters` feature is compiled in.
+
 ## State Machine
 
 The persisted `manifest.json` status is one of:

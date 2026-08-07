@@ -1429,13 +1429,14 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
             let attempt = next_attempt(&run_dir, "R3", &route.route_id, policy.max_attempts)?;
             wait_for_retry_deadline(store, &mut manifest, "R3", route, attempt)?;
             let lane_root = run_dir.join(format!("lanes/R3/{}/attempt-{attempt}", route.route_id));
+            let r3_timeout = policy.timeout_for_phase("R3");
             let invocation = adapters::build(
                 route,
                 "R3",
                 &manifest.effective_model,
                 &evidence_packet_path,
                 &lane_root,
-                policy.timeout_seconds,
+                r3_timeout,
             )?;
             let outcome = run_attempt(
                 store,
@@ -1445,7 +1446,7 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
                 "R3",
                 attempt,
                 invocation,
-                policy.timeout_seconds,
+                r3_timeout,
                 policy.max_output_bytes,
                 policy.max_attempts,
             )?;
@@ -1549,13 +1550,14 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
             let attempt = next_attempt(&run_dir, "R3", &route.route_id, policy.max_attempts)?;
             wait_for_retry_deadline(store, &mut manifest, "R3", route, attempt)?;
             let lane_root = run_dir.join(format!("lanes/R3/{}/attempt-{attempt}", route.route_id));
+            let r3_timeout = policy.timeout_for_phase("R3");
             let invocation = adapters::build(
                 route,
                 "R3",
                 &manifest.effective_model,
                 &primary_packet_path,
                 &lane_root,
-                policy.timeout_seconds,
+                r3_timeout,
             )?;
             let outcome = run_attempt(
                 store,
@@ -1565,7 +1567,7 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
                 "R3",
                 attempt,
                 invocation,
-                policy.timeout_seconds,
+                r3_timeout,
                 policy.max_output_bytes,
                 policy.max_attempts,
             )?;
@@ -1708,6 +1710,29 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
         result.status,
         Some("R3"),
         json!({"result": "result.json"}),
+    )?;
+    // Run-level telemetry summary
+    let run_started = manifest.created_at.parse::<chrono::DateTime<chrono::Utc>>()
+        .map(|t| t.timestamp_millis())
+        .unwrap_or(0);
+    let run_finished = chrono::Utc::now().timestamp_millis();
+    let total_duration_ms = run_finished.saturating_sub(run_started);
+    store.event(
+        run_id,
+        "run.completed",
+        None,
+        None,
+        None,
+        json!({
+            "status": format!("{:?}", status),
+            "total_duration_ms": total_duration_ms,
+            "timeout_seconds": policy.timeout_seconds,
+            "r2_parallel": policy.r2_parallel,
+            "max_attempts": policy.max_attempts,
+            "retry_backoff_seconds": policy.retry_backoff_seconds,
+            "retry_backoff_max_seconds": policy.retry_backoff_max_seconds,
+            "r2_min_interval_seconds": policy.r2_min_interval_seconds,
+        }),
     )?;
     drop(finalization);
     Ok(status)
@@ -2468,6 +2493,7 @@ fn run_phase(
     phase: &str,
     packet_override: Option<&Path>,
 ) -> anyhow::Result<Vec<LaneAccepted>> {
+    let phase_started = Instant::now();
     let run_dir = store.run_dir(&manifest.run_id)?;
     let packet_path = packet_override
         .map(Path::to_path_buf)
@@ -2524,7 +2550,7 @@ fn run_phase(
                 &manifest.effective_model,
                 &packet_path,
                 &lane_root,
-                policy.timeout_seconds,
+                policy.timeout_for_phase(phase),
             )?;
             prepared.push((route, attempt, invocation));
         }
@@ -2548,7 +2574,7 @@ fn run_phase(
             let party_id = route.party_id.clone();
             let adapter = route.adapter.clone();
             let phase_owned = phase.to_string();
-            let timeout = policy.timeout_seconds;
+            let timeout = policy.timeout_for_phase(phase);
             let max_output_bytes = policy.max_output_bytes;
             let max_attempts = policy.max_attempts;
             jobs.push(LaneJob {
@@ -2623,13 +2649,14 @@ fn run_phase(
                 "lanes/{phase}/{}/attempt-{attempt}",
                 route.route_id
             ));
+            let phase_timeout = policy.timeout_for_phase(phase);
             let invocation = adapters::build(
                 &route,
                 phase,
                 &manifest.effective_model,
                 &packet_path,
                 &lane_root,
-                policy.timeout_seconds,
+                phase_timeout,
             )?;
             let outcome = run_attempt(
                 store,
@@ -2639,7 +2666,7 @@ fn run_phase(
                 phase,
                 attempt,
                 invocation,
-                policy.timeout_seconds,
+                phase_timeout,
                 policy.max_output_bytes,
                 policy.max_attempts,
             )?;
@@ -2668,6 +2695,32 @@ fn run_phase(
     if accepted.len() != 5 {
         bail!("{phase} five-party gate failed");
     }
+    let phase_duration_ms = phase_started.elapsed().as_millis();
+    let total_attempts: usize = accepted.iter().map(|l| {
+        // Count attempts from the lane directory
+        let lane_dir = run_dir.join(format!("lanes/{phase}/{}", l.route_id));
+        std::fs::read_dir(&lane_dir)
+            .map(|entries| entries.filter_map(|e| e.ok()).filter(|e| {
+                e.file_name().to_string_lossy().starts_with("attempt-")
+            }).count())
+            .unwrap_or(0)
+    }).sum();
+    store.event(
+        &manifest.run_id,
+        "phase.completed",
+        Some(phase),
+        None,
+        None,
+        json!({
+            "phase": phase,
+            "duration_ms": phase_duration_ms,
+            "lanes_completed": accepted.len(),
+            "total_attempts": total_attempts,
+            "timeout_seconds": policy.timeout_for_phase(phase),
+            "r2_parallel": policy.r2_parallel,
+            "parallel_fan_out": phase == "R1" || (phase == "R2" && policy.r2_parallel),
+        }),
+    )?;
     Ok(accepted)
 }
 
@@ -2704,6 +2757,8 @@ fn accept_or_retry_lane(
     mut outcome: AttemptOutcome,
     accepted: &mut Vec<LaneAccepted>,
 ) -> anyhow::Result<()> {
+    let lane_started = Instant::now();
+    let first_attempt = attempt;
     loop {
         if outcome.cancelled || cancellation_requested(run_dir) {
             cancel_run(store, manifest)?;
@@ -2720,13 +2775,23 @@ fn accept_or_retry_lane(
             let accepted_path =
                 run_dir.join(format!("lanes/{phase}/{}/accepted.json", route.route_id));
             write_json(&accepted_path, &output)?;
+            let duration_ms = lane_started.elapsed().as_millis();
+            let retries = attempt.saturating_sub(first_attempt);
             store.event(
                 &manifest.run_id,
                 "lane.accepted",
                 Some(phase),
                 Some(&route.party_id),
                 Some(attempt),
-                json!({"route_id": route.route_id, "artifact": relative_slash(accepted_path.strip_prefix(run_dir)?)}),
+                json!({
+                    "route_id": route.route_id,
+                    "artifact": relative_slash(accepted_path.strip_prefix(run_dir)?),
+                    "duration_ms": duration_ms,
+                    "attempts": attempt,
+                    "retries": retries,
+                    "phase": phase,
+                    "timeout_seconds": policy.timeout_for_phase(phase),
+                }),
             )?;
             accepted.push(LaneAccepted {
                 party_id: route.party_id.clone(),
