@@ -201,6 +201,23 @@ class SupervisorTests(unittest.TestCase):
             returncode=0 if status == "completed" else 1,
         )
 
+    def launch_first(self):
+        first, _, _ = self.make(
+            [self.preflight(), self.start(RUN_1, self.brief_paths[0])],
+            execute=True,
+        )
+        first.run()
+
+    def accept_first_responses(self, *, start_response=None):
+        responses = [
+            self.status(RUN_1, self.brief_paths[0], "completed", active=False),
+            self.inspect(RUN_1, self.brief_paths[0]),
+            self.preflight(),
+        ]
+        if start_response is not None:
+            responses.append(start_response)
+        return responses
+
     def test_default_is_dry_run_and_pinned(self):
         instance, queue, calls = self.make([self.preflight()])
         result = instance.run()
@@ -223,8 +240,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(state["next_sequence"], 1)
 
     def test_terminal_requires_separate_inspect_then_advances(self):
-        first, _, _ = self.make([self.preflight(), self.start(RUN_1, self.brief_paths[0])], execute=True)
-        first.run()
+        self.launch_first()
         second, _, calls = self.make(
             [
                 self.status(RUN_1, self.brief_paths[0], "completed", active=False),
@@ -241,8 +257,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertIsNone(state["active"])
 
     def test_degraded_status_halts_and_writes_sentinel(self):
-        first, _, _ = self.make([self.preflight(), self.start(RUN_1, self.brief_paths[0])], execute=True)
-        first.run()
+        self.launch_first()
         instance, _, _ = self.make(
             [
                 self.status(RUN_1, self.brief_paths[0], "degraded", active=False),
@@ -256,8 +271,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn("not_admissible", halted["reason"])
 
     def test_non_actionable_result_halts(self):
-        first, _, _ = self.make([self.preflight(), self.start(RUN_1, self.brief_paths[0])], execute=True)
-        first.run()
+        self.launch_first()
         instance, _, _ = self.make(
             [
                 self.status(RUN_1, self.brief_paths[0], "completed", active=False),
@@ -277,8 +291,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertTrue(instance.halted_path.exists())
 
     def test_malformed_status_halts_without_launching_next(self):
-        first, _, _ = self.make([self.preflight(), self.start(RUN_1, self.brief_paths[0])], execute=True)
-        first.run()
+        self.launch_first()
         malformed = supervisor.Invocation(
             command=("quinte", "host", "status"),
             returncode=0,
@@ -291,6 +304,115 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaises(supervisor.HaltedError):
             instance.run()
         self.assertEqual(len(calls), 1)
+        self.assertTrue(instance.halted_path.exists())
+
+    def test_result_path_must_be_exact_run_result(self):
+        self.launch_first()
+        inspection = self.inspect(RUN_1, self.brief_paths[0])
+        wrong_path = self.home / "runs" / RUN_1 / "other-result.json"
+        wrong_path.write_bytes(b"immutable result\n")
+        inspection.payload["data"]["result"]["path"] = str(wrong_path)
+        instance, _, _ = self.make(
+            [
+                self.status(RUN_1, self.brief_paths[0], "completed", active=False),
+                inspection,
+            ]
+        )
+        with self.assertRaisesRegex(
+            supervisor.HaltedError, "active run's result.json"
+        ):
+            instance.run()
+        self.assertTrue(instance.halted_path.exists())
+
+    def test_active_run_id_cannot_reuse_an_acceptance(self):
+        self.launch_first()
+        state = json.loads(self.state.read_text())
+        state["acceptances"] = [
+            {
+                "sequence": 1,
+                "run_id": RUN_1,
+                "result_sha256": digest(b"result"),
+            }
+        ]
+        state["last_accepted_sequence"] = 1
+        state["next_sequence"] = 2
+        state["active"] = {
+            "sequence": 2,
+            "brief": str(self.brief_paths[1]),
+            "brief_sha256": supervisor._canonical_brief_digest(self.brief_paths[1]),
+            "run_id": RUN_1,
+        }
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        instance, _, _ = self.make([])
+        with self.assertRaisesRegex(supervisor.HaltedError, "reuses an accepted"):
+            instance.run()
+        self.assertTrue(instance.halted_path.exists())
+
+    def test_result_bytes_must_match_inspect_digest(self):
+        self.launch_first()
+        inspection = self.inspect(RUN_1, self.brief_paths[0])
+        result_file = self.home / "runs" / RUN_1 / "result.json"
+        result_file.write_bytes(b"tampered result\n")
+        instance, _, _ = self.make(
+            [
+                self.status(RUN_1, self.brief_paths[0], "completed", active=False),
+                inspection,
+            ]
+        )
+        with self.assertRaisesRegex(supervisor.HaltedError, "result bytes"):
+            instance.run()
+        self.assertTrue(instance.halted_path.exists())
+
+    def test_duplicate_run_id_in_acceptance_history_halts(self):
+        self.launch_first()
+        state = json.loads(self.state.read_text())
+        result_sha = digest(b"result")
+        state["acceptances"] = [
+            {"sequence": 1, "run_id": RUN_1, "result_sha256": result_sha},
+            {"sequence": 2, "run_id": RUN_1, "result_sha256": result_sha},
+        ]
+        state["last_accepted_sequence"] = 2
+        state["next_sequence"] = 3
+        state["active"] = None
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        instance, _, _ = self.make([])
+        with self.assertRaisesRegex(supervisor.HaltedError, "reuses a run_id"):
+            instance.run()
+        self.assertTrue(instance.halted_path.exists())
+
+    def test_host_start_cannot_reuse_accepted_run_id(self):
+        self.launch_first()
+        instance, _, _ = self.make(
+            self.accept_first_responses(
+                start_response=self.start(RUN_1, self.brief_paths[1])
+            ),
+            execute=True,
+        )
+        with self.assertRaisesRegex(supervisor.HaltedError, "reused an accepted"):
+            instance.run()
+        self.assertTrue(instance.halted_path.exists())
+
+    def test_active_binding_requires_current_next_sequence(self):
+        self.launch_first()
+        state = json.loads(self.state.read_text())
+        state["active"]["sequence"] = 2
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        instance, _, _ = self.make([])
+        with self.assertRaisesRegex(supervisor.HaltedError, "not the next sequence"):
+            instance.run()
+        self.assertTrue(instance.halted_path.exists())
+
+    def test_active_binding_requires_all_predecessors_accepted(self):
+        self.launch_first()
+        state = json.loads(self.state.read_text())
+        state["active"]["sequence"] = 2
+        state["next_sequence"] = 2
+        state["last_accepted_sequence"] = 1
+        state["acceptances"] = []
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        instance, _, _ = self.make([])
+        with self.assertRaisesRegex(supervisor.HaltedError, "unaccepted predecessor"):
+            instance.run()
         self.assertTrue(instance.halted_path.exists())
 
     def test_plan_sequence_gap_is_fail_stop(self):

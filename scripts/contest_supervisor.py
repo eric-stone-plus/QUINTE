@@ -435,18 +435,30 @@ class Supervisor:
         if last > count:
             raise SafetyError("supervisor state accepted sequence exceeds plan")
         acceptances = state.get("acceptances")
-        if not isinstance(acceptances, list) or len(acceptances) != last:
+        if not isinstance(acceptances, list):
             raise SafetyError("supervisor acceptance history is not contiguous")
+        accepted_sequences: list[int] = []
+        accepted_run_ids: set[str] = set()
         for index, item in enumerate(acceptances, 1):
             if not isinstance(item, dict) or type(item.get("sequence")) is not int or item.get("sequence") != index:
                 raise SafetyError("supervisor acceptance history has a sequence gap")
-            if not _valid_run_id(item.get("run_id")):
+            accepted_sequences.append(index)
+            accepted_run_id = item.get("run_id")
+            if not _valid_run_id(accepted_run_id):
                 raise SafetyError("supervisor acceptance history has an invalid run_id")
+            if accepted_run_id in accepted_run_ids:
+                raise SafetyError("supervisor acceptance history reuses a run_id")
+            accepted_run_ids.add(accepted_run_id)
             _require_digest(item.get("result_sha256"), "supervisor accepted result_sha256")
         active = state.get("active")
         if active is not None:
+            # In state schema v1, next_sequence denotes the current unaccepted
+            # entry.  It advances only after that entry is inspect-accepted.
             if not isinstance(active, dict) or active.get("sequence") != nxt:
                 raise SafetyError("supervisor active binding is not the next sequence")
+            expected_predecessors = list(range(1, active["sequence"]))
+            if accepted_sequences != expected_predecessors:
+                raise SafetyError("supervisor active binding has an unaccepted predecessor")
             if not isinstance(active.get("brief"), str):
                 raise SafetyError("supervisor active binding has no brief")
             if not isinstance(active.get("brief_sha256"), str):
@@ -457,6 +469,10 @@ class Supervisor:
                 raise SafetyError("supervisor has an unresolved launch intent")
             if not _valid_run_id(active.get("run_id")):
                 raise SafetyError("supervisor active run_id is not canonical UUIDv7")
+            if active["run_id"] in accepted_run_ids:
+                raise SafetyError("supervisor active binding reuses an accepted run_id")
+        if len(acceptances) != last:
+            raise SafetyError("supervisor acceptance history is not contiguous")
         return state
 
     def _load_state(self, plan_digest: str, count: int) -> dict[str, Any]:
@@ -720,6 +736,11 @@ class Supervisor:
         run_id = start_data.get("run_id")
         if not _valid_run_id(run_id):
             raise SafetyError("host start did not return a canonical run_id")
+        accepted_run_ids = {
+            acceptance.get("run_id") for acceptance in state["acceptances"]
+        }
+        if run_id in accepted_run_ids:
+            raise SafetyError("host start reused an accepted campaign run_id")
         start_state = start_data.get("state")
         if not isinstance(start_state, dict) or start_state.get("code") != "started":
             raise SafetyError("host start did not return state.code=started")
