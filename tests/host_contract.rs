@@ -480,6 +480,11 @@ fn host_spec_preserves_scheduler_and_one_active_boundaries() {
         "Enumeration is fail-closed",
         "lane.retry_scheduled",
         "result.actionable=true",
+        "QUINTE_HOME",
+        "manifest.runtime_sha256",
+        "Terminal handoff gate",
+        "result.verified=true",
+        "not a permanent seat",
         "does not authorize",
     ] {
         assert!(spec.contains(required), "HOST.md omitted {required:?}");

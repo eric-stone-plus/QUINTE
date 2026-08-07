@@ -31,6 +31,36 @@ An `ok: true` envelope only proves that an envelope was emitted; the host must
 also inspect `data.state.code`, the projected run status, and the process exit
 code.
 
+### Pin the host invocation
+
+An external host must choose one absolute state root and one absolute QUINTE
+executable for the whole invocation. Set `QUINTE_HOME` explicitly before
+`preflight`, `start`, `status`, `inspect`, and `reconcile`; do not let one
+operation fall back to `~/.quinte` while another uses a profile-specific
+directory. Reuse the same value for every command and require the receipt's
+`state_root` to equal it exactly. The receipt is a binding, not a hint: a
+mismatch means that the host is looking at a different store and must stop.
+
+Likewise, invoke the pinned executable by absolute path (or an equivalently
+stable wrapper) so a PATH change cannot silently switch installations. Before
+launching a campaign, record its SHA-256 and compare it with
+`data.manifest.runtime_sha256` in the durable `start` receipt (and later
+receipts). On Linux/macOS, for example:
+
+```bash
+export QUINTE_HOME=/absolute/path/to/quinte-state
+export QUINTE_BIN=/absolute/path/to/quinte
+sha256sum "$QUINTE_BIN"       # macOS: shasum -a 256 "$QUINTE_BIN"
+"$QUINTE_BIN" host preflight --json
+"$QUINTE_BIN" host start --brief BRIEF.json --json
+```
+
+On Windows use `Get-FileHash -Algorithm SHA256` for the same check. A runtime
+digest change is an integrity boundary: do not `resume` an older run after
+reinstalling or replacing the binary. Reconcile/inspect the old run, then
+create a new run with the newly pinned executable once the previous run is
+terminal.
+
 `host preflight` is an advisory observation, not a launch reservation or an
 authorization ticket. It does not reserve the one-active slot, and the state
 root, credentials, provider reachability, and active-run set may change after
@@ -198,6 +228,19 @@ emission it must verify all of the following:
 revision. It does not authorize an external write, submission, purchase,
 deployment, deletion, or other protected action.
 
+### Terminal handoff gate
+
+`host status` is an observation. When it reports a terminal `completed` or
+`degraded` run, the host must make a separate `host inspect RUN_ID --json`
+call and accept the product only when `result.verified=true`, the digest
+matches the manifest, and `result.actionable=true`. A structurally valid but
+non-current result is evidence for review, not a current product handoff.
+Hosts that chain campaigns should complete this inspect gate before admitting
+the next run; the one-active launch guard alone is not a product-acceptance
+check. Failed or cancelled runs have no result handoff and require an explicit
+operator decision after inspection of the stored failure; any retry or relaunch
+must use the supported explicit workflow rather than an implicit chain.
+
 The start/inspect receipt preserves the provenance chain:
 
 ```text
@@ -229,6 +272,10 @@ result.json -> manifest.result_sha256 == result.sha256
 - `process` isolation is not an OS sandbox. The invoked adapter still has the
   operating-system authority of the QUINTE process.
 - Protect the state root: it contains copied evidence and raw adapter output.
+- A model-family name (for example, MiMo) is not a permanent seat promise. The
+  effective provider/model binding comes from the pinned policy
+  and is recorded in the run manifest; hosts should report that binding from
+  the receipt rather than hard-code a current token-plan or vendor name.
 - The host contract does not make HIGHBALL, Hermes, Codex, or another host part
   of the QUINTE scheduler. It only standardizes invocation and observation.
 
