@@ -252,6 +252,27 @@ def _canonical_brief_digest(path: Path) -> str:
     value, _ = _read_json(path, f"brief {path}")
     if not isinstance(value, dict):
         raise SafetyError(f"brief is not a JSON object: {path}")
+    allowed = {
+        "brief_version",
+        "question",
+        "context",
+        "evidence_roots",
+        "snapshot_ignore",
+        "attachments",
+        "action_scope",
+        "affected_paths",
+        "action_binding_sha256",
+    }
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise SafetyError(f"brief has unknown fields: {', '.join(unknown)}")
+    if value.get("brief_version") != "1.1":
+        raise SafetyError("brief_version must be 1.1")
+    if not isinstance(value.get("question"), str) or not value["question"].strip():
+        raise SafetyError("brief question must be a non-empty string")
+    for field in ("evidence_roots", "snapshot_ignore", "attachments", "affected_paths"):
+        if field in value and not isinstance(value[field], list):
+            raise SafetyError(f"brief {field} must be an array")
     # Keep Rust Brief's declaration order and materialize serde defaults.
     canonical = {
         "brief_version": value.get("brief_version"),
@@ -334,6 +355,9 @@ class Supervisor:
         value, raw = _read_json(self.plan_path, "campaign plan")
         if not isinstance(value, dict) or value.get("schema") != PLAN_SCHEMA:
             raise SafetyError(f"campaign plan schema must be {PLAN_SCHEMA}")
+        unknown_plan = sorted(set(value) - {"schema", "state_root", "runtime_sha256", "entries", "campaign_id", "created_at"})
+        if unknown_plan:
+            raise SafetyError(f"campaign plan has unknown fields: {', '.join(unknown_plan)}")
         declared_home = value.get("state_root")
         if declared_home is None:
             raise SafetyError("campaign plan must pin state_root explicitly")
@@ -347,8 +371,11 @@ class Supervisor:
             raise SafetyError("campaign plan entries must be an array")
         normalized: list[dict[str, Any]] = []
         for index, item in enumerate(entries, 1):
-            if not isinstance(item, dict) or item.get("sequence") != index:
+            if not isinstance(item, dict) or type(item.get("sequence")) is not int or item.get("sequence") != index:
                 raise SafetyError("campaign plan sequences must be contiguous starting at 1")
+            unknown_entry = sorted(set(item) - {"sequence", "brief", "brief_sha256", "batch_id", "label"})
+            if unknown_entry:
+                raise SafetyError(f"plan entry {index} has unknown fields: {', '.join(unknown_entry)}")
             brief = _absolute(item.get("brief"), f"plan entry {index} brief", must_exist=True)
             if not brief.is_file():
                 raise SafetyError(f"plan entry {index} brief is not a regular file: {brief}")
@@ -403,7 +430,7 @@ class Supervisor:
                 raise SafetyError(f"supervisor state binding drifted for {key}")
         last = state.get("last_accepted_sequence")
         nxt = state.get("next_sequence")
-        if not isinstance(last, int) or not isinstance(nxt, int) or last < 0 or nxt != last + 1:
+        if type(last) is not int or type(nxt) is not int or last < 0 or nxt != last + 1:
             raise SafetyError("supervisor state sequence cursor is invalid")
         if last > count:
             raise SafetyError("supervisor state accepted sequence exceeds plan")
@@ -411,7 +438,7 @@ class Supervisor:
         if not isinstance(acceptances, list) or len(acceptances) != last:
             raise SafetyError("supervisor acceptance history is not contiguous")
         for index, item in enumerate(acceptances, 1):
-            if not isinstance(item, dict) or item.get("sequence") != index:
+            if not isinstance(item, dict) or type(item.get("sequence")) is not int or item.get("sequence") != index:
                 raise SafetyError("supervisor acceptance history has a sequence gap")
             if not _valid_run_id(item.get("run_id")):
                 raise SafetyError("supervisor acceptance history has an invalid run_id")
@@ -629,8 +656,11 @@ class Supervisor:
 
             inspect_invocation, inspect_data = self._inspect_terminal(active["run_id"], entry, status)
             state["last_observation"]["inspect"] = inspect_invocation.record()
+            # Persist the terminal inspect receipt before validating result
+            # bytes.  If validation fails, HALTED still contains the exact
+            # evidence needed for manual review and no later launch is possible.
+            self._save_state(state)
             if status != "completed":
-                self._save_state(state)
                 self._halt(
                     "terminal_status_not_admissible",
                     f"sequence {entry['sequence']} reached {status}; manual review required",
