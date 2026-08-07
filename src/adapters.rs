@@ -251,12 +251,13 @@ pub fn build(
         OutputContract::Arbiter => ARBITER_VERDICT_SCHEMA,
     };
     let schema_compact = compact_schema(output_schema)?;
+    let id_requirements = " Every id field (including each claim and residual id) MUST match the ASCII pattern [A-Za-z0-9._-]{1,64}; valid example: C1-decisive_evidence; invalid examples: C2 bad id and 结论1. Never use spaces, Unicode characters, or other punctuation in an id.";
     // R3 lanes (counterpart arbiter) produce an ArbiterVerdict, not a
     // LaneOutput — prompt them with the verdict contract, including the
     // summary/recommendation role split (a verbatim-duplicate recommendation
     // was observed in production) and cross-party residual merging.
     let phase_contract = if phase == "R3" {
-        "Return one JSON object with exactly these fields: arbiter_verdict_version (\"1.0\"), summary, recommendation, residuals. summary states WHAT WAS FOUND (evidence-weighted findings and judgments); recommendation states WHAT TO DO (actions, sequencing, gates) and must add decision value beyond summary — never restate it. Keep residuals to the decisive ones (aim for five or fewer): duplicate findings raised by multiple parties must be merged into one residual with combined severity, never listed separately. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation.".to_string()
+        format!("Return one JSON object with exactly these fields: arbiter_verdict_version (\"1.0\"), summary, recommendation, residuals. summary states WHAT WAS FOUND (evidence-weighted findings and judgments); recommendation states WHAT TO DO (actions, sequencing, gates) and must add decision value beyond summary — never restate it. Keep residuals to the decisive ones (aim for five or fewer): duplicate findings raised by multiple parties must be merged into one residual with combined severity, never listed separately.{id_requirements} Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation.")
     } else {
         // Phase-specific analysis duties, split by phase like the R3 branch
         // above. R1 lanes argue in Toulmin form and close with an honest
@@ -272,7 +273,7 @@ pub fn build(
             _ => "",
         };
         format!(
-            "Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters.{phase_requirements} Every claims item MUST include id, statement, evidence_refs, confidence (a JSON number from 0 through 1), and category; top-level confidence does not replace confidence inside each claim. Every residuals item MUST include id, severity, residual_type, source, finding, evidence_refs, disposition, required_closure, closure_state, closure_evidence, and scope. Before emitting, verify that the response is syntactically valid JSON and escape double quotes, backslashes, newlines, and other control characters inside string values. Return raw JSON only, without a Markdown fence or preamble. Return JSON conforming exactly to this schema and invent no fields. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation:\n{schema_compact}"
+            "Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters.{phase_requirements}{id_requirements} Every claims item MUST include id, statement, evidence_refs, confidence (a JSON number from 0 through 1), and category; top-level confidence does not replace confidence inside each claim. Every residuals item MUST include id, severity, residual_type, source, finding, evidence_refs, disposition, required_closure, closure_state, closure_evidence, and scope. Before emitting, verify that the response is syntactically valid JSON and escape double quotes, backslashes, newlines, and other control characters inside string values. Return raw JSON only, without a Markdown fence or preamble. Return JSON conforming exactly to this schema and invent no fields. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation:\n{schema_compact}"
         )
     };
     let task_prompt = format!(
@@ -1109,6 +1110,25 @@ fn candidates_validation_error(stdout: &[u8]) -> Option<String> {
         else {
             continue;
         };
+        // MiMo's JsonEvents adapter emits the final LaneOutput as a raw JSON
+        // string in `part.text` (often after a short prose preamble).  The
+        // extraction path already considers that string, but diagnostics used
+        // to inspect fenced blocks only, hiding schema errors from raw nested
+        // JSON and reducing them to the misleading generic "no valid" error.
+        // Inspect only LaneOutput-shaped candidates here; do not normalize or
+        // accept them, and leave retry classification unchanged.
+        let trimmed = candidate.trim();
+        if trimmed.starts_with('{') && trimmed.contains("\"lane_output_version\"") {
+            if let Err(error) = parse_lane_output(trimmed.as_bytes()) {
+                return Some(format!(": {error}"));
+            }
+        }
+        if let Some(block) = json_object_block(candidate)
+            && block.contains("\"lane_output_version\"")
+            && let Err(error) = parse_lane_output(block.as_bytes())
+        {
+            return Some(format!(": {error}"));
+        }
         for block in fenced_json_blocks(candidate).into_iter().rev() {
             if let Err(error) = parse_lane_output(block.as_bytes()) {
                 return Some(format!(": {error}"));
@@ -1960,6 +1980,11 @@ mod tests {
             "Every residuals item MUST include id, severity, residual_type, source, finding, evidence_refs, disposition, required_closure, closure_state, closure_evidence, and scope"
         ));
         assert!(prompt.contains(
+            "Every id field (including each claim and residual id) MUST match the ASCII pattern [A-Za-z0-9._-]{1,64}"
+        ));
+        assert!(prompt.contains("valid example: C1-decisive_evidence"));
+        assert!(prompt.contains("invalid examples: C2 bad id and 结论1"));
+        assert!(prompt.contains(
             "escape double quotes, backslashes, newlines, and other control characters inside string values"
         ));
         assert!(prompt.contains("Return raw JSON only, without a Markdown fence or preamble"));
@@ -2705,6 +2730,102 @@ mod tests {
         .to_string();
         let error = parse_output(OutputKind::JsonEvents, stream.as_bytes()).unwrap_err();
         assert!(error.to_string().contains("no valid LaneOutput"));
+    }
+
+    #[test]
+    fn mimo_json_events_accept_raw_nested_lane_output() {
+        // This mirrors the production MiMo shape: a short prose text event is
+        // followed by a second `type:text` event whose `part.text` is raw JSON
+        // (not a Markdown fence), then a terminal step_finish control event.
+        let output = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "formal audit",
+            "verdict": "bounded result",
+            "confidence": 0.8,
+            "claims": [],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let stream = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({
+                "type": "step_start",
+                "timestamp": 1786062858671_u64,
+                "sessionID": "ses_example",
+                "part": {"type": "step-start"}
+            }),
+            serde_json::json!({
+                "type": "text",
+                "timestamp": 1786062981216_u64,
+                "sessionID": "ses_example",
+                "part": {
+                    "id": "prt_example",
+                    "messageID": "msg_example",
+                    "sessionID": "ses_example",
+                    "type": "text",
+                    "text": output.to_string(),
+                    "time": {"start": 1786062980000_u64}
+                }
+            }),
+            serde_json::json!({
+                "type": "step_finish",
+                "timestamp": 1786062981216_u64,
+                "sessionID": "ses_example",
+                "part": {
+                    "type": "step-finish",
+                    "reason": "stop",
+                    "tokens": {"total": 42}
+                }
+            })
+        );
+        let parsed = parse_output(OutputKind::JsonEvents, stream.as_bytes()).unwrap();
+        assert_eq!(parsed.verdict, "bounded result");
+    }
+
+    #[test]
+    fn mimo_json_events_reports_nested_lane_schema_error() {
+        let invalid = serde_json::json!({
+            "lane_output_version": "1.0",
+            "task_restatement": "formal audit",
+            "verdict": "bounded result",
+            "confidence": 0.8,
+            "claims": [{
+                "id": "C2-cross-card-coupling-unn specced",
+                "statement": "invalid identifier",
+                "evidence_refs": [],
+                "confidence": 0.5,
+                "category": "formal"
+            }],
+            "residuals": [],
+            "uncertainties": []
+        });
+        let stream = format!(
+            "{}\n{}\n",
+            serde_json::json!({
+                "type": "text",
+                "timestamp": 1786062981216_u64,
+                "sessionID": "ses_example",
+                "part": {
+                    "id": "prt_example",
+                    "messageID": "msg_example",
+                    "sessionID": "ses_example",
+                    "type": "text",
+                    "text": invalid.to_string()
+                }
+            }),
+            serde_json::json!({
+                "type": "step_finish",
+                "timestamp": 1786062981216_u64,
+                "sessionID": "ses_example",
+                "part": {"type": "step-finish", "reason": "stop"}
+            })
+        );
+        let error = parse_output(OutputKind::JsonEvents, stream.as_bytes()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("adapter stream contains no valid LaneOutput final event"));
+        assert!(message.contains("schema validation failed"), "{message}");
+        assert!(message.contains("^[A-Za-z0-9._-]{1,64}$"), "{message}");
+        assert!(message.contains("C2-cross-card-coupling-unn specced"), "{message}");
     }
 
     #[test]
