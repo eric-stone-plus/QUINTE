@@ -257,7 +257,7 @@ pub fn build(
     // summary/recommendation role split (a verbatim-duplicate recommendation
     // was observed in production) and cross-party residual merging.
     let phase_contract = if phase == "R3" {
-        format!("Return one JSON object with exactly these fields: arbiter_verdict_version (\"1.0\"), summary, recommendation, residuals. summary states WHAT WAS FOUND (evidence-weighted findings and judgments); recommendation states WHAT TO DO (actions, sequencing, gates) and must add decision value beyond summary — never restate it. Keep residuals to the decisive ones (aim for five or fewer): duplicate findings raised by multiple parties must be merged into one residual with combined severity, never listed separately.{id_requirements} Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation.")
+        format!("Return one JSON object with exactly these fields: arbiter_verdict_version (\"1.0\"), summary, recommendation, residuals. summary states WHAT WAS FOUND (evidence-weighted findings and judgments); recommendation states WHAT TO DO (actions, sequencing, gates) and must add decision value beyond summary — never restate it. Keep residuals to the decisive ones (aim for five or fewer): duplicate findings raised by multiple parties must be merged into one residual with combined severity, never listed separately. Every residuals item MUST include id, severity, residual_type, source, finding, evidence_refs, disposition, required_closure, closure_state, closure_evidence, and scope.{id_requirements} Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation. Return JSON conforming exactly to this schema and invent no fields:\n{schema_compact}")
     } else {
         // Phase-specific analysis duties, split by phase like the R3 branch
         // above. R1 lanes argue in Toulmin form and close with an honest
@@ -911,7 +911,60 @@ fn extract_typed_from_events<T>(
             return Ok(output);
         }
     }
-    bail!("adapter stream contains no valid {contract_name} final event")
+    let detail = typed_candidates_validation_error(stdout, parse, contract_name)
+        .map(|error| format!(": {error}"))
+        .unwrap_or_default();
+    bail!("adapter stream contains no valid {contract_name} final event{detail}")
+}
+
+/// Recover the validation failure for a likely structured final candidate in
+/// a JSON-events stream.  MiMo emits the final arbiter object either as raw
+/// `part.text` or inside a fenced block after a prose preamble.  Extraction
+/// remains fail-closed; this helper is diagnostics only and never sanitizes,
+/// normalizes, or changes retry classification.
+fn typed_candidates_validation_error<T>(
+    stdout: &[u8],
+    parse: fn(&[u8]) -> anyhow::Result<T>,
+    contract_name: &str,
+) -> Option<anyhow::Error> {
+    let marker = match contract_name {
+        "LaneOutput" => "\"lane_output_version\"",
+        "ArbiterVerdict" => "\"arbiter_verdict_version\"",
+        _ => return None,
+    };
+    let text = std::str::from_utf8(stdout).ok()?;
+    for line in text.lines().rev().filter(|line| !line.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let mut strings = Vec::new();
+        collect_strings(&value, &mut strings);
+        for candidate in strings.into_iter().rev() {
+            let candidate = candidate.trim();
+            if !candidate.contains(marker) {
+                continue;
+            }
+            if candidate.starts_with('{') {
+                if let Err(error) = parse(candidate.as_bytes()) {
+                    return Some(error);
+                }
+            }
+            for block in fenced_json_blocks(candidate).into_iter().rev() {
+                if block.contains(marker)
+                    && let Err(error) = parse(block.as_bytes())
+                {
+                    return Some(error);
+                }
+            }
+            if let Some(block) = json_object_block(candidate)
+                && block.contains(marker)
+                && let Err(error) = parse(block.as_bytes())
+            {
+                return Some(error);
+            }
+        }
+    }
+    None
 }
 
 pub fn structured_stream_error(kind: OutputKind, stdout: &[u8]) -> Option<AdapterStreamError> {
@@ -2002,6 +2055,77 @@ mod tests {
     }
 
     #[test]
+    fn r3_invocation_requires_the_complete_arbiter_residual_contract() {
+        let _lock = environment_lock();
+        let names = [
+            PROVIDER_KEY_SELECTOR,
+            PROVIDER_BASE_URL_SELECTOR,
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+        ];
+        let saved = names
+            .iter()
+            .map(|name| ((*name).to_string(), std::env::var_os(name)))
+            .collect::<Vec<_>>();
+        unsafe {
+            std::env::set_var(PROVIDER_KEY_SELECTOR, "OPENAI_API_KEY");
+            std::env::set_var(PROVIDER_BASE_URL_SELECTOR, "OPENAI_BASE_URL");
+            std::env::set_var("OPENAI_API_KEY", "selected-key");
+            std::env::set_var("OPENAI_BASE_URL", "https://relay.example.test/v1");
+        }
+
+        let temporary = tempfile::tempdir().unwrap();
+        let run_dir = temporary.path().join("run");
+        create_private_dir_all(&run_dir.join("input/snapshot")).unwrap();
+        fs::write(run_dir.join("input/snapshot-manifest.json"), b"{}\n").unwrap();
+        let packet = run_dir.join("packet.json");
+        fs::write(&packet, b"{}\n").unwrap();
+        let route = RoutePolicy {
+            party_id: "Counterpart Arbiter".into(),
+            route_id: "openai-counterpart".into(),
+            adapter: "codex".into(),
+            executable: std::env::current_exe().unwrap().display().to_string(),
+            required: true,
+            family: "openai".into(),
+            provider: "openai-api".into(),
+            text_model: "gpt-5.6-sol".into(),
+            multimodal_model: "gpt-5.6-sol".into(),
+            perspective: String::new(),
+        };
+
+        let invocation = build(
+            &route,
+            "R3",
+            &route.text_model,
+            &packet,
+            &run_dir.join("lane"),
+            30,
+        )
+        .unwrap();
+        let prompt = invocation.args.last().expect("prompt positional argument");
+        assert!(prompt.contains("PHASE: R3"));
+        assert!(prompt.contains(
+            "Every residuals item MUST include id, severity, residual_type, source, finding, evidence_refs, disposition, required_closure, closure_state, closure_evidence, and scope"
+        ));
+        assert!(prompt.contains("\"arbiter_verdict_version\""));
+        assert!(prompt.contains("\"$ref\""));
+        assert!(prompt.contains(
+            "Every id field (including each claim and residual id) MUST match the ASCII pattern [A-Za-z0-9._-]{1,64}"
+        ));
+        cleanup_sensitive(&invocation).unwrap();
+
+        unsafe {
+            for (name, value) in saved {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn production_attachment_capability_is_explicit() {
         let mut policy = crate::policy::default_policy();
         validate_attachment_capability(&policy).unwrap();
@@ -2826,6 +2950,112 @@ mod tests {
         assert!(message.contains("schema validation failed"), "{message}");
         assert!(message.contains("^[A-Za-z0-9._-]{1,64}$"), "{message}");
         assert!(message.contains("C2-cross-card-coupling-unn specced"), "{message}");
+    }
+
+    #[test]
+    fn mimo_json_events_accept_fenced_arbiter_verdict_after_preamble() {
+        let verdict = serde_json::json!({
+            "arbiter_verdict_version": "1.0",
+            "summary": "Evidence remains bounded.",
+            "recommendation": "Close the decisive gaps before adoption.",
+            "residuals": [{
+                "id": "R3-evidence-gap",
+                "severity": "HIGH",
+                "residual_type": "evidence-gap",
+                "source": "R1 and R2 synthesis",
+                "finding": "The decisive evidence is absent.",
+                "evidence_refs": [],
+                "disposition": "unresolved",
+                "required_closure": "Provide the evidence.",
+                "closure_state": "open",
+                "closure_evidence": [],
+                "scope": "Final recommendation"
+            }]
+        });
+        let final_text = format!(
+            "Now I have the full picture.\n```json\n{}\n```",
+            serde_json::to_string_pretty(&verdict).unwrap()
+        );
+        let stream = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({
+                "type": "step_start",
+                "timestamp": 1786062858671_u64,
+                "sessionID": "ses_example",
+                "part": {"type": "step-start"}
+            }),
+            serde_json::json!({
+                "type": "text",
+                "timestamp": 1786062981216_u64,
+                "sessionID": "ses_example",
+                "part": {
+                    "id": "prt_example",
+                    "messageID": "msg_example",
+                    "sessionID": "ses_example",
+                    "type": "text",
+                    "text": final_text
+                }
+            }),
+            serde_json::json!({
+                "type": "step_finish",
+                "timestamp": 1786062981216_u64,
+                "sessionID": "ses_example",
+                "part": {"type": "step-finish", "reason": "stop"}
+            })
+        );
+        let parsed = parse_arbiter_output(OutputKind::JsonEvents, stream.as_bytes()).unwrap();
+        assert_eq!(parsed.residuals[0].source, "R1 and R2 synthesis");
+    }
+
+    #[test]
+    fn mimo_json_events_reports_missing_arbiter_residual_source() {
+        // Mirrors the production R3 failure: a prose preamble followed by a
+        // complete fenced ArbiterVerdict whose residuals omit `source`.
+        let invalid = serde_json::json!({
+            "arbiter_verdict_version": "1.0",
+            "summary": "Evidence remains bounded.",
+            "recommendation": "Close the decisive gaps before adoption.",
+            "residuals": [{
+                "id": "R3-evidence-gap",
+                "severity": "HIGH",
+                "residual_type": "evidence-gap",
+                "finding": "The decisive evidence is absent.",
+                "evidence_refs": [],
+                "disposition": "unresolved",
+                "required_closure": "Provide the evidence.",
+                "closure_state": "open",
+                "closure_evidence": [],
+                "scope": "Final recommendation"
+            }]
+        });
+        let final_text = format!(
+            "Now I have the full picture.\n```json\n{}\n```",
+            serde_json::to_string_pretty(&invalid).unwrap()
+        );
+        let stream = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({"type": "step_start", "part": {"type": "step-start"}}),
+            serde_json::json!({
+                "type": "text",
+                "part": {
+                    "id": "prt_example",
+                    "messageID": "msg_example",
+                    "sessionID": "ses_example",
+                    "type": "text",
+                    "text": final_text
+                }
+            }),
+            serde_json::json!({
+                "type": "step_finish",
+                "part": {"type": "step-finish", "reason": "stop"}
+            })
+        );
+        let error = parse_arbiter_output(OutputKind::JsonEvents, stream.as_bytes()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("adapter stream contains no valid ArbiterVerdict final event"));
+        assert!(message.contains("schema validation failed"), "{message}");
+        assert!(message.contains("source"), "{message}");
+        assert!(message.contains("required property"), "{message}");
     }
 
     #[test]
