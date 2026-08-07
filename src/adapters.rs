@@ -273,7 +273,7 @@ pub fn build(
             _ => "",
         };
         format!(
-            "Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters.{phase_requirements}{id_requirements} Every claims item MUST include id, statement, evidence_refs, confidence (a JSON number from 0 through 1), and category; top-level confidence does not replace confidence inside each claim. Every residuals item MUST include id, severity, residual_type, source, finding, evidence_refs, disposition, required_closure, closure_state, closure_evidence, and scope. Before emitting, verify that the response is syntactically valid JSON and escape double quotes, backslashes, newlines, and other control characters inside string values. Return raw JSON only, without a Markdown fence or preamble. Return JSON conforming exactly to this schema and invent no fields. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation:\n{schema_compact}"
+            "Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters.{phase_requirements}{id_requirements} Every claims item MUST include id, statement, evidence_refs, confidence (a JSON number from 0 through 1), and category; top-level confidence does not replace confidence inside each claim. Every residuals item MUST include id, severity, residual_type, source, finding, evidence_refs, disposition, required_closure, closure_state, closure_evidence, and scope. The top-level fields uncertainties and limitations MUST be JSON arrays whose items are strings; even one entry MUST use an array such as [\"one limitation\"], never a bare string, object, or null. Before emitting, verify that the response is syntactically valid JSON and escape double quotes, backslashes, newlines, and other control characters inside string values. Return raw JSON only, without a Markdown fence or preamble. Return JSON conforming exactly to this schema and invent no fields. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation:\n{schema_compact}"
         )
     };
     let task_prompt = format!(
@@ -2033,6 +2033,12 @@ mod tests {
             "Every residuals item MUST include id, severity, residual_type, source, finding, evidence_refs, disposition, required_closure, closure_state, closure_evidence, and scope"
         ));
         assert!(prompt.contains(
+            "The top-level fields uncertainties and limitations MUST be JSON arrays whose items are strings"
+        ));
+        assert!(prompt.contains(
+            "even one entry MUST use an array such as [\"one limitation\"], never a bare string, object, or null"
+        ));
+        assert!(prompt.contains(
             "Every id field (including each claim and residual id) MUST match the ASCII pattern [A-Za-z0-9._-]{1,64}"
         ));
         assert!(prompt.contains("valid example: C1-decisive_evidence"));
@@ -3537,5 +3543,16 @@ mod tests {
     fn non_coercible_uncertainty_shape_still_fails() {
         let payload = minimal_lane_payload(r#"[{"foo":"bar"}]"#, "[]");
         assert!(parse_lane_output(payload.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn scalar_or_null_aporia_fields_still_fail_closed() {
+        for (uncertainties, limitations) in [(r#"\"one uncertainty\""#, "[]"), ("[]", r#"\"one limitation\""#), ("null", "[]"), ("[]", "null")] {
+            let payload = minimal_lane_payload(uncertainties, limitations);
+            assert!(
+                parse_lane_output(payload.as_bytes()).is_err(),
+                "unexpectedly accepted uncertainties={uncertainties}, limitations={limitations}"
+            );
+        }
     }
 }
