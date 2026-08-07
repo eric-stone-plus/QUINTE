@@ -272,7 +272,7 @@ pub fn build(
             _ => "",
         };
         format!(
-            "Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters.{phase_requirements} Return JSON conforming exactly to this schema and invent no fields. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation:\n{schema_compact}"
+            "Keep the response compact: include at most two claims, two residuals, and two uncertainties; keep each string under 300 characters.{phase_requirements} Every claims item MUST include id, statement, evidence_refs, confidence (a JSON number from 0 through 1), and category; top-level confidence does not replace confidence inside each claim. Every residuals item MUST include id, severity, residual_type, source, finding, evidence_refs, disposition, required_closure, closure_state, closure_evidence, and scope. Before emitting, verify that the response is syntactically valid JSON and escape double quotes, backslashes, newlines, and other control characters inside string values. Return raw JSON only, without a Markdown fence or preamble. Return JSON conforming exactly to this schema and invent no fields. Classify each residual with residual_type from this vocabulary when one fits (invent a snake_case type only when none does): evidence-gap, data-quality, methodology-flaw, contract-ambiguity, compliance-risk, protocol-gap, engineering-defect, model-limitation, scope-limitation:\n{schema_compact}"
         )
     };
     let task_prompt = format!(
@@ -986,7 +986,12 @@ fn has_unusable_final_candidate(content: &str) -> bool {
     if let Some(fence) = fence
         .filter(|fence| unresolved.is_none_or(|(candidate_start, _)| fence.start > candidate_start))
     {
-        return !fence.closed && serde_json::from_str::<Value>(fence.body).is_err();
+        // A closing marker only tells us that the presentation wrapper is
+        // complete; it does not make malformed JSON inside the fence usable.
+        // Treat syntax errors the same way for closed and open fences.  A
+        // syntactically valid payload is still left for schema validation,
+        // preserving the permanent-vs-transient distinction below.
+        return serde_json::from_str::<Value>(fence.body).is_err();
     }
     if let Some((_, candidate)) = unresolved {
         return serde_json::from_str::<Value>(candidate).is_err();
@@ -1090,15 +1095,25 @@ fn extract_json_from_events(stdout: &[u8]) -> anyhow::Result<LaneOutput> {
 
 fn candidates_validation_error(stdout: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(stdout).ok()?;
-    if let Some(line) = text.lines().rev().find(|line| !line.trim().is_empty()) {
-        let value: Value = serde_json::from_str(line).ok()?;
-        let candidate = value
+    for line in text.lines().rev().filter(|line| !line.trim().is_empty()) {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) != Some("text") {
+            continue;
+        }
+        let Some(candidate) = value
             .get("part")
             .and_then(|part| part.get("text"))
-            .and_then(Value::as_str)?;
-        let block = fenced_json_blocks(candidate).into_iter().next_back()?;
-        let error = parse_lane_output(block.as_bytes()).err()?.to_string();
-        return Some(format!(": {error}"));
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        for block in fenced_json_blocks(candidate).into_iter().rev() {
+            if let Err(error) = parse_lane_output(block.as_bytes()) {
+                return Some(format!(": {error}"));
+            }
+        }
     }
     None
 }
@@ -1431,7 +1446,6 @@ fn fenced_json_blocks(text: &str) -> Vec<&str> {
 struct JsonFence<'a> {
     start: usize,
     body: &'a str,
-    closed: bool,
 }
 
 fn last_json_fence(text: &str) -> Option<JsonFence<'_>> {
@@ -1455,7 +1469,6 @@ fn last_json_fence(text: &str) -> Option<JsonFence<'_>> {
                 body: closing
                     .map_or(after_marker, |(end, _)| &after_marker[..end])
                     .trim(),
-                closed: closing.is_some(),
             });
         });
     last
@@ -1930,12 +1943,18 @@ mod tests {
             ]
         );
         assert_eq!(invocation.args[invocation.args.len() - 2], "--");
-        assert!(
-            invocation.args.last().is_some_and(|prompt| {
-                prompt.contains("PHASE: R1") && prompt.contains("attachment_ref")
-            }),
-            "the prompt must remain a positional argument after the --image list"
-        );
+        let prompt = invocation.args.last().expect("prompt positional argument");
+        assert!(prompt.contains("PHASE: R1") && prompt.contains("attachment_ref"));
+        assert!(prompt.contains(
+            "Every claims item MUST include id, statement, evidence_refs, confidence (a JSON number from 0 through 1), and category"
+        ));
+        assert!(prompt.contains(
+            "Every residuals item MUST include id, severity, residual_type, source, finding, evidence_refs, disposition, required_closure, closure_state, closure_evidence, and scope"
+        ));
+        assert!(prompt.contains(
+            "escape double quotes, backslashes, newlines, and other control characters inside string values"
+        ));
+        assert!(prompt.contains("Return raw JSON only, without a Markdown fence or preamble"));
         cleanup_sensitive(&invocation).unwrap();
 
         unsafe {
@@ -2953,6 +2972,21 @@ mod tests {
             malformed.as_bytes()
         ));
 
+        // A complete Markdown fence does not repair malformed JSON inside it.
+        // This is generation corruption and remains eligible for a bounded
+        // retry even though the presentation wrapper itself is closed.
+        let malformed_closed_fence = format!(
+            "{}\n{}\n",
+            serde_json::json!({
+                "type": "text",
+                "part": {"text": "```json\n{\"lane_output_version\":\"1.0\",\"task_restatement\":\"x\" \"verdict\":\"y\"}\n```"}
+            }),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        assert!(events_completed_with_unusable_final_candidate(
+            malformed_closed_fence.as_bytes()
+        ));
+
         // No terminal stop step: do not classify as a completed-truncated turn.
         let no_terminal = format!(
             "{}\n",
@@ -3008,6 +3042,23 @@ mod tests {
             0xff, 0xfe
         ]));
         assert!(!events_completed_with_unusable_final_candidate(b""));
+    }
+
+    #[test]
+    fn event_validation_diagnostic_skips_terminal_control_events() {
+        let schema_invalid = "```json\n{\"lane_output_version\":\"1.0\",\"task_restatement\":\"missing fields\"}\n```";
+        let stream = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "text", "part": {"text": schema_invalid}}),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+
+        let error = parse_output(OutputKind::JsonEvents, stream.as_bytes()).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("adapter stream contains no valid LaneOutput final event")
+        );
+        assert!(message.contains("schema validation failed"), "{message}");
     }
 
     #[test]

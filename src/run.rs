@@ -5611,6 +5611,33 @@ mod retry_tests {
         assert!(error.unwrap().contains("no valid LaneOutput"));
         assert_eq!(retry, RetryClass::TransientAdapter);
 
+        // A closed Markdown fence still carries malformed JSON and therefore
+        // remains transient generation corruption rather than a permanent
+        // schema violation.
+        let malformed_closed_fence = format!(
+            "{}\n{}\n",
+            serde_json::json!({
+                "type": "text",
+                "part": {"text": "```json\n{\"lane_output_version\":\"1.0\",\"task_restatement\":\"x\" \"verdict\":\"y\"}\n```"}
+            }),
+            serde_json::json!({"type": "step_finish", "part": {"reason": "stop"}})
+        );
+        let (output, error, retry) = evaluate_attempt_output(
+            "mimo",
+            OutputKind::JsonEvents,
+            adapters::OutputContract::Lane,
+            malformed_closed_fence.as_bytes(),
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert!(error.unwrap().contains("no valid LaneOutput"));
+        assert_eq!(retry, RetryClass::TransientAdapter);
+
         // Complete but schema-invalid JSON stays permanent.
         let schema_invalid = format!(
             "{}\n{}\n",
