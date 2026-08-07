@@ -1403,7 +1403,7 @@ fn normalize_lane_shape(value: &mut Value) {
 /// so near-valid shapes are normalized consistently.
 fn parse_lane_output(bytes: &[u8]) -> anyhow::Result<LaneOutput> {
     let text = std::str::from_utf8(bytes).context("payload is not strict UTF-8")?;
-    let mut value: Value = serde_json::from_str(text).context("payload is not valid JSON")?;
+    let mut value = parse_json_value(text)?;
     normalize_lane_shape(&mut value);
     validate_value(&value, LANE_OUTPUT_SCHEMA)?;
     serde_json::from_value(value).context("payload does not match typed contract")
@@ -1411,9 +1411,155 @@ fn parse_lane_output(bytes: &[u8]) -> anyhow::Result<LaneOutput> {
 
 fn parse_arbiter_verdict(bytes: &[u8]) -> anyhow::Result<ArbiterVerdict> {
     let text = std::str::from_utf8(bytes).context("payload is not strict UTF-8")?;
-    let value: Value = serde_json::from_str(text).context("payload is not valid JSON")?;
+    let value = parse_json_value(text)?;
     validate_value(&value, ARBITER_VERDICT_SCHEMA)?;
     serde_json::from_value(value).context("payload does not match typed contract")
+}
+
+/// Parse a JSON object, with one extraction-only fallback for the observed MiMo
+/// defect where property names are emitted unquoted (`{arbiter_verdict_version: "1.0"}`).
+/// Schema validation still runs on the repaired value; required fields and types
+/// are not relaxed.
+fn parse_json_value(text: &str) -> anyhow::Result<Value> {
+    match serde_json::from_str(text) {
+        Ok(value) => Ok(value),
+        Err(strict_error) => {
+            if !looks_like_unquoted_object_keys(text) {
+                return Err(strict_error).context("payload is not valid JSON");
+            }
+            let repaired = quote_unquoted_object_keys(text);
+            serde_json::from_str(&repaired).context("payload is not valid JSON")
+        }
+    }
+}
+
+fn looks_like_unquoted_object_keys(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with('{')
+        && (trimmed.contains("arbiter_verdict_version:")
+            || trimmed.contains("lane_output_version:")
+            || has_unquoted_identifier_key(trimmed))
+}
+
+fn has_unquoted_identifier_key(text: &str) -> bool {
+    let mut in_string = false;
+    let mut escaped = false;
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let character = bytes[index] as char;
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if character == '"' {
+            in_string = true;
+            index += 1;
+            continue;
+        }
+        if character.is_ascii_alphabetic() || character == '_' || character == '$' {
+            let start = index;
+            index += 1;
+            while index < bytes.len() {
+                let next = bytes[index] as char;
+                if next.is_ascii_alphanumeric() || next == '_' || next == '$' {
+                    index += 1;
+                } else {
+                    break;
+                }
+            }
+            let mut look = index;
+            while look < bytes.len() && bytes[look].is_ascii_whitespace() {
+                look += 1;
+            }
+            if look < bytes.len() && bytes[look] == b':' {
+                // Skip the common `{` / `,` context: an identifier key must
+                // follow an object open or a comma once whitespace is ignored
+                // behind it.  A bare `true:` is still only diagnostic here;
+                // repair is attempted and schema remains authoritative.
+                let _ = start;
+                return true;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    false
+}
+
+/// Quote unquoted ASCII object keys outside string literals.  Does not rewrite
+/// string contents, does not accept single-quoted strings, and does not drop
+/// required fields — schema validation still rejects incomplete payloads.
+fn quote_unquoted_object_keys(text: &str) -> String {
+    let mut output = String::with_capacity(text.len() + 16);
+    let mut in_string = false;
+    let mut escaped = false;
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let character = chars[index];
+        if in_string {
+            output.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if character == '"' {
+            in_string = true;
+            output.push(character);
+            index += 1;
+            continue;
+        }
+        if character.is_ascii_alphabetic() || character == '_' || character == '$' {
+            let start = index;
+            index += 1;
+            while index < chars.len() {
+                let next = chars[index];
+                if next.is_ascii_alphanumeric() || next == '_' || next == '$' {
+                    index += 1;
+                } else {
+                    break;
+                }
+            }
+            let mut look = index;
+            while look < chars.len() && chars[look].is_whitespace() {
+                look += 1;
+            }
+            if look < chars.len() && chars[look] == ':' {
+                output.push('"');
+                for item in chars.iter().take(index).skip(start) {
+                    output.push(*item);
+                }
+                output.push('"');
+                for item in chars.iter().take(look).skip(index) {
+                    output.push(*item);
+                }
+                output.push(':');
+                index = look + 1;
+                continue;
+            }
+            for item in chars.iter().take(index).skip(start) {
+                output.push(*item);
+            }
+            continue;
+        }
+        output.push(character);
+        index += 1;
+    }
+    output
 }
 
 fn strip_ansi(text: &str) -> String {
@@ -3322,11 +3468,41 @@ mod tests {
     }
 
     #[test]
-    fn mimo_json_events_rejects_js_object_literal_arbiter_verdict_without_panicking() {
+    fn mimo_json_events_accepts_js_object_literal_arbiter_verdict_with_full_schema() {
         // Production R3 Primary Arbiter on run 019fdae9-ecf6-7f42-b202-6353b60e5dd9
-        // (batch-10): the final text event was a JavaScript object literal with
-        // unquoted property names, not JSON.  Fail-closed; do not coerce.
+        // and Counterpart on 019fdc5c-7386-7163-9874-d617f3900513: final text was a
+        // JS object literal with unquoted property names.  Extraction may quote
+        // keys; schema validation is unchanged.
         let final_text = r#"{arbiter_verdict_version: "1.0", summary: "bounded evidence", recommendation: "close gaps", residuals: [{id: "R3-1", severity: "HIGH", residual_type: "evidence-gap", source: "R1", finding: "gap", evidence_refs: [], disposition: "unresolved", required_closure: "provide", closure_state: "open", closure_evidence: [], scope: "final"}]}"#;
+        let stream = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({"type": "step_start", "part": {"type": "step-start"}}),
+            serde_json::json!({
+                "type": "text",
+                "part": {
+                    "id": "prt_example",
+                    "messageID": "msg_example",
+                    "sessionID": "ses_example",
+                    "type": "text",
+                    "text": final_text
+                }
+            }),
+            serde_json::json!({
+                "type": "step_finish",
+                "part": {"type": "step-finish", "reason": "stop"}
+            })
+        );
+        let parsed = parse_arbiter_output(OutputKind::JsonEvents, stream.as_bytes()).unwrap();
+        assert_eq!(parsed.summary, "bounded evidence");
+        assert_eq!(parsed.residuals[0].id, "R3-1");
+        assert_eq!(parsed.residuals[0].source, "R1");
+    }
+
+    #[test]
+    fn mimo_json_events_js_object_literal_still_requires_residual_source() {
+        // Key repair must not skip schema: unquoted keys with a missing
+        // required residual field remain a permanent contract failure.
+        let final_text = r#"{arbiter_verdict_version: "1.0", summary: "bounded evidence", recommendation: "close gaps", residuals: [{id: "R3-1", severity: "HIGH", residual_type: "evidence-gap", finding: "gap", evidence_refs: [], disposition: "unresolved", required_closure: "provide", closure_state: "open", closure_evidence: [], scope: "final"}]}"#;
         let stream = format!(
             "{}\n{}\n{}\n",
             serde_json::json!({"type": "step_start", "part": {"type": "step-start"}}),
@@ -3351,10 +3527,8 @@ mod tests {
             message.contains("adapter stream contains no valid ArbiterVerdict final event"),
             "{message}"
         );
-        assert!(
-            message.contains("payload is not valid JSON") || message.contains("not valid JSON"),
-            "{message}"
-        );
+        assert!(message.contains("schema validation failed"), "{message}");
+        assert!(message.contains("source"), "{message}");
     }
 
     #[test]
