@@ -927,9 +927,13 @@ fn typed_candidates_validation_error<T>(
     parse: fn(&[u8]) -> anyhow::Result<T>,
     contract_name: &str,
 ) -> Option<anyhow::Error> {
-    let marker = match contract_name {
-        "LaneOutput" => "\"lane_output_version\"",
-        "ArbiterVerdict" => "\"arbiter_verdict_version\"",
+    // Prefer the strict JSON key form.  Also recognize the observed MiMo
+    // failure shape where the model emits a JS object literal with unquoted
+    // property names (`arbiter_verdict_version: ...`).  Matching that shape is
+    // diagnostics-only: extraction never coerces unquoted keys into JSON.
+    let markers: &[&str] = match contract_name {
+        "LaneOutput" => &["\"lane_output_version\"", "lane_output_version:"],
+        "ArbiterVerdict" => &["\"arbiter_verdict_version\"", "arbiter_verdict_version:"],
         _ => return None,
     };
     let text = std::str::from_utf8(stdout).ok()?;
@@ -941,7 +945,7 @@ fn typed_candidates_validation_error<T>(
         collect_strings(&value, &mut strings);
         for candidate in strings.into_iter().rev() {
             let candidate = candidate.trim();
-            if !candidate.contains(marker) {
+            if !markers.iter().any(|marker| candidate.contains(marker)) {
                 continue;
             }
             if candidate.starts_with('{') {
@@ -950,14 +954,14 @@ fn typed_candidates_validation_error<T>(
                 }
             }
             for block in fenced_json_blocks(candidate).into_iter().rev() {
-                if block.contains(marker)
+                if markers.iter().any(|marker| block.contains(marker))
                     && let Err(error) = parse(block.as_bytes())
                 {
                     return Some(error);
                 }
             }
             if let Some(block) = json_object_block(candidate)
-                && block.contains(marker)
+                && markers.iter().any(|marker| block.contains(marker))
                 && let Err(error) = parse(block.as_bytes())
             {
                 return Some(error);
@@ -3315,6 +3319,42 @@ mod tests {
         assert!(message.contains("schema validation failed"), "{message}");
         assert!(message.contains("source"), "{message}");
         assert!(message.contains("required property"), "{message}");
+    }
+
+    #[test]
+    fn mimo_json_events_rejects_js_object_literal_arbiter_verdict_without_panicking() {
+        // Production R3 Primary Arbiter on run 019fdae9-ecf6-7f42-b202-6353b60e5dd9
+        // (batch-10): the final text event was a JavaScript object literal with
+        // unquoted property names, not JSON.  Fail-closed; do not coerce.
+        let final_text = r#"{arbiter_verdict_version: "1.0", summary: "bounded evidence", recommendation: "close gaps", residuals: [{id: "R3-1", severity: "HIGH", residual_type: "evidence-gap", source: "R1", finding: "gap", evidence_refs: [], disposition: "unresolved", required_closure: "provide", closure_state: "open", closure_evidence: [], scope: "final"}]}"#;
+        let stream = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({"type": "step_start", "part": {"type": "step-start"}}),
+            serde_json::json!({
+                "type": "text",
+                "part": {
+                    "id": "prt_example",
+                    "messageID": "msg_example",
+                    "sessionID": "ses_example",
+                    "type": "text",
+                    "text": final_text
+                }
+            }),
+            serde_json::json!({
+                "type": "step_finish",
+                "part": {"type": "step-finish", "reason": "stop"}
+            })
+        );
+        let error = parse_arbiter_output(OutputKind::JsonEvents, stream.as_bytes()).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("adapter stream contains no valid ArbiterVerdict final event"),
+            "{message}"
+        );
+        assert!(
+            message.contains("payload is not valid JSON") || message.contains("not valid JSON"),
+            "{message}"
+        );
     }
 
     #[test]
