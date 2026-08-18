@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/finance-arbiter-verdict/1.0/schema.json",
+  "title": "QUINTE Restricted Finance Arbiter Verdict",
+  "type": "object", "additionalProperties": false,
+  "required": ["finance_arbiter_verdict_version", "run_id", "arbiter_role", "policy_digest", "invocation_digest", "profile_digest", "claim_manifest_digest", "primary_digest", "evidence_index_digest", "school_output_digests", "route_binding_digests", "duplicate_residual_groups", "identifier_reconciliations", "scope_reconciliations", "admitted_closure_evidence_refs"],
+  "properties": {
+    "finance_arbiter_verdict_version": {"const": "1.0"},
+    "run_id": {"type": "string", "minLength": 1},
+    "arbiter_role": {"enum": ["counterpart_arbiter", "primary_arbiter"]},
+    "policy_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "invocation_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "profile_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "claim_manifest_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "primary_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "evidence_index_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "school_output_digests": {"type": "array", "minItems": 10, "maxItems": 10, "uniqueItems": true, "items": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}},
+    "route_binding_digests": {"type": "array", "minItems": 7, "maxItems": 7, "uniqueItems": true, "items": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}},
+    "duplicate_residual_groups": {"type": "array", "items": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}},
+    "identifier_reconciliations": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+    "scope_reconciliations": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+    "admitted_closure_evidence_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  }
+}

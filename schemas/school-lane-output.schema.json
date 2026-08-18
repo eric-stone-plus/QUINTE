@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/school-lane-output/1.0/schema.json",
+  "title": "QUINTE Finance School Lane Output",
+  "type": "object", "additionalProperties": false,
+  "required": ["school_lane_output_version", "run_id", "phase", "school_id", "expected_route_digest", "profile_digest", "primary_digest", "evidence_index_digest", "input_packet_exact_sha256", "input_packet_semantic_sha256", "decisions", "residuals"],
+  "properties": {
+    "school_lane_output_version": {"const": "1.0"}, "run_id": {"type": "string", "minLength": 1},
+    "phase": {"enum": ["R1", "R2"]}, "school_id": {"enum": ["factor_risk_model", "event_driven", "fundamental_supply_chain", "trend_technical_regime", "market_microstructure"]},
+    "expected_route_digest": {"$ref": "#/$defs/digest"}, "profile_digest": {"$ref": "#/$defs/digest"}, "primary_digest": {"$ref": "#/$defs/digest"}, "evidence_index_digest": {"$ref": "#/$defs/digest"},
+    "input_packet_exact_sha256": {"$ref": "#/$defs/digest"}, "input_packet_semantic_sha256": {"$ref": "#/$defs/digest"},
+    "decisions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/decision"}},
+    "residuals": {"type": "array", "items": {"$ref": "#/$defs/residual"}}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "strings": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "decision": {"type": "object", "additionalProperties": false, "required": ["claim_id", "disposition", "evidence_refs", "alternative_codes", "confounder_codes", "falsifier_codes", "invalidation_codes", "limitation_codes", "missing_evidence_codes", "closure_rule_code", "closure_evidence_refs"], "properties": {"claim_id": {"type": "string", "minLength": 1}, "disposition": {"enum": ["clear", "contradicted", "insufficient_evidence", "quarantined", "expired", "not_applicable"]}, "evidence_refs": {"$ref": "#/$defs/strings"}, "alternative_codes": {"$ref": "#/$defs/strings"}, "confounder_codes": {"$ref": "#/$defs/strings"}, "falsifier_codes": {"$ref": "#/$defs/strings"}, "invalidation_codes": {"$ref": "#/$defs/strings"}, "limitation_codes": {"$ref": "#/$defs/strings"}, "missing_evidence_codes": {"$ref": "#/$defs/strings"}, "closure_rule_code": {"type": ["string", "null"]}, "closure_evidence_refs": {"$ref": "#/$defs/strings"}}},
+    "residual": {"type": "object", "additionalProperties": false, "required": ["residual_code", "affected_claim_ids", "materiality", "closure_state", "closure_rule_code", "closure_evidence_refs"], "properties": {"residual_code": {"type": "string", "minLength": 1}, "affected_claim_ids": {"$ref": "#/$defs/strings"}, "materiality": {"enum": ["non_material", "material"]}, "closure_state": {"enum": ["open", "closed"]}, "closure_rule_code": {"type": ["string", "null"]}, "closure_evidence_refs": {"$ref": "#/$defs/strings"}}}
+  }
+}

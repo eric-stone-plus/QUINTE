@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/r2-packet/2.0/schema.json",
+  "title": "QUINTE Finance Anonymous R2 Packet",
+  "type": "object", "additionalProperties": false,
+  "required": ["packet_version", "run_id", "recipient_authority", "policy", "profile", "claim_manifest", "primary", "evidence_index", "recipient_route_digest", "r1_source_set_semantic_sha256", "corpus_semantic_sha256", "corpus"],
+  "properties": {
+    "packet_version": {"const": "2.0"}, "run_id": {"type": "string", "minLength": 1},
+    "recipient_authority": {"$ref": "https://github.com/eric-stone-plus/QUINTE/contracts/task-packet/2.0/schema.json#/$defs/authority"},
+    "policy": {"$ref": "https://github.com/eric-stone-plus/QUINTE/contracts/task-packet/2.0/schema.json#/$defs/binding"},
+    "profile": {"$ref": "https://github.com/eric-stone-plus/QUINTE/contracts/task-packet/2.0/schema.json#/$defs/binding"},
+    "claim_manifest": {"$ref": "https://github.com/eric-stone-plus/QUINTE/contracts/task-packet/2.0/schema.json#/$defs/binding"},
+    "primary": {"$ref": "https://github.com/eric-stone-plus/QUINTE/contracts/task-packet/2.0/schema.json#/$defs/binding"},
+    "evidence_index": {"$ref": "https://github.com/eric-stone-plus/QUINTE/contracts/task-packet/2.0/schema.json#/$defs/binding"},
+    "recipient_route_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "r1_source_set_semantic_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "corpus_semantic_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "corpus": {
+      "type": "object", "additionalProperties": false, "required": ["claims", "contributions"],
+      "properties": {
+        "claims": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "array", "prefixItems": [{"type": "string", "minLength": 1}, {"type": "string", "minLength": 1}], "items": false, "minItems": 2, "maxItems": 2}},
+        "contributions": {"type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": {"type": "object", "additionalProperties": false, "required": ["contributor_alias", "decisions"], "properties": {"contributor_alias": {"type": "string", "pattern": "^contributor-[1-5]$"}, "decisions": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "object", "additionalProperties": false, "required": ["claim_id", "disposition", "evidence_refs", "residual_codes"], "properties": {"claim_id": {"type": "string", "minLength": 1}, "disposition": {"enum": ["clear", "contradicted", "insufficient_evidence", "quarantined", "expired", "not_applicable"]}, "evidence_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^evidence:sha256:[a-f0-9]{64}$"}}, "residual_codes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}}}}}}
+      }
+    }
+  }
+}

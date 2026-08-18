@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/host-receipt/1.0/schema.json",
+  "title": "QUINTE Host Invocation Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "host_receipt_version",
+    "invocation_id",
+    "receipt_path",
+    "operation",
+    "observed_at",
+    "state_root",
+    "state"
+  ],
+  "properties": {
+    "host_receipt_version": { "const": "1.0" },
+    "invocation_id": { "$ref": "#/$defs/uuidv7" },
+    "receipt_path": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "operation": {
+      "enum": ["preflight", "start", "status", "inspect", "reconcile"]
+    },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "state_root": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "state": { "$ref": "#/$defs/state" },
+    "run_id": { "$ref": "#/$defs/uuidv7" },
+    "preflight": { "$ref": "#/$defs/preflight" },
+    "brief": { "$ref": "#/$defs/brief_binding" },
+    "manifest": { "$ref": "#/$defs/manifest_projection" },
+    "result": { "$ref": "#/$defs/result_binding" },
+    "recovery": { "$ref": "#/$defs/recovery" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "operation": { "const": "preflight" } } },
+      "then": { "required": ["preflight"] }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "start" } } },
+      "then": { "required": ["run_id", "brief", "manifest"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": { "enum": ["status", "inspect"] }
+        }
+      },
+      "then": { "required": ["run_id", "manifest"] }
+    },
+    {
+      "if": { "properties": { "operation": { "const": "reconcile" } } },
+      "then": { "required": ["recovery"] }
+    },
+    {
+      "if": {
+        "required": ["manifest"],
+        "properties": {
+          "manifest": {
+            "properties": {
+              "status": { "enum": ["completed", "degraded"] }
+            },
+            "required": ["status"]
+          }
+        }
+      },
+      "then": { "required": ["result"] }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": { "const": "reconcile" },
+          "state": {
+            "properties": { "code": { "const": "reconciled" } },
+            "required": ["code"]
+          }
+        }
+      },
+      "then": { "required": ["run_id", "manifest"] }
+    }
+  ],
+  "$defs": {
+    "uuidv7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "run_status": {
+      "enum": [
+        "queued",
+        "preflight",
+        "r1_running",
+        "r1_gate",
+        "r2_packet",
+        "r2_running",
+        "r2_gate",
+        "r3_cc",
+        "waiting_primary_arbiter",
+        "merging",
+        "completed",
+        "degraded",
+        "failed",
+        "failed_policy",
+        "cancelling",
+        "cancelled"
+      ]
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "active_run_ids"],
+      "properties": {
+        "code": {
+          "enum": [
+            "ready",
+            "preflight_failed",
+            "active_run_present",
+            "created",
+            "started",
+            "launch_failed",
+            "observed",
+            "terminal",
+            "reconciled",
+            "no_active_run",
+            "ambiguous_active_runs"
+          ]
+        },
+        "active_run_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/uuidv7" }
+        },
+        "worker": { "$ref": "#/$defs/worker_observation" },
+        "attempts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/attempt_observation" }
+        },
+        "blockers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 2000 }
+        }
+      }
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["doctor_version", "ok", "platform", "checks"],
+      "properties": {
+        "doctor_version": { "type": "string", "minLength": 1 },
+        "ok": { "type": "boolean" },
+        "platform": { "type": "string", "minLength": 1 },
+        "checks": {
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      }
+    },
+    "brief_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "source_sha256", "canonical_sha256"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "source_sha256": { "$ref": "#/$defs/digest" },
+        "canonical_sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "manifest_projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "manifest_version",
+        "brief_sha256",
+        "policy_sha256",
+        "snapshot_sha256",
+        "runtime_sha256"
+      ],
+      "properties": {
+        "status": { "$ref": "#/$defs/run_status" },
+        "manifest_version": { "type": "string", "minLength": 1 },
+        "brief_sha256": { "$ref": "#/$defs/digest" },
+        "policy_sha256": { "$ref": "#/$defs/digest" },
+        "snapshot_sha256": { "$ref": "#/$defs/digest" },
+        "runtime_sha256": { "$ref": "#/$defs/digest" },
+        "worker_pid": { "type": "integer", "minimum": 1 },
+        "error": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["code", "message", "retryable"],
+              "properties": {
+                "code": { "type": "string", "minLength": 1 },
+                "message": { "type": "string", "minLength": 1 },
+                "retryable": { "type": "boolean" }
+              }
+            }
+          ]
+        },
+        "result_sha256": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/digest" }
+          ]
+        }
+      }
+    },
+    "result_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verified", "actionable", "contract_version", "sha256", "path"],
+      "properties": {
+        "verified": { "const": true },
+        "actionable": { "type": "boolean" },
+        "contract_version": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4000 }
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "launch_safe", "receipt_path"],
+      "properties": {
+        "outcome": {
+          "enum": [
+            "reconciled",
+            "no_active_run",
+            "ambiguous_active_runs"
+          ]
+        },
+        "launch_safe": { "type": "boolean" },
+        "receipt_path": { "type": "string", "minLength": 1, "maxLength": 4000 }
+      }
+    },
+    "worker_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "recovery_needed"],
+      "properties": {
+        "state": { "enum": ["missing", "running", "finished", "stale", "dead"] },
+        "pid": { "type": "integer", "minimum": 1 },
+        "heartbeat_at": { "type": "string", "format": "date-time" },
+        "heartbeat_age_seconds": { "type": "integer", "minimum": 0 },
+        "finished_at": { "type": "string", "format": "date-time" },
+        "recovery_needed": { "type": "boolean" }
+      }
+    },
+    "attempt_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "party_id", "route_id", "attempt", "state"],
+      "properties": {
+        "phase": { "enum": ["R1", "R2", "R3"] },
+        "party_id": { "type": "string", "minLength": 1 },
+        "route_id": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "state": { "enum": ["running", "accepted", "failed", "retry_wait"] },
+        "started_at": { "type": "string", "format": "date-time" },
+        "finished_at": { "type": "string", "format": "date-time" },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "timeout_seconds": { "type": "integer", "minimum": 1 },
+        "timed_out": { "type": "boolean" },
+        "retryable": { "type": "boolean" },
+        "failure_class": { "type": "string", "minLength": 1 },
+        "retry_due_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

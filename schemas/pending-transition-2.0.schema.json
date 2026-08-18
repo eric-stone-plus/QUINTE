@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/pending-transition/2.0/schema.json",
+  "title": "QUINTE Finance Pending Transition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "pending_transition_version",
+    "run_id",
+    "run_genesis_digest",
+    "transition_id",
+    "operation",
+    "old_manifest_exact_sha256",
+    "old_event_checkpoint",
+    "event_exact_sha256",
+    "event_byte_length",
+    "event_bytes_base64",
+    "target_manifest_exact_sha256",
+    "target_manifest_byte_length",
+    "target_manifest_bytes_base64",
+    "artifact_bindings"
+  ],
+  "properties": {
+    "pending_transition_version": {"const": "2.0"},
+    "run_id": {"type": "string", "minLength": 1},
+    "run_genesis_digest": {"$ref": "#/$defs/digest"},
+    "transition_id": {"type": "string", "minLength": 1},
+    "operation": {"enum": ["create", "advance", "terminalize"]},
+    "old_manifest_exact_sha256": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/digest"}
+      ]
+    },
+    "old_event_checkpoint": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/checkpoint"}
+      ]
+    },
+    "event_exact_sha256": {"$ref": "#/$defs/digest"},
+    "event_byte_length": {"$ref": "#/$defs/safe_positive_integer"},
+    "event_bytes_base64": {"$ref": "#/$defs/canonical_base64"},
+    "target_manifest_exact_sha256": {"$ref": "#/$defs/digest"},
+    "target_manifest_byte_length": {"$ref": "#/$defs/safe_positive_integer"},
+    "target_manifest_bytes_base64": {"$ref": "#/$defs/canonical_base64"},
+    "artifact_bindings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/binding"}
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "safe_nonnegative_integer": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "safe_positive_integer": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "canonical_base64": {
+      "type": "string",
+      "minLength": 4,
+      "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$",
+      "contentEncoding": "base64"
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "event_sha256"],
+      "properties": {
+        "sequence": {"$ref": "#/$defs/safe_nonnegative_integer"},
+        "event_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_ref",
+        "contract_family",
+        "revision",
+        "exact_sha256",
+        "semantic_domain",
+        "semantic_sha256"
+      ],
+      "properties": {
+        "artifact_ref": {"type": "string", "minLength": 1},
+        "contract_family": {"type": "string", "minLength": 1},
+        "schema_id": {"type": "string", "format": "uri", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "exact_sha256": {"$ref": "#/$defs/digest"},
+        "semantic_domain": {"type": "string", "minLength": 1},
+        "semantic_sha256": {"$ref": "#/$defs/digest"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "operation": {"const": "create"}
+        }
+      },
+      "then": {
+        "properties": {
+          "old_manifest_exact_sha256": {"type": "null"},
+          "old_event_checkpoint": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "old_manifest_exact_sha256": {"$ref": "#/$defs/digest"},
+          "old_event_checkpoint": {"$ref": "#/$defs/checkpoint"}
+        }
+      }
+    }
+  ]
+}

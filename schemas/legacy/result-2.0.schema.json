@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/result/2.0/schema.json",
+  "title": "QUINTE Result 2.0 (legacy)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["result_version", "run_id", "status", "brief_sha256", "question", "action_scope", "affected_paths", "action_binding_sha256", "summary", "recommendation", "dissent", "residuals", "trial_manifest"],
+  "properties": {
+    "result_version": { "const": "2.0" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["completed", "degraded"] },
+    "brief_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "question": { "type": "string", "minLength": 1, "maxLength": 20000 },
+    "action_scope": { "type": ["string", "null"], "maxLength": 2000 },
+    "affected_paths": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 4000 } },
+    "action_binding_sha256": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" },
+    "summary": { "type": "string", "minLength": 1 },
+    "recommendation": { "type": "string", "minLength": 1 },
+    "dissent": { "type": "array", "items": { "type": "string" } },
+    "residuals": { "type": "array", "items": { "$ref": "https://github.com/eric-stone-plus/QUINTE/contracts/lane-output/1.0/schema.json#/$defs/residual" } },
+    "trial_manifest": { "$ref": "#/$defs/trial_manifest" }
+  },
+  "$defs": {
+    "trial_manifest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["manifest_version", "base_model_relation", "perspective_count", "perspectives", "perturbation_axes", "independence_controls", "contamination_risks", "wall_time_seconds"],
+      "properties": {
+        "manifest_version": { "const": "1.0" }, "base_model_relation": { "const": "same_model" }, "perspective_count": { "const": 5 },
+        "perspectives": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "type": "object", "additionalProperties": false, "required": ["party_id", "route_id", "r1_artifact", "r2_artifact", "independent_first_pass"], "properties": { "party_id": { "enum": ["Party A", "Party B", "Party C", "Party D", "Party E"] }, "route_id": { "type": "string", "minLength": 1 }, "r1_artifact": { "type": "string", "minLength": 1 }, "r2_artifact": { "type": "string", "minLength": 1 }, "independent_first_pass": { "const": true } } } },
+        "perturbation_axes": { "type": "array", "items": { "type": "string" } }, "independence_controls": { "type": "array", "items": { "type": "string" } }, "contamination_risks": { "type": "array", "items": { "type": "string" } }, "wall_time_seconds": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""quinte-progress: compact one-line progress summary for a QUINTE run.
+
+Usage:
+  quinte-progress <run-id>              one-shot status line
+  quinte-progress <run-id> --json       one-shot machine-readable summary
+  quinte-progress <run-id> --watch [s]  reprint every s seconds (default 15)
+                                        until the run reaches a terminal state
+
+Designed so agent hosts never need a long silent blocking call: poll the
+one-shot form every 30-60 s and narrate the line to the user.
+
+Activity age prefers worker-heartbeat / events.jsonl mtime over manifest
+updated_at, so long R1/R2 lanes do not look frozen while still working.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+TERMINAL = {"completed", "degraded", "failed", "failed_policy", "cancelled",
+            "waiting_primary_arbiter"}
+ROUTE_ORDER = ["deepseek-a", "deepseek-b", "deepseek-c", "deepseek-d", "deepseek-e"]
+SCHOOL_ORDER = ["factor_risk_model", "event_driven", "fundamental_supply_chain",
+                "trend_technical_regime", "market_microstructure"]
+GLYPH = {"ok": "\u2713", "run": "\u25b8", "wait": "\u21bb", "fail": "\u2717", "none": "\u00b7"}
+PHASES = ("R1", "R2")
+
+
+def run_cli(args):
+    p = subprocess.run(["quinte"] + args + ["--json"], capture_output=True, text=True)
+    try:
+        env = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        return None, "quinte %s: no JSON on stdout (exit %d): %s" % (
+            " ".join(args), p.returncode, p.stderr.strip()[:200])
+    if not env.get("ok"):
+        return None, "quinte %s: %s" % (" ".join(args), json.dumps(env.get("error"))[:300])
+    return env.get("data"), None
+
+
+def parse_ts(s):
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def fmt_dur(seconds):
+    seconds = max(0, int(seconds))
+    return "%d:%02d" % divmod(seconds, 60) if seconds < 3600 else "%dh%02dm" % divmod(seconds, 3600)
+
+
+def runs_home():
+    return Path(os.environ.get("QUINTE_HOME") or (Path.home() / ".quinte"))
+
+
+def load_events_from_disk(run_id):
+    """Prefer events.jsonl on disk (cheap, always fresh) over inspect envelope."""
+    path = runs_home() / "runs" / run_id / "events.jsonl"
+    if not path.is_file():
+        return [], None
+    events = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        return events, path.stat().st_mtime
+    except OSError:
+        return [], None
+
+
+def activity_epoch(run_id, manifest_updated_at):
+    """Newest signal among heartbeat, events file, and manifest updated_at."""
+    base = runs_home() / "runs" / run_id
+    candidates = []
+    if manifest_updated_at:
+        try:
+            candidates.append(parse_ts(manifest_updated_at).timestamp())
+        except Exception:
+            pass
+    for rel in ("diagnostics/worker-heartbeat", "events.jsonl", "active-pids.json"):
+        p = base / rel
+        try:
+            if p.is_file() and p.stat().st_size >= 0:
+                candidates.append(p.stat().st_mtime)
+                if rel == "diagnostics/worker-heartbeat":
+                    # Heartbeat content is an ISO timestamp; prefer that if parseable.
+                    raw = p.read_text(encoding="utf-8", errors="replace").strip()
+                    if raw:
+                        try:
+                            candidates.append(parse_ts(raw).timestamp())
+                        except Exception:
+                            pass
+        except OSError:
+            continue
+    return max(candidates) if candidates else time.time()
+
+
+def count_active_sibling_runs(current_id):
+    """How many other non-terminal runs exist (host stacking → 429 / thrash)."""
+    root = runs_home() / "runs"
+    if not root.is_dir():
+        return 0
+    n = 0
+    for d in root.iterdir():
+        if not d.is_dir() or d.name == current_id:
+            continue
+        man = d / "manifest.json"
+        if not man.is_file():
+            continue
+        try:
+            st = json.loads(man.read_text(encoding="utf-8")).get("status")
+        except Exception:
+            continue
+        if st and st not in TERMINAL:
+            n += 1
+    return n
+
+
+def summarize(run_id):
+    st, err = run_cli(["status", run_id])
+    if err:
+        return None, err
+
+    events, _ = load_events_from_disk(run_id)
+    if not events:
+        insp, err = run_cli(["inspect", run_id])
+        if err:
+            return None, err
+        events = insp.get("events", []) if isinstance(insp, dict) else []
+
+    party_route = {}
+    party_school = {}
+    lanes = {}  # route -> phase -> [state, attempt]
+
+    def slot(route, phase):
+        return lanes.setdefault(route, {}).setdefault(phase, ["none", 0])
+
+    for e in events:
+        t = e.get("event_type")
+        ph = e.get("phase")
+        pid = e.get("party_id")
+        d = e.get("data") or {}
+        if pid and d.get("school_id") in SCHOOL_ORDER:
+            party_school[pid] = d["school_id"]
+        if t == "lane.started":
+            route = d.get("school_id") or party_school.get(pid) or d.get("route_id") or pid or "?"
+            # Prefer route_id when present in later events; normalize tui names.
+            if route.endswith("-tui"):
+                route = route[: -len("-tui")]
+            if pid:
+                party_route[pid] = route
+            slot(route, ph)[:] = ["run", e.get("attempt") or 1]
+        elif t == "lane.retry_scheduled":
+            route = d.get("school_id") or party_school.get(pid) or d.get("route_id") or party_route.get(pid) or pid or "?"
+            cur = slot(route, ph)
+            cur[:] = ["wait", cur[1] + 1]
+        elif t == "lane.retry_started":
+            route = d.get("school_id") or party_school.get(pid) or d.get("route_id") or party_route.get(pid) or pid or "?"
+            slot(route, ph)[:] = ["run", e.get("attempt") or 2]
+        elif t == "lane.finished":
+            route = d.get("school_id") or party_school.get(pid) or d.get("route_id") or party_route.get(pid) or pid or "?"
+            cur = slot(route, ph)
+            cur[:] = ["ok" if d.get("accepted") else "fail", max(cur[1], e.get("attempt") or 1)]
+        elif t == "lane.accepted":
+            route = d.get("school_id") or party_school.get(pid) or d.get("route_id") or party_route.get(pid) or pid or "?"
+            cur = slot(route, ph)
+            cur[:] = ["ok", max(cur[1], e.get("attempt") or 1)]
+
+    now = datetime.now(timezone.utc)
+    created = parse_ts(st["created_at"]) if st.get("created_at") else now
+    activity_ts = activity_epoch(run_id, st.get("updated_at"))
+    status = st.get("status", "unknown")
+    siblings = count_active_sibling_runs(run_id) if status not in TERMINAL else 0
+    return {
+        "run_id": run_id,
+        "status": status,
+        "phase": st.get("current_phase"),
+        "elapsed_s": int((now - created).total_seconds()),
+        "updated_ago_s": max(0, int(time.time() - activity_ts)),
+        "error": st.get("error"),
+        "lanes": lanes,
+        "terminal": status in TERMINAL,
+        "active_siblings": siblings,
+    }, None
+
+
+def render(s):
+    order = SCHOOL_ORDER + ROUTE_ORDER
+    routes = [r for r in order if r in s["lanes"]] + \
+             sorted(r for r in s["lanes"] if r not in order)
+    parts = []
+    for r in routes:
+        marks = ""
+        for ph in PHASES:
+            state, attempt = s["lanes"][r].get(ph, ["none", 0])
+            marks += GLYPH.get(state, "?")
+            if attempt > 1 and state in ("run", "wait"):
+                marks += str(attempt)
+        parts.append("%s:%s" % (r, marks))
+    lanes_txt = " ".join(parts) if parts else "(no lanes yet)"
+    line = "[%s] %s %-24s %s  act %ss ago" % (
+        fmt_dur(s["elapsed_s"]), s["phase"] or "-", s["status"], lanes_txt, s["updated_ago_s"])
+    if s.get("active_siblings"):
+        line += "  WARN +%d other active run(s)" % s["active_siblings"]
+    if s["status"] == "waiting_primary_arbiter":
+        line += "\n-> R3 handoff needed: quinte primary-arbiter request %s --json" % s["run_id"]
+    elif s["status"] in ("completed", "degraded"):
+        tag = "done" if s["status"] == "completed" else "done (degraded)"
+        line += "\n-> %s: quinte inspect %s --json" % (tag, s["run_id"])
+    elif s["status"] in ("failed", "failed_policy", "cancelled"):
+        err = s["error"]
+        if isinstance(err, dict):
+            err = err.get("message") or json.dumps(err, ensure_ascii=False)
+        line += "\n-> %s: %s" % (s["status"], (err or "")[:300])
+    return line
+
+
+def main(argv):
+    args = [a for a in argv if not a.startswith("--")]
+    if not args:
+        print(__doc__.strip())
+        return 2
+    run_id = args[0]
+    as_json = "--json" in argv
+    watch = "--watch" in argv
+    interval = 15
+    if watch:
+        i = argv.index("--watch")
+        if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            try:
+                interval = max(5, int(argv[i + 1]))
+            except ValueError:
+                pass
+
+    while True:
+        s, err = summarize(run_id)
+        if err:
+            print("quinte-progress: %s" % err, file=sys.stderr)
+            return 2
+        print(json.dumps(s, ensure_ascii=False) if as_json else render(s), flush=True)
+        if not watch or s["terminal"]:
+            return 0
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

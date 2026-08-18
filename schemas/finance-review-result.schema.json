@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/finance-review-result/1.0/schema.json",
+  "title": "QUINTE Finance Review Result",
+  "type": "object", "additionalProperties": false,
+  "required": ["finance_review_result_version", "run_id", "run_genesis_digest", "primary", "profile", "claim_manifest", "evidence_index", "school_outputs", "arbiter_outputs", "folded_decisions", "open_material_residual_codes", "active_invalidation_codes", "publication", "route_bindings", "contamination_risks"],
+  "properties": {
+    "finance_review_result_version": {"const": "1.0"}, "run_id": {"type": "string", "minLength": 1}, "run_genesis_digest": {"$ref": "#/$defs/digest"},
+    "primary": {"type": "object"}, "profile": {"$ref": "#/$defs/binding"}, "claim_manifest": {"$ref": "#/$defs/binding"}, "evidence_index": {"$ref": "#/$defs/binding"},
+    "school_outputs": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"$ref": "#/$defs/binding"}},
+    "arbiter_outputs": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/binding"}},
+    "folded_decisions": {"type": "array", "minItems": 5, "items": {"type": "object", "additionalProperties": false, "required": ["claim_id", "school_id", "applicability", "disposition", "blocking"], "properties": {"claim_id": {"type": "string", "minLength": 1}, "school_id": {"enum": ["factor_risk_model", "event_driven", "fundamental_supply_chain", "trend_technical_regime", "market_microstructure"]}, "applicability": {"enum": ["mandatory", "conditional", "out_of_scope"]}, "disposition": {"enum": ["clear", "contradicted", "insufficient_evidence", "quarantined", "expired", "not_applicable"]}, "blocking": {"type": "boolean"}}}},
+    "open_material_residual_codes": {"$ref": "#/$defs/strings"}, "active_invalidation_codes": {"$ref": "#/$defs/strings"},
+    "publication": {"type": "object", "additionalProperties": false, "required": ["function_revision", "posture", "reason_codes"], "properties": {"function_revision": {"const": "1.0"}, "posture": {"enum": ["PUBLISH_BOUNDED", "ABSTAIN"]}, "reason_codes": {"$ref": "#/$defs/strings"}}},
+    "route_bindings": {"type": "array", "minItems": 7, "maxItems": 7, "items": {"type": "string", "minLength": 1}},
+    "contamination_risks": {"type": "array", "contains": {"const": "same_family_error_correlation"}}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "strings": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "binding": {"type": "object", "additionalProperties": false, "required": ["artifact_ref", "contract_family", "revision", "exact_sha256", "semantic_domain", "semantic_sha256"], "properties": {"artifact_ref": {"type": "string", "minLength": 1}, "contract_family": {"type": "string", "minLength": 1}, "schema_id": {"type": "string", "format": "uri", "minLength": 1}, "revision": {"type": "string", "minLength": 1}, "exact_sha256": {"$ref": "#/$defs/digest"}, "semantic_domain": {"type": "string", "minLength": 1}, "semantic_sha256": {"$ref": "#/$defs/digest"}}}
+  }
+}

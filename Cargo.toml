@@ -1,0 +1,85 @@
+[package]
+name = "quinte"
+version = "0.2.4"
+edition = "2024"
+description = "Protocol-enforcing CLI for QUINTE adversarial review"
+license = "Apache-2.0"
+repository = "https://github.com/eric-stone-plus/QUINTE"
+
+[features]
+default = []
+# Test binaries opt in explicitly; distributed release builds never include fake routes.
+test-adapters = []
+
+[[bin]]
+name = "quinte"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.6", features = ["derive", "env"] }
+ctrlc = "3.5"
+fs2 = "0.4"
+globset = "0.4"
+hex = "0.4"
+infer = "0.19"
+jsonschema = "0.47"
+rand = "0.10"
+regex = "1.12"
+# Blocking client (no async runtime in this codebase) for the native DeepSeek
+# adapter. `rustls-no-provider` avoids reqwest's http3/quinn extras; both
+# crates are already vendored in Cargo.lock via jsonschema, so this adds no
+# new packages to the tree and no OpenSSL system dependency. rustls supplies
+# the process crypto provider the no-provider reqwest build requires.
+reqwest = { version = "0.13", default-features = false, features = [
+    "blocking",
+    "rustls-no-provider",
+] }
+rustls = "0.23"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tempfile = "3.27"
+thiserror = "2.0"
+uuid = { version = "1.22", features = ["v7", "serde"] }
+walkdir = "2.5"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+assert_cmd = "2.2"
+predicates = "3.1"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[[test]]
+name = "adapters_direct_json"
+required-features = ["test-adapters"]
+
+[[test]]
+name = "cli_async"
+required-features = ["test-adapters"]
+
+[[test]]
+name = "run_e2e"
+required-features = ["test-adapters"]
+
+[[test]]
+name = "a2a_host"
+required-features = ["test-adapters"]

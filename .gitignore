@@ -1,0 +1,7 @@
+/target/
+/.quinte/
+*.tmp
+.codewhale/
+website/
+__pycache__/
+*.py[cod]

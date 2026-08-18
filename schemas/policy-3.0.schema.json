@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/policy/3.0/schema.json",
+  "title": "QUINTE Finance Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["policy_version", "protocol_version", "profile", "school_bindings", "counterpart_arbiter", "primary_arbiter", "isolation_backend", "same_family_required"],
+  "properties": {
+    "policy_version": {"const": "3.0"},
+    "protocol_version": {"const": "2.0"},
+    "profile": {"$ref": "#/$defs/binding"},
+    "school_bindings": {
+      "type": "array", "minItems": 5, "maxItems": 5,
+      "prefixItems": [
+        {"$ref": "#/$defs/party_a"}, {"$ref": "#/$defs/party_b"},
+        {"$ref": "#/$defs/party_c"}, {"$ref": "#/$defs/party_d"},
+        {"$ref": "#/$defs/party_e"}
+      ],
+      "items": false
+    },
+    "counterpart_arbiter": {"$ref": "#/$defs/counterpart_arbiter"},
+    "primary_arbiter": {"$ref": "#/$defs/primary_arbiter"},
+    "isolation_backend": {"const": "process_information_flow_v1"},
+    "same_family_required": {"const": true}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_ref", "contract_family", "revision", "exact_sha256", "semantic_domain", "semantic_sha256"],
+      "properties": {
+        "artifact_ref": {"type": "string", "minLength": 1},
+        "contract_family": {"type": "string", "minLength": 1},
+        "schema_id": {"type": "string", "format": "uri", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "exact_sha256": {"$ref": "#/$defs/digest"},
+        "semantic_domain": {"type": "string", "minLength": 1},
+        "semantic_sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "base_school": {
+      "type": "object", "additionalProperties": false,
+      "required": ["party_id", "school_id", "route_id", "family", "provider", "model"],
+      "properties": {
+        "party_id": {"type": "string"}, "school_id": {"type": "string"},
+        "route_id": {"type": "string", "minLength": 1}, "family": {"type": "string", "minLength": 1},
+        "provider": {"type": "string", "minLength": 1}, "model": {"type": "string", "minLength": 1}
+      }
+    },
+    "base_arbiter": {
+      "type": "object", "additionalProperties": false,
+      "required": ["arbiter_role", "route_id", "family", "provider", "model"],
+      "properties": {
+        "arbiter_role": {"type": "string"}, "route_id": {"type": "string", "minLength": 1},
+        "family": {"type": "string", "minLength": 1}, "provider": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1}
+      }
+    },
+    "counterpart_arbiter": {"allOf": [{"$ref": "#/$defs/base_arbiter"}, {"properties": {"arbiter_role": {"const": "counterpart_arbiter"}}}]},
+    "primary_arbiter": {"allOf": [{"$ref": "#/$defs/base_arbiter"}, {"properties": {"arbiter_role": {"const": "primary_arbiter"}}}]},
+    "party_a": {"allOf": [{"$ref": "#/$defs/base_school"}, {"properties": {"party_id": {"const": "Party A"}, "school_id": {"const": "factor_risk_model"}}}]},
+    "party_b": {"allOf": [{"$ref": "#/$defs/base_school"}, {"properties": {"party_id": {"const": "Party B"}, "school_id": {"const": "event_driven"}}}]},
+    "party_c": {"allOf": [{"$ref": "#/$defs/base_school"}, {"properties": {"party_id": {"const": "Party C"}, "school_id": {"const": "fundamental_supply_chain"}}}]},
+    "party_d": {"allOf": [{"$ref": "#/$defs/base_school"}, {"properties": {"party_id": {"const": "Party D"}, "school_id": {"const": "trend_technical_regime"}}}]},
+    "party_e": {"allOf": [{"$ref": "#/$defs/base_school"}, {"properties": {"party_id": {"const": "Party E"}, "school_id": {"const": "market_microstructure"}}}]}
+  }
+}

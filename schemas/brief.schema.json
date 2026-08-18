@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/brief/1.1/schema.json",
+  "title": "QUINTE Brief",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["brief_version", "question"],
+  "properties": {
+    "brief_version": { "const": "1.1" },
+    "question": { "type": "string", "minLength": 1, "maxLength": 20000 },
+    "context": { "type": ["string", "null"], "maxLength": 100000 },
+    "evidence_roots": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "snapshot_ignore": {
+      "type": "array",
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000,
+        "pattern": "^[^/\\\\](?:[^\\\\]*[^/\\\\])?$"
+      }
+    },
+    "attachments": {
+      "type": "array",
+      "maxItems": 10,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "action_scope": { "type": ["string", "null"], "maxLength": 2000 },
+    "affected_paths": {
+      "type": "array",
+      "maxItems": 1000,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 4000 }
+    },
+    "action_binding_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

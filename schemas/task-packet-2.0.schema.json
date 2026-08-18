@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eric-stone-plus/QUINTE/contracts/task-packet/2.0/schema.json",
+  "title": "QUINTE Finance R1 Task Packet",
+  "type": "object", "additionalProperties": false,
+  "required": ["task_packet_version", "run_id", "phase", "invocation", "policy", "profile", "claim_manifest", "primary", "evidence_index", "recipient_route_digest", "authority"],
+  "properties": {
+    "task_packet_version": {"const": "2.0"}, "run_id": {"type": "string", "minLength": 1},
+    "phase": {"const": "R1"}, "invocation": {"$ref": "#/$defs/binding"},
+    "policy": {"$ref": "#/$defs/binding"}, "profile": {"$ref": "#/$defs/binding"},
+    "claim_manifest": {"$ref": "#/$defs/binding"}, "primary": {"$ref": "#/$defs/binding"},
+    "evidence_index": {"$ref": "#/$defs/binding"}, "recipient_route_digest": {"$ref": "#/$defs/digest"},
+    "authority": {"$ref": "#/$defs/authority"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "binding": {"type": "object", "additionalProperties": false, "required": ["artifact_ref", "contract_family", "revision", "exact_sha256", "semantic_domain", "semantic_sha256"], "properties": {"artifact_ref": {"type": "string", "minLength": 1}, "contract_family": {"type": "string", "minLength": 1}, "schema_id": {"type": "string", "format": "uri", "minLength": 1}, "revision": {"type": "string", "minLength": 1}, "exact_sha256": {"$ref": "#/$defs/digest"}, "semantic_domain": {"type": "string", "minLength": 1}, "semantic_sha256": {"$ref": "#/$defs/digest"}}},
+    "authority": {"type": "object", "additionalProperties": false, "required": ["party_id", "school_id", "accepted_evidence_classes", "forbidden_claim_classes", "question_codes"], "properties": {"party_id": {"enum": ["Party A", "Party B", "Party C", "Party D", "Party E"]}, "school_id": {"enum": ["factor_risk_model", "event_driven", "fundamental_supply_chain", "trend_technical_regime", "market_microstructure"]}, "accepted_evidence_classes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}, "forbidden_claim_classes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}, "question_codes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}}
+  }
+}
