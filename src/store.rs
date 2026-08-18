@@ -665,6 +665,9 @@ fn transition_allowed(from: RunStatus, to: RunStatus) -> bool {
             | (RunStatus::R1Running, RunStatus::R1Gate)
             | (RunStatus::R1Gate, RunStatus::R2Packet)
             | (RunStatus::R1Gate, RunStatus::R2Running)
+            // D3 k=0 skip: unanimous R1 never builds an R2 packet, so the
+            // runner records R2Gate directly after writing r2/skipped.json.
+            | (RunStatus::R1Gate, RunStatus::R2Gate)
             | (RunStatus::R2Packet, RunStatus::R2Running)
             | (RunStatus::R2Packet, RunStatus::R2Gate)
             | (RunStatus::R2Running, RunStatus::R2Gate)
@@ -722,6 +725,23 @@ mod tests {
     }
 
     const RUN_ID: &str = "019bf52a-73b0-7000-8000-000000000001";
+
+    #[test]
+    fn unanimous_r1_may_skip_straight_to_r2_gate() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = Store::new(temporary.path().join("home"));
+        store.create_run_dirs(RUN_ID).unwrap();
+        let mut manifest = manifest(RUN_ID);
+        manifest.status = RunStatus::R1Gate;
+        store.save_manifest(&manifest).unwrap();
+        assert_eq!(
+            store
+                .transition(&mut manifest, RunStatus::R2Gate, Some("R2"), json!({"accepted": 0}))
+                .unwrap(),
+            RunStatus::R2Gate
+        );
+        assert_eq!(store.load_manifest(RUN_ID).unwrap().status, RunStatus::R2Gate);
+    }
 
     #[test]
     fn rejects_state_regression() {

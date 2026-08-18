@@ -145,7 +145,7 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
                 provider: "deepseek".into(),
                 text_model: TEXT_MODEL.into(),
                 multimodal_model: MULTIMODAL_MODEL.into(),
-                perspective: String::new(),
+                perspective: common::SCHOOL_PERSPECTIVES[index].into(),
             })
             .collect(),
         counterpart_arbiter: quinte::model::RoutePolicy {
@@ -158,7 +158,7 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
             provider: "deepseek".into(),
             text_model: TEXT_MODEL.into(),
             multimodal_model: MULTIMODAL_MODEL.into(),
-            perspective: String::new(),
+            perspective: common::COUNTERPART_PERSPECTIVE.into(),
         },
         primary_arbiter: quinte::model::RoutePolicy {
             party_id: "Primary Arbiter".into(),
@@ -170,7 +170,7 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
             provider: "deepseek".into(),
             text_model: TEXT_MODEL.into(),
             multimodal_model: MULTIMODAL_MODEL.into(),
-            perspective: String::new(),
+            perspective: common::PRIMARY_PERSPECTIVE.into(),
         },
         auto_primary_arbiter: false,
         text_model: TEXT_MODEL.into(),

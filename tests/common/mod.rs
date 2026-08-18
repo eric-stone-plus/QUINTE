@@ -101,6 +101,37 @@ pub mod tempfile {
     }
 }
 
+/// Five-school roster text. Must be non-empty and pairwise distinct —
+/// the same rule production preflight fail-closes on.
+#[allow(dead_code)]
+pub const SCHOOL_PERSPECTIVES: [&str; 5] = [
+    "Formal specification, invariants, and boundary-condition audit.",
+    "Failure-mode, counterexample, and adversarial assumption search.",
+    "Evidence provenance, uncertainty, and claim-support audit.",
+    "Operational implementation, observability, recovery, and rollback audit.",
+    "Independent synthesis emphasizing omissions and decision boundaries.",
+];
+
+#[allow(dead_code)]
+pub fn school_perspective(letter: &str) -> &'static str {
+    match letter {
+        "A" => SCHOOL_PERSPECTIVES[0],
+        "B" => SCHOOL_PERSPECTIVES[1],
+        "C" => SCHOOL_PERSPECTIVES[2],
+        "D" => SCHOOL_PERSPECTIVES[3],
+        "E" => SCHOOL_PERSPECTIVES[4],
+        _ => SCHOOL_PERSPECTIVES[4],
+    }
+}
+
+#[allow(dead_code)]
+pub const COUNTERPART_PERSPECTIVE: &str =
+    "Steel-man the strongest lane case, then identify unresolved contradictions.";
+
+#[allow(dead_code)]
+pub const PRIMARY_PERSPECTIVE: &str =
+    "Issue the final same-family verdict while preserving evidence and dissent.";
+
 #[allow(dead_code)]
 pub fn valid_lane_output() -> Value {
     json!({

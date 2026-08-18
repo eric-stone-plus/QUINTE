@@ -115,7 +115,7 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
                 provider: "deepseek".into(),
                 text_model: TEXT_MODEL.into(),
                 multimodal_model: MULTIMODAL_MODEL.into(),
-                perspective: String::new(),
+                perspective: common::SCHOOL_PERSPECTIVES[index].into(),
             })
             .collect(),
         counterpart_arbiter: quinte::model::RoutePolicy {
@@ -128,7 +128,7 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
             provider: "deepseek".into(),
             text_model: TEXT_MODEL.into(),
             multimodal_model: MULTIMODAL_MODEL.into(),
-            perspective: String::new(),
+            perspective: common::COUNTERPART_PERSPECTIVE.into(),
         },
         primary_arbiter: quinte::model::RoutePolicy {
             party_id: "Primary Arbiter".into(),
@@ -140,7 +140,7 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
             provider: "deepseek".into(),
             text_model: TEXT_MODEL.into(),
             multimodal_model: MULTIMODAL_MODEL.into(),
-            perspective: String::new(),
+            perspective: common::PRIMARY_PERSPECTIVE.into(),
         },
         auto_primary_arbiter: false,
         text_model: TEXT_MODEL.into(),
@@ -433,16 +433,26 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
         .unwrap();
     assert_eq!(integrity.contract_version, "2.1");
     assert!(integrity.actionable);
-    for phase in ["R1", "R2"] {
-        for index in 0..5 {
-            assert!(
-                store
-                    .run_dir(&created.run_id)
-                    .unwrap()
-                    .join(format!("lanes/{phase}/fake-{index}/accepted.json"))
-                    .is_file()
-            );
-        }
+    let run_dir = store.run_dir(&created.run_id).unwrap();
+    for index in 0..5 {
+        assert!(
+            run_dir
+                .join(format!("lanes/R1/fake-{index}/accepted.json"))
+                .is_file()
+        );
+    }
+    // Identical fake-agent R1 outputs are unanimous: D3 skips R2.
+    assert!(
+        run_dir.join("r2/skipped.json").is_file(),
+        "unanimous R1 must persist the durable R2 skip"
+    );
+    for index in 0..5 {
+        assert!(
+            !run_dir
+                .join(format!("lanes/R2/fake-{index}/accepted.json"))
+                .is_file(),
+            "skipped R2 must not invent lane artifacts"
+        );
     }
 }
 
@@ -961,6 +971,7 @@ fn r3_receipt_blocks_tampering_of_every_accepted_input() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::compile_fake_agent(temporary.path());
+    fs::write(temporary.path().join("fake-agent-contest"), b"1\n").unwrap();
     let targets = [
         "lanes/R1/fake-0/accepted.json",
         "lanes/R2/fake-1/accepted.json",
@@ -1355,6 +1366,7 @@ fn r2_rate_limit_retries_same_route_with_persisted_scheduler_events() {
     let _fake_env = FakeAdapterEnv::enable();
     let temporary = tempfile::tempdir().unwrap();
     let executable = common::compile_fake_agent(temporary.path());
+    fs::write(temporary.path().join("fake-agent-contest"), b"1\n").unwrap();
     fs::write(
         temporary.path().join("fake-agent-rate-limit-party"),
         "Party A\n",
@@ -1423,6 +1435,7 @@ fn r2_parallel_fans_out_lanes_without_serial_pacing() {
     // all five parties have registered. Serial scheduling cannot release the
     // barrier before its 30s deadlock timeout, so a fast advance proves the
     // parallel fan-out actually happened.
+    fs::write(temporary.path().join("fake-agent-contest"), b"1\n").unwrap();
     fs::write(temporary.path().join("fake-agent-r2-barrier"), "5\n").unwrap();
     let home = temporary.path().join("home");
     let store = Store::new(home.clone());

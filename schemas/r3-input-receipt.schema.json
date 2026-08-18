@@ -10,7 +10,7 @@
     "run_id": { "type": "string", "minLength": 1 },
     "issued_at": { "type": "string", "format": "date-time" },
     "r1": { "$ref": "#/$defs/phase" },
-    "r2": { "$ref": "#/$defs/phase" },
+    "r2": { "$ref": "#/$defs/r2_phase" },
     "evidence_packet": { "$ref": "#/$defs/artifact" },
     "cc_response": { "$ref": "#/$defs/artifact" }
   },
@@ -25,21 +25,28 @@
         "sha256": { "$ref": "#/$defs/digest" }
       }
     },
+    "phase_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["party_id", "route_id", "artifact_ref", "sha256"],
+      "properties": {
+        "party_id": { "enum": ["Party A", "Party B", "Party C", "Party D", "Party E"] },
+        "route_id": { "type": "string", "minLength": 1 },
+        "artifact_ref": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "r2_phase": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/phase_item" }
+    },
     "phase": {
       "type": "array",
       "minItems": 5,
       "maxItems": 5,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["party_id", "route_id", "artifact_ref", "sha256"],
-        "properties": {
-          "party_id": { "enum": ["Party A", "Party B", "Party C", "Party D", "Party E"] },
-          "route_id": { "type": "string", "minLength": 1 },
-          "artifact_ref": { "type": "string", "minLength": 1 },
-          "sha256": { "$ref": "#/$defs/digest" }
-        }
-      }
+      "items": { "$ref": "#/$defs/phase_item" }
     }
   }
 }

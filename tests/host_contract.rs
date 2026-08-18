@@ -90,7 +90,7 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
         text_model: TEXT_MODEL.into(),
         multimodal_model: MULTIMODAL_MODEL.into(),
     };
-    let route = |party_id: &str, route_id: &str| quinte::model::RoutePolicy {
+    let route = |party_id: &str, route_id: &str, perspective: &str| quinte::model::RoutePolicy {
         party_id: party_id.into(),
         route_id: route_id.into(),
         adapter: "fake".into(),
@@ -100,7 +100,7 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
         provider: seat.provider.clone(),
         text_model: seat.text_model.clone(),
         multimodal_model: seat.multimodal_model.clone(),
-        perspective: String::new(),
+        perspective: perspective.into(),
     };
     Policy {
         legacy_v1_source: false,
@@ -112,11 +112,20 @@ fn fake_policy(executable: &std::path::Path) -> Policy {
                 route(
                     &format!("Party {party}"),
                     &format!("fake-{}", party.to_ascii_lowercase()),
+                    common::school_perspective(party),
                 )
             })
             .collect(),
-        counterpart_arbiter: route("Counterpart Arbiter", "fake-counterpart"),
-        primary_arbiter: route("Primary Arbiter", "fake-primary"),
+        counterpart_arbiter: route(
+            "Counterpart Arbiter",
+            "fake-counterpart",
+            common::COUNTERPART_PERSPECTIVE,
+        ),
+        primary_arbiter: route(
+            "Primary Arbiter",
+            "fake-primary",
+            common::PRIMARY_PERSPECTIVE,
+        ),
         auto_primary_arbiter: true,
         text_model: TEXT_MODEL.into(),
         multimodal_model: MULTIMODAL_MODEL.into(),

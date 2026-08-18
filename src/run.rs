@@ -2496,6 +2496,9 @@ fn next_attempt(
 }
 
 fn load_phase(run_dir: &Path, phase: &str, policy: &Policy) -> anyhow::Result<Vec<LaneAccepted>> {
+    if phase == "R2" && run_dir.join("r2/skipped.json").exists() {
+        return Ok(Vec::new());
+    }
     policy
         .roster
         .iter()
@@ -4023,6 +4026,12 @@ fn verify_phase_bindings(
     policy: &Policy,
     run_dir: &Path,
 ) -> anyhow::Result<()> {
+    if phase == "R2" && run_dir.join("r2/skipped.json").exists() {
+        if !bindings.is_empty() {
+            bail!("R2 was skipped but the input receipt still lists R2 lanes");
+        }
+        return Ok(());
+    }
     if bindings.len() != policy.roster.len() {
         bail!("{phase} input receipt has the wrong lane count");
     }
@@ -4283,9 +4292,8 @@ counterpart arbiter: {}",
             r2_artifact: r2
                 .iter()
                 .find(|lane| lane.route_id == route.route_id)
-                .unwrap()
-                .artifact_ref
-                .clone(),
+                .map(|lane| lane.artifact_ref.clone())
+                .unwrap_or_else(|| "r2/skipped.json".into()),
             independent_first_pass: true,
         })
         .collect();

@@ -68,6 +68,14 @@ fn main() {
     }
 
     let fixture_dir = std::env::current_exe().unwrap().parent().unwrap().to_owned();
+    let mut valid_output = valid_output.to_string();
+    if args[0] == "R1" && fixture_dir.join("fake-agent-contest").exists() {
+        // Distinct R1 verdicts force the D3 contestation predicate so R2 runs.
+        valid_output = valid_output.replace(
+            "The bounded review completed.",
+            &format!("The bounded review completed for {}.", args[1]),
+        );
+    }
     if args[0] == "R1" && args[1] == "Party A" {
         if fixture_dir.join("fake-agent-controlled").exists() {
             fs::write(fixture_dir.join("fake-agent-started"), b"started\n").unwrap();
@@ -202,7 +210,7 @@ fn main() {
     if fs::read_to_string(codewhale_party).is_ok_and(|party| party.trim() == args[1]) {
         println!(
             r#"{{"type":"content","content":{}}}"#,
-            json_string(valid_output)
+            json_string(&valid_output)
         );
         println!(r#"{{"type":"metadata","meta":{{"status":"completed"}}}}"#);
         println!(r#"{{"type":"done"}}"#);
