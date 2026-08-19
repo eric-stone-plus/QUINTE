@@ -44,9 +44,11 @@ domain pack declares its own five; both satisfy the constraint.
 
 ### B. Adversarial round discipline (unchanged, now the main protocol)
 
-- R2 runs only on genuinely contested outputs, anonymized — a same-family
-  model re-reading an anonymous output with a recheck doctrine is the
-  strongest same-family check available; route identities never leak.
+- R2 runs only on genuinely contested outputs, pseudonymized — a same-family
+  model re-reading a relabeled output with a recheck doctrine is the
+  strongest same-family check available; route identities are structurally
+  absent from the packet (verbatim lane prose is a declared contamination
+  risk, never a prevented channel).
 - R3 dual arbitration with the single-use challenge stays untouched:
   consumed-once, expiry/replay/mismatch refused.
 - The divergence predicate stays pure code over R1 outputs.

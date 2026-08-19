@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 pub fn agent_card(interface_url: &str, token_configured: bool) -> Value {
     let mut card = json!({
         "name": "quinte",
-        "description": "Five-school multi-path review runtime: five first-pass lanes, anonymized recheck, two-arbiter verdicts, deterministic merge.",
+        "description": "Five-school multi-path review runtime: five first-pass lanes, pseudonymized recheck, two-arbiter verdicts, deterministic merge.",
         "version": env!("CARGO_PKG_VERSION"),
         "supportedInterfaces": [{
             "url": interface_url,
@@ -11,7 +11,7 @@ pub fn agent_card(interface_url: &str, token_configured: bool) -> Value {
             "protocolVersion": "1.0"
         }],
         "capabilities": {
-            "streaming": true,
+            "streaming": false,
             "pushNotifications": false,
             "extendedAgentCard": false
         },
@@ -46,5 +46,11 @@ mod tests {
         assert_eq!(card["skills"][0]["id"], "five-school-review");
         assert_eq!(card["version"], env!("CARGO_PKG_VERSION"));
         assert!(card.get("securitySchemes").is_none());
+        // The card must never claim a capability the front door does not
+        // implement: no SendStreamingMessage/SSE exists, so streaming stays
+        // false and hosts poll GetTask instead.
+        assert_eq!(card["capabilities"]["streaming"], false);
+        assert_eq!(card["capabilities"]["pushNotifications"], false);
+        assert_eq!(card["capabilities"]["extendedAgentCard"], false);
     }
 }

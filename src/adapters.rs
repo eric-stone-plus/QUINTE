@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use serde_json::{Value, json};
-use uuid::Uuid;
 
 use crate::model::{ArbiterVerdict, LaneOutput, Policy, RoutePolicy};
 use crate::schema::{ARBITER_VERDICT_SCHEMA, LANE_OUTPUT_SCHEMA, validate_value};
@@ -2561,15 +2560,36 @@ fn a2a_endpoint_probe(endpoint: &str) -> anyhow::Result<()> {
         .timeout(Duration::from_secs(5))
         .build()
         .context("cannot build the A2A probe client")?;
-    let card_url = format!("{}/.well-known/agent.json", endpoint.trim_end_matches('/'));
-    let mut response = client.get(&card_url).send().context("card probe request failed")?;
-    let mut bytes = Vec::new();
-    response.read_to_end(&mut bytes).context("card probe body read failed")?;
-    if !response.status().is_success() {
-        bail!("card probe returned {}", response.status().as_u16());
+    // A2A v1.0 serves the card at agent-card.json; the legacy 0.2.x path
+    // (agent.json, spoken by PI seats) stays as a fallback so both seat
+    // generations pass preflight.
+    let base = endpoint.trim_end_matches('/');
+    let mut last_error = String::new();
+    for card_path in ["/.well-known/agent-card.json", "/.well-known/agent.json"] {
+        let card_url = format!("{base}{card_path}");
+        let mut response = client
+            .get(&card_url)
+            .header(
+                crate::a2a::wire::A2A_VERSION_HEADER,
+                crate::a2a::wire::A2A_VERSION,
+            )
+            .send();
+        match &mut response {
+            Ok(response) => {
+                let mut bytes = Vec::new();
+                let read = response.read_to_end(&mut bytes);
+                if response.status().is_success() {
+                    read.context("card probe body read failed")?;
+                    let _card: Value =
+                        serde_json::from_slice(&bytes).context("agent card is not JSON")?;
+                    return Ok(());
+                }
+                last_error = format!("card probe returned {}", response.status().as_u16());
+            }
+            Err(error) => last_error = format!("card probe request failed: {error}"),
+        }
     }
-    let _card: Value = serde_json::from_slice(&bytes).context("agent card is not JSON")?;
-    Ok(())
+    bail!("card probe failed for {base}: {last_error}")
 }
 
 /// One A2A v1.0 seat round trip: SendMessage with the lane parts, poll
@@ -2578,15 +2598,33 @@ fn a2a_endpoint_probe(endpoint: &str) -> anyhow::Result<()> {
 /// unchanged. Fail closed: transport errors, terminal failed tasks, and
 /// missing artifacts all become errors on stderr with a nonzero exit.
 pub fn execute_a2a_call(call: &A2aCall, max_output_bytes: usize) -> ChatCompletionsOutcome {
+    execute_a2a_call_signaled(call, max_output_bytes, None)
+}
+
+/// Same seat round trip as [`execute_a2a_call`], with a one-shot signal
+/// fired the moment this lane acquires the process-wide seat gate. The
+/// attempt loop in `run.rs` uses it so a lane's timeout budget starts when
+/// its seat call actually begins, not while it is still queued behind the
+/// other serialized lanes.
+pub fn execute_a2a_call_signaled(
+    call: &A2aCall,
+    max_output_bytes: usize,
+    gate_acquired: Option<std::sync::mpsc::Sender<()>>,
+) -> ChatCompletionsOutcome {
     // External seats share one provider key; burst-sending five lanes at
     // once trips the provider's per-key concurrency limit (observed as
     // TLS handshake EOFs). Serialize A2A seat calls per process — lanes
-    // still run on their own threads and timeouts are unchanged.
+    // still run on their own threads, and each lane's timeout applies to
+    // its own seat round trip (after gate acquisition), so a queued lane
+    // does not burn its budget waiting for the others.
     static A2A_GATE: Mutex<()> = Mutex::new(());
     let _guard = match A2A_GATE.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
+    if let Some(signal) = gate_acquired {
+        let _ = signal.send(());
+    }
     match execute_a2a_call_inner(call, max_output_bytes) {
         Ok(outcome) => outcome,
         Err(error) => ChatCompletionsOutcome {
@@ -2599,7 +2637,10 @@ pub fn execute_a2a_call(call: &A2aCall, max_output_bytes: usize) -> ChatCompleti
     }
 }
 
-fn execute_a2a_call_inner(call: &A2aCall, max_output_bytes: usize) -> anyhow::Result<ChatCompletionsOutcome> {
+fn execute_a2a_call_inner(
+    call: &A2aCall,
+    max_output_bytes: usize,
+) -> anyhow::Result<ChatCompletionsOutcome> {
     use std::io::Read;
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let client = reqwest::blocking::Client::builder()
@@ -2623,11 +2664,17 @@ fn execute_a2a_call_inner(call: &A2aCall, max_output_bytes: usize) -> anyhow::Re
     });
     let mut response = client
         .post(endpoint)
+        .header(
+            crate::a2a::wire::A2A_VERSION_HEADER,
+            crate::a2a::wire::A2A_VERSION,
+        )
         .json(&send_body)
         .send()
         .context("SendMessage request failed")?;
     let mut bytes = Vec::new();
-    response.read_to_end(&mut bytes).context("SendMessage body read failed")?;
+    response
+        .read_to_end(&mut bytes)
+        .context("SendMessage body read failed")?;
     let reply: Value = serde_json::from_slice(&bytes).context("SendMessage reply is not JSON")?;
     if reply.get("error").is_some() {
         bail!(
@@ -2643,14 +2690,21 @@ fn execute_a2a_call_inner(call: &A2aCall, max_output_bytes: usize) -> anyhow::Re
 
     let deadline = Instant::now() + Duration::from_secs(call.timeout_seconds.max(1));
     loop {
-        let get_body = json!({"jsonrpc": "2.0", "id": 2, "method": "GetTask", "params": {"id": task_id}});
+        let get_body =
+            json!({"jsonrpc": "2.0", "id": 2, "method": "GetTask", "params": {"id": task_id}});
         let mut response = client
             .post(endpoint)
+            .header(
+                crate::a2a::wire::A2A_VERSION_HEADER,
+                crate::a2a::wire::A2A_VERSION,
+            )
             .json(&get_body)
             .send()
             .context("GetTask request failed")?;
         let mut bytes = Vec::new();
-        response.read_to_end(&mut bytes).context("GetTask body read failed")?;
+        response
+            .read_to_end(&mut bytes)
+            .context("GetTask body read failed")?;
         let reply: Value = serde_json::from_slice(&bytes).context("GetTask reply is not JSON")?;
         if reply.get("error").is_some() {
             bail!(
@@ -2662,8 +2716,8 @@ fn execute_a2a_call_inner(call: &A2aCall, max_output_bytes: usize) -> anyhow::Re
             .pointer("/result/status/state")
             .and_then(Value::as_str)
             .context("GetTask result carries no status.state")?;
-        match state {
-            "working" => {
+        match classify_seat_state(state) {
+            Some(SeatTaskState::InProgress) => {
                 if Instant::now() >= deadline {
                     return Ok(ChatCompletionsOutcome {
                         stdout: Vec::new(),
@@ -2679,7 +2733,7 @@ fn execute_a2a_call_inner(call: &A2aCall, max_output_bytes: usize) -> anyhow::Re
                 }
                 thread::sleep(Duration::from_secs(2));
             }
-            "completed" => {
+            Some(SeatTaskState::Completed) => {
                 let artifact = reply
                     .pointer("/result/artifacts/0/parts/0/data")
                     .cloned()
@@ -2694,15 +2748,38 @@ fn execute_a2a_call_inner(call: &A2aCall, max_output_bytes: usize) -> anyhow::Re
                     output_limit_exceeded,
                 });
             }
-            "failed" => {
+            Some(SeatTaskState::Failed) => {
                 let error = reply
                     .pointer("/result/error")
                     .and_then(Value::as_str)
                     .unwrap_or("seat task failed without an error detail");
                 bail!("a2a seat task {task_id} failed: {error}");
             }
-            other => bail!("a2a seat task {task_id} reported unknown state '{other}'"),
+            None => bail!("a2a seat task {task_id} reported unknown state '{state}'"),
         }
+    }
+}
+
+/// A2A task states as the seat client consumes them. v1.0 seats report the
+/// `TASK_STATE_*` spelling; legacy 0.2.x seats (PI) report lowercase names.
+/// Both are accepted; anything else fails closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SeatTaskState {
+    InProgress,
+    Completed,
+    Failed,
+}
+
+fn classify_seat_state(raw: &str) -> Option<SeatTaskState> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    let normalized = normalized
+        .strip_prefix("task_state_")
+        .unwrap_or(&normalized);
+    match normalized {
+        "working" | "submitted" => Some(SeatTaskState::InProgress),
+        "completed" => Some(SeatTaskState::Completed),
+        "failed" | "canceled" | "rejected" => Some(SeatTaskState::Failed),
+        _ => None,
     }
 }
 
@@ -2859,6 +2936,7 @@ fn execute_chat_completions_inner(
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
+    use uuid::Uuid;
 
     fn environment_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -4855,5 +4933,232 @@ mod tests {
                 bad.1
             );
         }
+    }
+
+    // --- A2A seat client wire discipline ---
+
+    #[test]
+    fn seat_state_classification_accepts_v1_0_and_legacy_spellings() {
+        use super::{SeatTaskState, classify_seat_state};
+        assert_eq!(
+            classify_seat_state("TASK_STATE_WORKING"),
+            Some(SeatTaskState::InProgress)
+        );
+        assert_eq!(
+            classify_seat_state("TASK_STATE_SUBMITTED"),
+            Some(SeatTaskState::InProgress)
+        );
+        assert_eq!(
+            classify_seat_state("TASK_STATE_COMPLETED"),
+            Some(SeatTaskState::Completed)
+        );
+        assert_eq!(
+            classify_seat_state("TASK_STATE_FAILED"),
+            Some(SeatTaskState::Failed)
+        );
+        assert_eq!(
+            classify_seat_state("TASK_STATE_CANCELED"),
+            Some(SeatTaskState::Failed)
+        );
+        assert_eq!(
+            classify_seat_state("working"),
+            Some(SeatTaskState::InProgress)
+        );
+        assert_eq!(
+            classify_seat_state("completed"),
+            Some(SeatTaskState::Completed)
+        );
+        assert_eq!(classify_seat_state("failed"), Some(SeatTaskState::Failed));
+        assert_eq!(classify_seat_state("TASK_STATE_WAT"), None);
+        assert_eq!(classify_seat_state(""), None);
+    }
+
+    /// Minimal one-thread mock seat: speaks strict A2A v1.0 — the card is
+    /// served only at agent-card.json and every POST must carry the
+    /// A2A-Version: 1.0 header. GetTask reports WORKING once, then COMPLETED
+    /// with one artifact.
+    fn spawn_strict_v1_0_seat() -> (String, thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let mut polls = 0;
+            // The seat thread must exit after the last request its test
+            // makes: the round trip stops after the second GetTask poll,
+            // a card probe stops after the one card GET. Lingering in
+            // accept() would hang the test's join() forever.
+            let mut card_served = false;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).unwrap();
+                let mut parts = request_line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts.next().unwrap_or("").to_string();
+                let mut content_length = 0usize;
+                let mut version: Option<String> = None;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    let trimmed = header.trim_end();
+                    if trimmed.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = trimmed.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        } else if name.eq_ignore_ascii_case("a2a-version") {
+                            version = Some(value.trim().to_string());
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 {
+                    reader.read_exact(&mut body).unwrap();
+                }
+                let card_get = method == "GET" && path.starts_with("/.well-known/agent-card.json");
+                let reply = if version.as_deref() != Some("1.0") {
+                    r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"missing or unsupported A2A-Version header"}}"#.to_string()
+                } else if card_get {
+                    r#"{"name":"mock-seat"}"#.to_string()
+                } else if method == "GET" && path.starts_with("/.well-known/agent.json") {
+                    // The legacy 0.2.x card path must stay 404 on a strict seat.
+                    String::new()
+                } else {
+                    let request: Value = serde_json::from_slice(&body).unwrap();
+                    match request["method"].as_str() {
+                        Some("SendMessage") => {
+                            r#"{"jsonrpc":"2.0","id":1,"result":{"id":"seat-task-1","status":{"state":"TASK_STATE_WORKING"}}}"#.to_string()
+                        }
+                        Some("GetTask") => {
+                            polls += 1;
+                            if polls == 1 {
+                                r#"{"jsonrpc":"2.0","id":2,"result":{"id":"seat-task-1","status":{"state":"TASK_STATE_WORKING"}}}"#.to_string()
+                            } else {
+                                r#"{"jsonrpc":"2.0","id":2,"result":{"id":"seat-task-1","status":{"state":"TASK_STATE_COMPLETED"},"artifacts":[{"name":"result.json","parts":[{"data":{"lane_output_version":"1.0"},"mediaType":"application/json"}]}]}}"#.to_string()
+                            }
+                        }
+                        _ => {
+                            r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"method not found"}}"#
+                                .to_string()
+                        }
+                    }
+                };
+                let status = if (method == "GET" && path.starts_with("/.well-known/agent.json"))
+                    || reply.is_empty()
+                {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                if card_get {
+                    card_served = true;
+                }
+                if polls >= 2 || card_served {
+                    break;
+                }
+            }
+        });
+        (endpoint, handle)
+    }
+
+    #[test]
+    fn seat_client_round_trips_with_a_strict_v1_0_seat() {
+        let (endpoint, seat) = spawn_strict_v1_0_seat();
+        let call = super::A2aCall {
+            endpoint,
+            token_env: None,
+            parts: vec![json!({"text": "review the packet"})],
+            context_id: "ctx-1".into(),
+            timeout_seconds: 10,
+        };
+        let outcome = super::execute_a2a_call(&call, 1024 * 1024);
+        assert_eq!(
+            outcome.exit_code,
+            Some(0),
+            "stderr: {:?}",
+            String::from_utf8_lossy(&outcome.stderr)
+        );
+        let artifact: Value = serde_json::from_slice(&outcome.stdout).unwrap();
+        assert_eq!(artifact["lane_output_version"], "1.0");
+        seat.join().unwrap();
+    }
+
+    #[test]
+    fn seat_probe_accepts_the_v1_0_card_path() {
+        let (endpoint, seat) = spawn_strict_v1_0_seat();
+        super::a2a_endpoint_probe(&endpoint)
+            .expect("the v1.0 agent-card.json path must satisfy the probe");
+        seat.join().unwrap();
+    }
+
+    #[test]
+    fn seat_probe_falls_back_to_the_legacy_card_path() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let seat = thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).unwrap();
+                let path = request_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_string();
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header.trim_end().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = header.trim_end().split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 {
+                    reader.read_exact(&mut body).unwrap();
+                }
+                // PI-style seat: only the legacy agent.json path exists.
+                let legacy = path.starts_with("/.well-known/agent.json");
+                let (status, reply) = if legacy {
+                    ("200 OK", r#"{"name":"pi-seat"}"#.to_string())
+                } else {
+                    ("404 Not Found", String::new())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+                if legacy {
+                    break;
+                }
+            }
+        });
+        super::a2a_endpoint_probe(&endpoint)
+            .expect("the legacy PI card path must remain a supported fallback");
+        seat.join().unwrap();
     }
 }

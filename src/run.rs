@@ -12,7 +12,7 @@ use anyhow::{Context, anyhow, bail};
 use base64::Engine;
 use chrono::{Duration as ChronoDuration, Utc};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use rand::Rng;
+use rand::{Rng, RngExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -1418,7 +1418,10 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
         &mut manifest,
         RunStatus::R2Gate,
         Some("R2"),
-        json!({"accepted": 5}),
+        // The event ledger is the authority: a skipped (unanimous-R1) R2
+        // records zero accepted lanes, a contested R2 records the lanes
+        // that actually ran — never a hardcoded five.
+        json!({"accepted": r2.len()}),
     )? == RunStatus::Cancelled
     {
         return Ok(RunStatus::Cancelled);
@@ -3275,16 +3278,36 @@ fn execute_a2a_attempt(
 ) -> anyhow::Result<(Vec<u8>, Vec<u8>, Option<i32>, bool, bool, bool)> {
     let run_dir = store.run_dir(&manifest.run_id)?;
     let (sender, receiver) = mpsc::channel();
+    let (gate_signal, gate_acquired) = mpsc::channel();
     let call = call.clone();
     thread::spawn(move || {
-        let _ = sender.send(adapters::execute_a2a_call(&call, max_output_bytes));
+        let _ = sender.send(adapters::execute_a2a_call_signaled(
+            &call,
+            max_output_bytes,
+            Some(gate_signal),
+        ));
     });
-    let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+    await_a2a_worker(&receiver, &gate_acquired, &run_dir, timeout_seconds)
+}
+
+/// Wait loop shared by the A2A seat attempt: cancellation stays responsive,
+/// and the lane deadline starts only when the worker reports it acquired the
+/// process-wide seat gate — seat calls are serialized (one shared provider
+/// key), so a queued lane must not burn its timeout budget before its
+/// request is on the wire.
+#[allow(clippy::type_complexity)]
+fn await_a2a_worker(
+    receiver: &mpsc::Receiver<adapters::ChatCompletionsOutcome>,
+    gate_acquired: &mpsc::Receiver<()>,
+    run_dir: &std::path::Path,
+    timeout_seconds: u64,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Option<i32>, bool, bool, bool)> {
+    let mut deadline: Option<Instant> = None;
     let outcome = loop {
         match receiver.recv_timeout(Duration::from_millis(500)) {
             Ok(outcome) => break outcome,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if cancellation_requested(&run_dir) {
+                if cancellation_requested(run_dir) {
                     return Ok((
                         Vec::new(),
                         b"cancelled while awaiting the A2A seat".to_vec(),
@@ -3294,7 +3317,10 @@ fn execute_a2a_attempt(
                         false,
                     ));
                 }
-                if Instant::now() >= deadline {
+                if deadline.is_none() && gate_acquired.try_recv().is_ok() {
+                    deadline = Some(Instant::now() + Duration::from_secs(timeout_seconds.max(1)));
+                }
+                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     return Ok((Vec::new(), Vec::new(), None, true, false, false));
                 }
             }
@@ -3827,13 +3853,15 @@ fn build_r2_packet(
         "Participant D",
         "Participant E",
     ];
-    let seed = manifest
-        .run_id
-        .as_bytes()
-        .iter()
-        .fold(0_usize, |acc, byte| acc + *byte as usize);
-    let label_count = labels.len();
-    labels.rotate_left(seed % label_count);
+    // The rotation must not be derivable from anything inside the packet:
+    // the run_id is part of the wire payload, so seeding from it would let
+    // every reader invert the participant-to-lane mapping deterministically.
+    // A random rotation is computed once here and the packet is persisted
+    // (packets/r2.json) before any R2 lane starts, so restarts reuse it.
+    // The rotation is pseudonymity, never content anonymization: lane
+    // prose is carried verbatim (see the trial_manifest controls below).
+    let rotation = rand::rng().random_range(0..labels.len());
+    labels.rotate_left(rotation);
     let contested = r1_contestation(r1);
     let participants = labels
         .into_iter()
@@ -4324,13 +4352,16 @@ counterpart arbiter: {}",
             ],
             independence_controls: vec![
                 "per_lane_workdir".into(),
-                "anonymous_cross_review".into(),
+                // The R2 control in force is label rotation over verbatim
+                // lane output, not content anonymization; claim exactly that.
+                "participant_label_rotation".into(),
                 "scheduler_captured_output".into(),
                 "closed_schema".into(),
             ],
             contamination_risks: vec![
                 "same_model_error_correlation".into(),
                 "process_isolation_is_not_an_os_sandbox".into(),
+                "label_rotation_is_not_content_anonymization".into(),
             ],
             wall_time_seconds: None,
             observed_contestation: Some(observed_contestation(r1, r2)),
@@ -5047,12 +5078,11 @@ fn process_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod retry_tests {
     use super::{
-        LaneAccepted, RateLimitSignal, RetryClass, build_snapshot, classify_rate_limit,
-        ensure_verdict_not_degenerate, evaluate_attempt_output, merge_verdicts, next_attempt,
-        r1_contestation, residual_fields_conflict, retry_allowed, retry_schedule,
-        validate_arbiter_semantics,
-        validate_evidence_refs, validate_unique_claim_ids, validate_unique_residual_ids,
-        verdict_looks_degenerate,
+        LaneAccepted, RateLimitSignal, RetryClass, build_r2_packet, build_snapshot,
+        classify_rate_limit, ensure_verdict_not_degenerate, evaluate_attempt_output,
+        merge_verdicts, next_attempt, r1_contestation, residual_fields_conflict, retry_allowed,
+        retry_schedule, validate_arbiter_semantics, validate_evidence_refs,
+        validate_unique_claim_ids, validate_unique_residual_ids, verdict_looks_degenerate,
     };
     use crate::adapters::{self, OutputKind};
     use crate::contract::BRIEF_VERSION;
@@ -6666,5 +6696,154 @@ mod retry_tests {
             lane_with("proceed", 0.9, vec![]),
         ];
         assert!(r1_contestation(&lanes).is_empty());
+    }
+
+    // --- R2 packet labeling discipline (PROTOCOL.md pseudonymous recheck) ---
+
+    fn contested_roster() -> Vec<LaneAccepted> {
+        let mut r_a = sample_residual("r-conflict", Severity::High, "same finding");
+        r_a.disposition = Disposition::Verified;
+        let mut r_b = sample_residual("r-conflict", Severity::High, "same finding");
+        r_b.disposition = Disposition::Unresolved;
+        // Verdicts stay unanimous (a verdict split would contest the whole
+        // roster); the restatement is what tells the two outputs apart —
+        // it is not a contestation input.
+        let mut lane_zero = lane_with("proceed", 0.9, vec![r_a]);
+        lane_zero.output.task_restatement = "restatement-lane-0".into();
+        let mut lane_one = lane_with("proceed", 0.9, vec![r_b]);
+        lane_one.output.task_restatement = "restatement-lane-1".into();
+        let lanes = vec![
+            lane_zero,
+            lane_one,
+            lane_with("proceed", 0.9, vec![]),
+            lane_with("proceed", 0.9, vec![]),
+            lane_with("proceed", 0.9, vec![]),
+        ];
+        assert_eq!(r1_contestation(&lanes), vec![0, 1]);
+        lanes
+    }
+
+    #[test]
+    fn r2_packet_labels_only_contested_lanes_with_canonical_names() {
+        let lanes = contested_roster();
+        let packet = build_r2_packet(&sample_manifest(), &sample_brief(), &lanes).unwrap();
+        assert_eq!(packet.participants.len(), 2, "uncontested lanes stay out");
+        let canonical = [
+            "Participant A",
+            "Participant B",
+            "Participant C",
+            "Participant D",
+            "Participant E",
+        ];
+        for label in packet.participants.keys() {
+            assert!(
+                canonical.contains(&label.as_str()),
+                "non-canonical participant label: {label}"
+            );
+        }
+        // Each contested lane's output appears exactly once, under some
+        // participant label.
+        let restatements: Vec<&str> = packet
+            .participants
+            .values()
+            .map(|output| output.task_restatement.as_str())
+            .collect();
+        assert!(restatements.contains(&"restatement-lane-0"));
+        assert!(restatements.contains(&"restatement-lane-1"));
+    }
+
+    #[test]
+    fn r2_packet_rotation_is_not_derived_from_the_run_id() {
+        // The run_id is inside the packet, so a run_id-derived rotation would
+        // be invertible by every reader. Across repeated builds of the very
+        // same inputs the mapping must vary (probability that a uniform
+        // 5-way rotation repeats one value 12 times is ~2e-8 — never flaky).
+        let lanes = contested_roster();
+        let manifest = sample_manifest();
+        let brief = sample_brief();
+        let mut mappings = std::collections::BTreeSet::new();
+        for _ in 0..12 {
+            let packet = build_r2_packet(&manifest, &brief, &lanes).unwrap();
+            let mapping: Vec<(&String, &str)> = packet
+                .participants
+                .iter()
+                .map(|(label, output)| (label, output.task_restatement.as_str()))
+                .collect();
+            mappings.insert(format!("{mapping:?}"));
+        }
+        assert!(
+            mappings.len() > 1,
+            "label rotation must vary across runs, not follow the run_id"
+        );
+    }
+}
+
+#[cfg(test)]
+mod a2a_attempt_tests {
+    use super::await_a2a_worker;
+    use crate::adapters::ChatCompletionsOutcome;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    fn outcome() -> ChatCompletionsOutcome {
+        ChatCompletionsOutcome {
+            stdout: b"{}".to_vec(),
+            stderr: Vec::new(),
+            exit_code: Some(0),
+            timed_out: false,
+            output_limit_exceeded: false,
+        }
+    }
+
+    #[test]
+    fn lane_deadline_starts_when_the_seat_gate_is_acquired() {
+        // The worker is queued behind the process-wide seat gate for 600ms,
+        // then runs 600ms. With a 1s lane budget, a deadline started at
+        // attempt entry would fire while the lane is still queued; starting
+        // at gate acquisition it must complete.
+        let run_dir = tempfile::tempdir().unwrap();
+        let (outcome_tx, outcome_rx) = mpsc::channel();
+        let (gate_tx, gate_rx) = mpsc::channel();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(600));
+            let _ = gate_tx.send(());
+            thread::sleep(Duration::from_millis(600));
+            let _ = outcome_tx.send(outcome());
+        });
+        let (stdout, stderr, exit_code, timed_out, cancelled, limited) =
+            await_a2a_worker(&outcome_rx, &gate_rx, run_dir.path(), 1).unwrap();
+        assert!(!timed_out, "a queued lane must not burn its timeout budget");
+        assert!(!cancelled);
+        assert!(!limited);
+        assert_eq!(exit_code, Some(0));
+        assert_eq!(stdout, b"{}");
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn lane_deadline_still_fires_after_gate_acquisition() {
+        // Once the gate is acquired, the lane gets exactly its budget: a
+        // worker that never reports back times out.
+        let run_dir = tempfile::tempdir().unwrap();
+        let (outcome_tx, outcome_rx) = mpsc::channel::<ChatCompletionsOutcome>();
+        let (gate_tx, gate_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = gate_tx.send(());
+            // The seat round trip outlives the 1s lane budget by far more
+            // than the 500ms poll granularity, so the deadline check can
+            // never race the outcome arrival.
+            thread::sleep(Duration::from_millis(4000));
+            let _ = outcome_tx.send(outcome());
+        });
+        let started = std::time::Instant::now();
+        let (_, _, exit_code, timed_out, _, _) =
+            await_a2a_worker(&outcome_rx, &gate_rx, run_dir.path(), 1).unwrap();
+        assert!(timed_out);
+        assert_eq!(exit_code, None);
+        assert!(
+            started.elapsed() >= Duration::from_secs(1),
+            "the deadline must start at gate acquisition, not attempt entry"
+        );
     }
 }

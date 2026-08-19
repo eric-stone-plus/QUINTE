@@ -153,9 +153,8 @@ fn serve(fixture: &HostFixture) -> LiveServer {
     BufReader::new(stdout)
         .read_line(&mut line)
         .expect("read serve bind envelope");
-    let envelope: Value = serde_json::from_str(line.trim()).unwrap_or_else(|_| {
-        panic!("serve did not print a JSON bind envelope: {line:?}")
-    });
+    let envelope: Value = serde_json::from_str(line.trim())
+        .unwrap_or_else(|_| panic!("serve did not print a JSON bind envelope: {line:?}"));
     assert_eq!(envelope["ok"], true, "{envelope}");
     LiveServer {
         endpoint: envelope["data"]["endpoint"]
@@ -190,12 +189,7 @@ fn http(method: &str, url: &str, body: Option<&str>) -> (u16, String) {
     let mut raw = String::new();
     stream.read_to_string(&mut raw).unwrap();
     let (header, rest) = raw.split_once("\r\n\r\n").unwrap_or((raw.as_str(), ""));
-    let status = header
-        .split_whitespace()
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
+    let status = header.split_whitespace().nth(1).unwrap().parse().unwrap();
     (status, rest.to_string())
 }
 
@@ -287,10 +281,7 @@ fn card_is_served_at_well_known() {
     assert_eq!(status, 200);
     let card: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(card["name"], "quinte");
-    assert_eq!(
-        card["supportedInterfaces"][0]["protocolBinding"],
-        "JSONRPC"
-    );
+    assert_eq!(card["supportedInterfaces"][0]["protocolBinding"], "JSONRPC");
     assert_eq!(card["supportedInterfaces"][0]["protocolVersion"], "1.0");
     assert_eq!(card["supportedInterfaces"][0]["url"], server.endpoint);
 }
@@ -369,7 +360,10 @@ fn completed_get_task_has_exactly_one_review_result() {
         "SendMessage",
         stammtisch_send_params(quinte_brief(), "run-complete"),
     );
-    let task_id = started["result"]["task"]["id"].as_str().unwrap().to_string();
+    let task_id = started["result"]["task"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let task = wait_completed(&server.endpoint, &task_id);
     assert_eq!(task["id"], task_id);
     let artifacts = task["artifacts"].as_array().unwrap();
@@ -400,6 +394,23 @@ fn completed_get_task_has_exactly_one_review_result() {
     let envelope = rpc(&server.endpoint, 6, "GetTask", json!({ "id": task_id }));
     assert!(envelope["result"].get("id").is_some());
     assert!(envelope["result"].get("task").is_none());
+    // Artifact identities are stable across polls: hosts dedupe and pin by
+    // artifactId, so every GetTask must report the same three ids.
+    let first_ids: Vec<&str> = artifacts
+        .iter()
+        .filter_map(|artifact| artifact["artifactId"].as_str())
+        .collect();
+    let second_ids: Vec<&str> = envelope["result"]["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|artifact| artifact["artifactId"].as_str())
+        .collect();
+    assert_eq!(first_ids.len(), 3);
+    assert_eq!(
+        first_ids, second_ids,
+        "artifactIds must be stable across GetTask polls"
+    );
 }
 
 #[test]
@@ -412,7 +423,10 @@ fn task_survives_process_restart() {
         "SendMessage",
         stammtisch_send_params(quinte_brief(), "run-restart"),
     );
-    let task_id = started["result"]["task"]["id"].as_str().unwrap().to_string();
+    let task_id = started["result"]["task"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let completed = wait_completed(&first.endpoint, &task_id);
     let artifact_id = completed["artifacts"][0]["artifactId"]
         .as_str()
@@ -505,4 +519,212 @@ fn host_cli_commands_still_work_beside_the_front_door() {
     assert!(envelope["data"]["state"]["code"].is_string());
     let _ = RunStatus::Queued;
     let _ = Store::new(fixture.home.clone());
+}
+
+#[test]
+fn send_streaming_message_is_method_not_found() {
+    let fixture = fixture();
+    let server = serve(&fixture);
+    let envelope = rpc(
+        &server.endpoint,
+        12,
+        "SendStreamingMessage",
+        json!({
+            "message": {
+                "messageId": "m-stream",
+                "role": "ROLE_USER",
+                "parts": [{"text": "stream the review please"}]
+            }
+        }),
+    );
+    // The card advertises capabilities.streaming = false and no SSE
+    // implementation exists; the method must fail closed.
+    assert_eq!(envelope["error"]["code"], -32601, "{envelope}");
+}
+
+#[test]
+fn blocking_send_message_does_not_freeze_other_operations() {
+    let fixture = fixture();
+    // Hold the R1 phase open for ~6s so the blocking SendMessage parks in
+    // its wait loop well past the time a concurrent request needs.
+    std::fs::write(
+        fixture.home.parent().unwrap().join("fake-agent-delay-ms"),
+        "6000",
+    )
+    .unwrap();
+    let server = serve(&fixture);
+    let endpoint = server.endpoint.clone();
+    let sender = thread::spawn(move || {
+        let mut params = stammtisch_send_params(quinte_brief(), "run-blocking");
+        params["configuration"]["returnImmediately"] = json!(false);
+        rpc(&endpoint, 13, "SendMessage", params)
+    });
+    // Let the run start and the blocking send park in its wait loop.
+    thread::sleep(Duration::from_millis(1500));
+    let started = Instant::now();
+    let (status, _body) = http("GET", &server.card_url, None);
+    assert_eq!(status, 200);
+    let listed = rpc(&server.endpoint, 14, "ListTasks", json!({}));
+    assert!(listed["result"]["tasks"].is_array(), "{listed}");
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "card + ListTasks took {:?} while a blocking SendMessage was parked; \
+         the front door froze",
+        started.elapsed()
+    );
+    let envelope = sender.join().unwrap();
+    assert_eq!(
+        envelope["result"]["task"]["status"]["state"], "TASK_STATE_COMPLETED",
+        "{envelope}"
+    );
+}
+
+#[test]
+fn arbiter_challenge_is_answered_over_the_wire() {
+    // Manual arbiter handoff is a legacy configuration: production policy
+    // v2 refuses auto_primary_arbiter=false at `host start`, so the waiting
+    // run is created through the run API below that gate — exactly the
+    // population HOST.md §5 keeps serving on the wire.
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = common::compile_fake_agent(temporary.path());
+    let home = temporary.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let mut policy = fake_policy(&executable);
+    policy.auto_primary_arbiter = false;
+    write_json(&home.join("policy.json"), &policy).unwrap();
+    let store = Store::new(home.clone());
+    let evidence = temporary.path().join("evidence.txt");
+    std::fs::write(&evidence, "bounded evidence\n").unwrap();
+    let brief_path = temporary.path().join("brief.json");
+    write_json(
+        &brief_path,
+        &quinte::model::Brief {
+            brief_version: quinte::model::BRIEF_VERSION.into(),
+            question: "What remains unresolved?".into(),
+            context: None,
+            evidence_roots: vec![evidence],
+            snapshot_ignore: Vec::new(),
+            attachments: Vec::new(),
+            action_scope: Some("test only".into()),
+            affected_paths: Vec::new(),
+            action_binding_sha256: None,
+        },
+    )
+    .unwrap();
+    unsafe { std::env::set_var("QUINTE_ALLOW_FAKE_ADAPTERS", "1") };
+    let created =
+        quinte::run::create(&store, &policy, &quinte::run::RunOptions { brief_path }).unwrap();
+    let run_id = created.run_id.clone();
+    assert_eq!(
+        quinte::run::advance(&store, &run_id).unwrap(),
+        RunStatus::WaitingPrimaryArbiter
+    );
+    // The env stays set for the whole test: the in-process front door
+    // re-validates the policy (fake adapter roster) on observation and
+    // resume, not only at run creation.
+
+    // Serve the front door in-process: the run's resume-integrity binding
+    // pins the runtime digest, so the answering runtime must be the same
+    // binary that created the run — in production both are the installed
+    // `quinte`, here both are this test binary. The full HTTP surface
+    // (routing, envelopes, thread-per-connection) is still what ships.
+    let server = quinte::a2a::A2aServer::start(
+        Store::new(home.clone()),
+        quinte::a2a::ServeOptions {
+            bind: "127.0.0.1:0".into(),
+            token: None,
+        },
+    )
+    .unwrap();
+    let fixture = HostFixture {
+        _temporary: temporary,
+        home,
+        _executable: executable,
+    };
+    let task_id = run_id;
+
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let envelope = rpc(&server.endpoint, 16, "GetTask", json!({ "id": task_id }));
+        let task = envelope["result"].clone();
+        let state = task["status"]["state"].as_str().unwrap_or("");
+        if state == "TASK_STATE_INPUT_REQUIRED" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "task {task_id} never reached INPUT_REQUIRED; envelope={envelope}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // A malformed verdict is rejected with -32013 and the task stays
+    // INPUT_REQUIRED (HOST.md §5: mismatch/expiry/replay never advance state).
+    let malformed = json!({
+        "message": {
+            "taskId": task_id,
+            "role": "ROLE_USER",
+            "parts": [{
+                "data": {"arbiter_verdict_version": "1.0", "summary": "stub"},
+                "mediaType": "application/json"
+            }]
+        },
+        "configuration": {"returnImmediately": true, "historyLength": 10}
+    });
+    let rejected = rpc(&server.endpoint, 17, "SendMessage", malformed);
+    assert_eq!(rejected["error"]["code"], -32013, "{rejected}");
+    let still_waiting =
+        rpc(&server.endpoint, 18, "GetTask", json!({ "id": task_id }))["result"].clone();
+    assert_eq!(
+        still_waiting["status"]["state"], "TASK_STATE_INPUT_REQUIRED",
+        "{still_waiting}"
+    );
+
+    // The real primary-arbiter verdict on the same taskId completes the run.
+    let verdict_text = std::fs::read_to_string(
+        fixture
+            .home
+            .join("runs")
+            .join(&task_id)
+            .join("r3/cc-response.json"),
+    )
+    .unwrap();
+    let verdict: Value = serde_json::from_str(&verdict_text).unwrap();
+    let answer = || {
+        json!({
+            "message": {
+                "taskId": task_id,
+                "role": "ROLE_USER",
+                "parts": [{
+                    "data": verdict,
+                    "filename": "primary-arbiter-verdict.json",
+                    "mediaType": "application/json"
+                }]
+            },
+            "configuration": {"returnImmediately": true, "historyLength": 10}
+        })
+    };
+    let accepted = rpc(&server.endpoint, 19, "SendMessage", answer());
+    if accepted["result"]["task"]["status"]["state"] != json!("TASK_STATE_COMPLETED") {
+        let events = std::fs::read_to_string(
+            fixture
+                .home
+                .join("runs")
+                .join(&task_id)
+                .join("events.jsonl"),
+        )
+        .unwrap_or_default();
+        let tail: Vec<&str> = events.lines().rev().take(8).collect();
+        panic!(
+            "verdict was not accepted: {accepted}\nevents tail (newest first):\n{}",
+            tail.join("\n")
+        );
+    }
+
+    // The challenge is consumed once: a replay is refused with -32013.
+    let replay = rpc(&server.endpoint, 20, "SendMessage", answer());
+    assert_eq!(replay["error"]["code"], -32013, "{replay}");
+    drop(server);
+    drop(fixture);
+    unsafe { std::env::remove_var("QUINTE_ALLOW_FAKE_ADAPTERS") };
 }

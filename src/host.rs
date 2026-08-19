@@ -551,7 +551,10 @@ fn attempt_observations(store: &Store, manifest: &RunManifest) -> anyhow::Result
             row["failure_class"] = json!(failure_class);
         }
     }
-    let timeout_seconds = policy_or_error(store)?.timeout_seconds;
+    // Observation, not a start gate: an attempt annotation must read any
+    // structurally valid policy, including a legacy manual-handoff home
+    // whose `auto_primary_arbiter=false` could never start a new run.
+    let timeout_seconds = policy::load_for_observation(&store.policy_path())?.timeout_seconds;
     for row in attempts.values_mut() {
         row["timeout_seconds"] = json!(timeout_seconds);
     }

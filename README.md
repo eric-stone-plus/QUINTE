@@ -38,7 +38,7 @@ are evidence, never authorization.
   review schools carry the diversity, resolved per run and recorded in the run
   manifest.
 - **Adaptive rounds.** R1 first-pass review always runs (policy default five
-  distinct schools); R2 anonymized recheck runs **only on the outputs R1
+  distinct schools); R2 pseudonymized recheck runs **only on the outputs R1
   actually contested**, via a deterministic, event-logged escalation rule
   (unanimity durably skips R2, k=0); R3 dual arbitration always runs.
   Common-path cost is `n + 2` invocations per run instead of a fixed twelve.
@@ -53,7 +53,7 @@ are evidence, never authorization.
 
 The new core implements the redesign (specs/PROTOCOL-REDESIGN.md, amended by
 specs/SINGLE-VENDOR-DOCTRINE.md): five-school adaptive review — R1 always,
-contested-only anonymized R2 (durably skipped on unanimity), dual-arbiter R3 —
+contested-only pseudonymized R2 (durably skipped on unanimity), dual-arbiter R3 —
 over A2A v1.0 seats (the PI seat agent in pi/), one model family per the
 single-vendor decision, deterministic merge, and the honest-labeling
 trial_manifest caveat. The legacy 0.2.x CLI host surface remains documented in

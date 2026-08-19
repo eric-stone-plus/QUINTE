@@ -192,6 +192,18 @@ pub fn load_for_runtime(path: &Path) -> anyhow::Result<Policy> {
     Ok(policy)
 }
 
+/// Observation-only loads (status/inspect receipts, attempt annotations):
+/// these read existing runs and must keep serving runs that exist under a
+/// policy that could never start one — a legacy manual-handoff home with
+/// `auto_primary_arbiter=false` still owns `waiting_primary_arbiter` runs
+/// that HOST.md §4/§5 promise on the wire. Only structural validation
+/// applies; the start gates do not.
+pub fn load_for_observation(path: &Path) -> anyhow::Result<Policy> {
+    let policy = read_compatible(path)?;
+    validate_for_runtime(&policy)?;
+    Ok(policy)
+}
+
 fn read_compatible(path: &Path) -> anyhow::Result<Policy> {
     let raw: serde_json::Value = read_json(path)?;
     let legacy = raw

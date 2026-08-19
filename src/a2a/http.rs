@@ -28,7 +28,7 @@ pub struct ServeOptions {
 }
 
 struct Shared {
-    store: Store,
+    store: Arc<Store>,
     token: Option<String>,
     interface_url: String,
 }
@@ -43,7 +43,7 @@ impl A2aServer {
         let endpoint = format!("http://{addr}/");
         let card_url = format!("http://{addr}/.well-known/agent-card.json");
         let shared = Arc::new(Mutex::new(Shared {
-            store,
+            store: Arc::new(store),
             token: options.token,
             interface_url: endpoint.clone(),
         }));
@@ -210,7 +210,15 @@ fn route(
     if path_only != "/" && path_only != "/rpc" && !path_only.is_empty() {
         return (404, r#"{"error":"not found"}"#.to_string());
     }
-    let (status, value) = handle_rpc(&guard.store, body);
+    // Clone the store handle and drop the guard before dispatching: a
+    // blocking SendMessage (`returnImmediately=false`) polls its run for up
+    // to the 3600s ceiling, and holding the only server lock through that
+    // poll would freeze GetTask/ListTasks/CancelTask and card discovery for
+    // every other connection. The one-active-run rule is still enforced —
+    // by the run lock inside `host start`, mapped to -32010.
+    let store = Arc::clone(&guard.store);
+    drop(guard);
+    let (status, value) = handle_rpc(&store, body);
     (
         status,
         serde_json::to_string(&value).unwrap_or_else(|_| r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"encode failed"}}"#.to_string()),

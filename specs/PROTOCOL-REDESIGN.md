@@ -15,7 +15,7 @@
 | # | Decision | Direction |
 | --- | --- | --- |
 | D1 | Product identity | QUINTE becomes a **generic multi-agent review orchestrator**. Rounds, seat counts, domain schemas, gates, and merge rules are policy — a doctrine pack. The quant review slice is the first pack, not the product. |
-| D2 | Seat model | Every seat is an **external A2A v1.0 endpoint**. One protocol everywhere: QUINTE is an A2A *server* to hosts ([HOST.md](HOST.md)) and an A2A *client* to its seats. No vendor, framework, or model is bound. |
+| D2 | Seat model | Every seat is an **external A2A v1.0 endpoint**. One protocol everywhere: QUINTE is an A2A *server* to hosts ([HOST.md](HOST.md)) and an A2A *client* to its seats. No vendor, framework, or model is bound. v1.0 is the canonical seat wire (version header, `agent-card.json`, `TASK_STATE_*` spellings); the seat client keeps a read-only 0.2.x fallback (legacy `agent.json` card path, lowercase states) so PI-generation seats stay reachable during migration. |
 | D3 | Round structure | **Adaptive**: R1 always runs; R2 rechecks only the outputs R1 actually contested; R3 dual arbitration always runs. Deterministic escalation rule (code, never model judgment), recorded in the event ledger. |
 
 The driving constraints: no model or agent vendor is bound and no token
@@ -90,9 +90,9 @@ a model — decides which outputs are contested:
 
 The predicate, its inputs, and its outcome are event-ledger facts.
 
-### R2 — anonymized recheck (only when contested)
+### R2 — pseudonymized recheck (only when contested)
 
-Contested R1 outputs are anonymized (the current PROTOCOL.md labeling
+Contested R1 outputs are pseudonymized (the current PROTOCOL.md labeling
 discipline) into a recheck packet with the original Brief. Recheck seats
 (either the same roster or a policy-declared recheck roster) verify each
 contested output independently. R2 seats never see uncontested outputs'

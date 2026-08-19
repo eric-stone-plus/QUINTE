@@ -28,6 +28,12 @@ pub struct TaskRecord {
     pub created_at: String,
     pub message: Value,
     pub artifact_id: Option<String>,
+    // HIGHBALL carrier artifact ids: assigned on first projection and
+    // persisted so every later GetTask reports the same identity (hosts
+    // dedupe and pin by artifactId). Missing in pre-3-artifact records;
+    // Option fields deserialize as None there.
+    pub highball_route_artifact_id: Option<String>,
+    pub highball_trace_artifact_id: Option<String>,
 }
 
 fn tasks_dir(store: &Store) -> PathBuf {
@@ -117,6 +123,8 @@ pub fn send_message(store: &Store, params: &Value) -> Result<Value, A2aError> {
         created_at: utc_now(),
         message: message.clone(),
         artifact_id: None,
+        highball_route_artifact_id: None,
+        highball_trace_artifact_id: None,
     };
     save_record(store, &record).map_err(internal)?;
 
@@ -128,17 +136,64 @@ pub fn send_message(store: &Store, params: &Value) -> Result<Value, A2aError> {
     Ok(json!({ "task": task }))
 }
 
-fn continue_task(store: &Store, _params: &Value, message: &Value) -> Result<Value, A2aError> {
+/// HOST.md §5 arbiter-challenge answer: a `ROLE_USER` message on an
+/// `INPUT_REQUIRED` task carrying the primary-arbiter verdict. The verdict
+/// is staged outside the run directory and funneled through the same
+/// submission path as `quinte primary-arbiter submit`, so challenge
+/// binding, single consumption, and replay protection are enforced by the
+/// scheduler, never by this wire. Any rejection is `-32013` and the task
+/// stays `INPUT_REQUIRED` until a valid answer or a cancel.
+fn continue_task(store: &Store, params: &Value, message: &Value) -> Result<Value, A2aError> {
     let task_id = message
         .get("taskId")
         .and_then(Value::as_str)
         .ok_or_else(|| A2aError::new(ERR_INVALID_CONTINUE, "taskId required"))?;
-    let _ = (store, task_id);
-    Err(A2aError::with_state(
-        super::wire::ERR_CHALLENGE,
-        "arbiter-challenge continue is not accepted on this 0.2.x host map",
-        "challenge_rejected",
-    ))
+    let manifest = store.load_manifest(task_id).map_err(|_| {
+        A2aError::with_state(
+            ERR_TASK_NOT_FOUND,
+            format!("task {task_id} not found"),
+            "not_found",
+        )
+    })?;
+    if !matches!(manifest.status, RunStatus::WaitingPrimaryArbiter) {
+        return Err(A2aError::with_state(
+            super::wire::ERR_CHALLENGE,
+            format!(
+                "task {task_id} is not waiting for an arbiter verdict (state {})",
+                super::wire::map_run_status(manifest.status)
+            ),
+            "challenge_rejected",
+        ));
+    }
+    let verdict = message
+        .get("parts")
+        .and_then(Value::as_array)
+        .and_then(|parts| {
+            parts
+                .iter()
+                .find_map(|part| part.get("data").filter(|data| data.is_object()).cloned())
+        })
+        .ok_or_else(|| {
+            A2aError::new(
+                ERR_INVALID_CONTINUE,
+                "message carries no arbiter verdict JSON part",
+            )
+        })?;
+    let inbox = store.home().join("a2a").join("inbox");
+    create_private_dir_all(&inbox).map_err(internal)?;
+    let verdict_path = inbox.join(format!("{}.verdict.json", Uuid::now_v7()));
+    write_json(&verdict_path, &verdict).map_err(internal)?;
+    run::submit_primary_arbiter_verdict(store, task_id, &verdict_path, false).map_err(|error| {
+        A2aError::with_state(
+            super::wire::ERR_CHALLENGE,
+            format!("arbiter verdict rejected: {error:#}"),
+            "challenge_rejected",
+        )
+    })?;
+    let record = load_or_recover(store, task_id)?;
+    let (_, history_length) = send_configuration(params);
+    let task = project_task(store, &record, history_length)?;
+    Ok(json!({ "task": task }))
 }
 
 const ERR_INVALID_CONTINUE: i64 = super::wire::ERR_INVALID_PARAMS;
@@ -199,6 +254,8 @@ pub fn list_tasks(store: &Store, params: &Value) -> Result<Value, A2aError> {
                 created_at: manifest.created_at,
                 message: json!({}),
                 artifact_id: None,
+                highball_route_artifact_id: None,
+                highball_trace_artifact_id: None,
             });
         }
     }
@@ -266,6 +323,8 @@ fn load_or_recover(store: &Store, task_id: &str) -> Result<TaskRecord, A2aError>
         created_at: manifest.created_at,
         message: json!({}),
         artifact_id: None,
+        highball_route_artifact_id: None,
+        highball_trace_artifact_id: None,
     };
     let _ = save_record(store, &record);
     Ok(record)
@@ -290,7 +349,6 @@ pub fn project_task(
     let manifest = store.load_manifest(&record.task_id).map_err(internal)?;
     let state = map_run_status(manifest.status);
     let mut artifacts = Vec::new();
-    let mut artifact_id = record.artifact_id.clone();
     if matches!(manifest.status, RunStatus::Completed | RunStatus::Degraded) {
         let inspected = host::inspect(store, &record.task_id).map_err(internal)?;
         if inspected.receipt.get("result").is_none() {
@@ -309,14 +367,28 @@ pub fn project_task(
         let result: Value = read_json(&path)
             .with_context(|| format!("cannot read {}", path.display()))
             .map_err(internal)?;
-        if artifact_id.is_none() {
-            artifact_id = Some(Uuid::now_v7().to_string());
-            let mut persisted = record.clone();
-            persisted.artifact_id = artifact_id.clone();
+        // Artifact identities are assigned once and persisted: hosts pin
+        // and dedupe by artifactId, so a fresh id on every GetTask would
+        // make every poll look like a new artifact.
+        let mut persisted = record.clone();
+        let mut changed = false;
+        if persisted.artifact_id.is_none() {
+            persisted.artifact_id = Some(Uuid::now_v7().to_string());
+            changed = true;
+        }
+        if persisted.highball_route_artifact_id.is_none() {
+            persisted.highball_route_artifact_id = Some(Uuid::now_v7().to_string());
+            changed = true;
+        }
+        if persisted.highball_trace_artifact_id.is_none() {
+            persisted.highball_trace_artifact_id = Some(Uuid::now_v7().to_string());
+            changed = true;
+        }
+        if changed {
             save_record(store, &persisted).map_err(internal)?;
         }
         artifacts.push(json!({
-            "artifactId": artifact_id,
+            "artifactId": persisted.artifact_id,
             "name": ARTIFACT_NAME,
             "parts": [{
                 "data": result,
@@ -327,7 +399,7 @@ pub fn project_task(
         // downstream delivery stage (route request + residual trace). They
         // are code, never model output.
         artifacts.push(json!({
-            "artifactId": Uuid::now_v7().to_string(),
+            "artifactId": persisted.highball_route_artifact_id,
             "name": "highball.route-request.json",
             "parts": [{
                 "data": crate::highball_carriers::route_request(&result),
@@ -335,7 +407,7 @@ pub fn project_task(
             }]
         }));
         artifacts.push(json!({
-            "artifactId": Uuid::now_v7().to_string(),
+            "artifactId": persisted.highball_trace_artifact_id,
             "name": "highball.residual-trace.json",
             "parts": [{
                 "data": crate::highball_carriers::residual_trace(&result),

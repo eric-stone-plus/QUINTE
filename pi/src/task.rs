@@ -73,7 +73,7 @@ pub struct TaskStore {
 
 impl TaskStore {
     pub fn open(path: &Path) -> Result<Self> {
-        let mut tasks = Vec::new();
+        let mut tasks: Vec<TaskRecord> = Vec::new();
         if path.exists() {
             let file = File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
             for line in BufReader::new(file).lines() {
@@ -84,7 +84,15 @@ impl TaskStore {
                 let value: Value = serde_json::from_str(&line)
                     .with_context(|| format!("corrupt task record in {}", path.display()))?;
                 if let Some(record) = TaskRecord::from_json(value) {
-                    tasks.push(record);
+                    // The JSONL is append-only: insert writes `working`,
+                    // update later appends the terminal row. A reopen must
+                    // keep the latest row per task, or a completed task
+                    // regresses to `working` after a restart.
+                    if let Some(slot) = tasks.iter_mut().find(|t| t.task_id == record.task_id) {
+                        *slot = record;
+                    } else {
+                        tasks.push(record);
+                    }
                 }
             }
         }
@@ -150,6 +158,44 @@ mod tests {
         }
         let store = TaskStore::open(&path).unwrap();
         assert_eq!(store.get("t-1").unwrap().state, TaskState::Working);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reopen_keeps_the_latest_row_per_task() {
+        let dir = std::env::temp_dir().join(format!("pi-store-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tasks.jsonl");
+        {
+            let mut store = TaskStore::open(&path).unwrap();
+            store
+                .insert(TaskRecord {
+                    task_id: "t-1".into(),
+                    state: TaskState::Working,
+                    artifact: None,
+                    error: None,
+                    created_at: now(),
+                })
+                .unwrap();
+            store
+                .update(&TaskRecord {
+                    task_id: "t-1".into(),
+                    state: TaskState::Completed,
+                    artifact: Some(serde_json::json!({"verdict": "done"})),
+                    error: None,
+                    created_at: now(),
+                })
+                .unwrap();
+        }
+        // Both rows are on disk; the reopened store must project the
+        // terminal row, not the stale `working` insert.
+        let store = TaskStore::open(&path).unwrap();
+        let record = store.get("t-1").unwrap();
+        assert_eq!(record.state, TaskState::Completed);
+        assert_eq!(
+            record.artifact,
+            Some(serde_json::json!({"verdict": "done"}))
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

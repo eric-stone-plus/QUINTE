@@ -34,10 +34,10 @@ Served at `GET /.well-known/agent-card.json` (canonical v1.0 path).
 | Card field | Value |
 | --- | --- |
 | `name` | `quinte` |
-| `description` | "Five-school multi-path review runtime: five first-pass lanes, anonymized recheck, two-arbiter verdicts, deterministic merge." |
+| `description` | "Five-school multi-path review runtime: five first-pass lanes, pseudonymized recheck, two-arbiter verdicts, deterministic merge." |
 | `version` | follows the QUINTE package version |
 | `supportedInterfaces[0]` | `{ "url": <jsonrpc endpoint>, "protocolBinding": "JSONRPC", "protocolVersion": "1.0" }` |
-| `capabilities` | `{ "streaming": true, "pushNotifications": false, "extendedAgentCard": false }` |
+| `capabilities` | `{ "streaming": false, "pushNotifications": false, "extendedAgentCard": false }` |
 | `defaultInputModes` / `defaultOutputModes` | `["application/json"]` |
 | `skills` | one skill: id `five-school-review`, tags `["review", "evidence", "verdict"]` |
 | `securitySchemes` / `security` | `{"bearer": {"type": "http", "scheme": "bearer"}}` — present only when a token is configured |
@@ -58,15 +58,23 @@ supported version fail with a version error, never with a degraded parse.
 | Operation | Purpose | QUINTE meaning |
 | --- | --- | --- |
 | `SendMessage` | start or continue a review task | create a run; or answer an arbiter challenge |
-| `SendStreamingMessage` | start + SSE `statusUpdate` stream (requires `capabilities.streaming`) | phase-level progress for live observers |
 | `GetTask` | one-shot snapshot | current run status + terminal artifacts |
 | `ListTasks` | paginated task listing | campaign overview and crash recovery (replaces `host reconcile`) |
 | `CancelTask` | authorized cancellation | `quinte cancel`; idempotent |
 
+`SendStreamingMessage` is **not offered**: the card advertises
+`capabilities.streaming = false` and the method fails with `-32601`. Live
+observers poll `GetTask`; phase-level progress is not on this wire.
+
 `SendMessage` accepts `configuration.returnImmediately` (both modes):
 `true` returns the created task at once for polling hosts (the STAMMTISCH
 adapter uses this); `false` blocks until a terminal or interrupted state,
-with the same terminal-state semantics as the A2A specification.
+with the same terminal-state semantics as the A2A specification. Blocking
+mode is bounded by a server-side ceiling of 3600 seconds: if the ceiling
+expires before the run reaches a terminal or interrupted state, the call
+returns the current (possibly non-terminal) task snapshot. A blocking
+`SendMessage` never blocks other operations — `GetTask`, `ListTasks`,
+`CancelTask`, and card discovery stay responsive while it waits.
 
 ### Error codes
 
@@ -106,11 +114,12 @@ them — the wire contract promises only the A2A state semantics:
 - **Degraded runs.** `degraded` completes the task; the distinction from
   `completed` lives in the result artifact (`result.status`), not in the
   task state. Hosts accept or refuse on the artifact via their own gates.
-- **Streaming.** `statusUpdate` events project phase transitions
-  (`lane.started`, `lane.finished`, `lane.accepted`, gate outcomes,
-  `retry_scheduled`, …) as structured metadata. They are projections:
-  the run's ordered event ledger remains the authority, and a host must
-  never treat a missed event as a state transition.
+- **No streaming.** `SendStreamingMessage`/`statusUpdate` is not
+  implemented; the card advertises `streaming: false` and hosts observe
+  progress by polling `GetTask`. The run's ordered event ledger remains
+  the authority for phase transitions (`lane.started`, `lane.finished`,
+  gate outcomes, `retry_scheduled`, …) — it is durable state, read via
+  the CLI surface, never a wire event stream.
 
 ## 5. Messages
 
@@ -136,8 +145,11 @@ part: run id, nonce, policy digest, evidence-packet digest, action scope,
 issue and expiry times (the same binding as PROTOCOL.md's R3 challenge).
 
 The host answers with a `ROLE_USER` message on the same `taskId` /
-`contextId`, carrying the primary-arbiter verdict
-(`schemas/primary-arbiter-response.schema.json`). The challenge is
+`contextId`, carrying the primary-arbiter verdict as an `application/json`
+data part (`schemas/arbiter-verdict.schema.json` — the same payload
+`quinte primary-arbiter submit` reads; the response binding with nonce and
+digests is rebuilt server-side from the stored challenge, never taken from
+the wire). The challenge is
 consumed once; a mismatch, expiry, or replay is `-32013` and the task
 stays `INPUT_REQUIRED` until a valid answer or a cancel. Direct file
 placement or a claimed identity never advances state — the wire replaces
@@ -149,13 +161,19 @@ specification defines.
 
 ## 6. Artifacts and binding
 
-A `COMPLETED` task carries **exactly one** artifact:
+A `COMPLETED` task carries **three** artifacts. The binding artifact:
 
 | Artifact field | Value |
 | --- | --- |
 | `artifactId` | UUIDv7 |
 | `name` | `review.result` |
 | `parts[0]` | `{ "data": <result.json>, "mediaType": "application/json" }` |
+
+plus two deterministic HIGHBALL carriers — `highball.route-request.json`
+and `highball.residual-trace.json` — code-derived projections of the
+verdict for the downstream delivery stage (see §10). They are generated,
+never model output, and each carries a stable `artifactId` (assigned on
+first projection and persisted with the task record).
 
 `<result.json>` is the QUINTE result revision in force
 (`schemas/result.schema.json`): `run_id`, `status`, `brief_sha256`,
@@ -217,8 +235,9 @@ A conforming implementation must pass, at minimum:
    manual arbiter handoff;
 5. the arbiter challenge is consumed once: expiry, replay, and mismatch
    are refused with `-32013`;
-6. a `COMPLETED` task carries exactly one `review.result` artifact
-   validating against the result revision in force;
+6. a `COMPLETED` task carries the `review.result` artifact validating
+   against the result revision in force, plus the two deterministic
+   HIGHBALL carrier artifacts (§6);
 7. `CancelTask` is idempotent and refuses terminal tasks;
 8. `ListTasks` paginates and exposes interrupted tasks after a crash;
 9. an unknown `A2A-Version` fails with a version error;

@@ -21,7 +21,7 @@ The product has one supported full-run path:
 
 ```text
 brief -> R1 (five isolated first-pass paths)
-      -> R2 (five anonymized recheck paths)
+      -> R2 (five pseudonymized recheck paths)
       -> R3 (two same-family verdict bindings)
       -> deterministic merge -> result
 ```
@@ -98,12 +98,16 @@ and typed accepted output for every attempt.
 Matching R1 outputs cannot skip R2. Because all paths share one family and
 model binding, matching outputs are not cross-family validation.
 
-## R2: Anonymized Recheck
+## R2: Pseudonymized Recheck
 
 After all five R1 outputs pass, the scheduler constructs a packet that labels
-them `Participant A` through `Participant E`. The mapping is deterministic for
-the run but route identities are absent from the R2 packet. The same five
-fixed routes review that packet.
+them `Participant A` through `Participant E`. The label rotation is random per
+run and derived from nothing inside the packet (the run id is part of the
+payload, so a deterministic derivation would be invertible by every reader).
+Route identities are structurally absent from the packet — but lane prose is
+carried verbatim, so this is pseudonymity, not content anonymization; the
+trial_manifest declares it as `participant_label_rotation` with a matching
+contamination risk. The same five fixed routes review that packet.
 
 R2 supports two execution modes controlled by the `r2_parallel` policy flag:
 
@@ -121,7 +125,7 @@ wall-clock time from approximately 50 minutes (worst-case serial) to
 approximately 5 minutes, at the cost of increased simultaneous provider load.
 
 Both modes preserve identical information sets: every R2 lane sees only the
-anonymized R1 packet and never reads another same-phase lane's output. The
+pseudonymized R1 packet and never reads another same-phase lane's output. The
 switch changes only the rate-limit profile (pacing vs. stagger), not what any
 lane can read. All five typed outputs must pass before R3 begins. Withholding
 route labels is an input-shaping mechanism; it does not change the shared
@@ -216,7 +220,7 @@ The policy supports both a global timeout and per-phase timeout overrides:
 - `r1_timeout_seconds`: Optional override for R1 first-pass reviews. When set,
   overrides `timeout_seconds` for R1 lanes only.
 
-- `r2_timeout_seconds`: Optional override for R2 anonymized recheck. R2 reviews
+- `r2_timeout_seconds`: Optional override for R2 pseudonymized recheck. R2 reviews
   analyze existing typed outputs and may complete faster than R1. When set,
   overrides `timeout_seconds` for R2 lanes only.
 

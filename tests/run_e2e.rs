@@ -454,6 +454,44 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
             "skipped R2 must not invent lane artifacts"
         );
     }
+    // The event ledger is the authority: a skipped R2 must record zero
+    // accepted R2 lanes, contradicting neither skipped.json nor the
+    // absence of lanes/R2/*/accepted.json.
+    let events_text = fs::read_to_string(run_dir.join("events.jsonl")).unwrap();
+    assert!(
+        events_text.lines().any(|line| {
+            let event: serde_json::Value = serde_json::from_str(line).unwrap();
+            event["event_type"] == "run.transition"
+                && event["data"]["to"] == "r2_gate"
+                && event["data"]["detail"]["accepted"] == serde_json::json!(0)
+        }),
+        "a skipped R2 must record accepted=0 in its R2Gate transition event"
+    );
+    // Honest labeling: the R2 control in force is participant label
+    // rotation over verbatim lane output, so the trial_manifest must claim
+    // exactly that — never "anonymous_cross_review" — and must declare the
+    // content-anonymization gap as a contamination risk.
+    let result: serde_json::Value = read_json(&run_dir.join("result.json")).unwrap();
+    let controls = result["trial_manifest"]["independence_controls"]
+        .as_array()
+        .unwrap();
+    assert!(
+        controls.iter().any(|c| c == "participant_label_rotation"),
+        "independence_controls must name the label-rotation control: {controls:?}"
+    );
+    assert!(
+        !controls.iter().any(|c| c == "anonymous_cross_review"),
+        "label rotation over verbatim lane output must not be claimed as anonymous_cross_review"
+    );
+    let risks = result["trial_manifest"]["contamination_risks"]
+        .as_array()
+        .unwrap();
+    assert!(
+        risks
+            .iter()
+            .any(|r| r == "label_rotation_is_not_content_anonymization"),
+        "contamination_risks must declare the content-anonymization gap: {risks:?}"
+    );
 }
 
 #[test]
@@ -539,7 +577,9 @@ fn result_integrity_hashes_and_parses_one_stable_byte_snapshot() {
     let executable = common::compile_fake_agent(temporary.path());
     let (store, run_id, response) =
         create_waiting_run(temporary.path(), &executable, "single-result-snapshot");
-    let response_path = temporary.path().join("single-result-snapshot-response.json");
+    let response_path = temporary
+        .path()
+        .join("single-result-snapshot-response.json");
     write_json(&response_path, &response).unwrap();
     assert_eq!(
         run::submit_primary_arbiter(&store, &run_id, &response_path).unwrap(),
@@ -549,8 +589,15 @@ fn result_integrity_hashes_and_parses_one_stable_byte_snapshot() {
     let result_path = store.run_dir(&run_id).unwrap().join("result.json");
     let original = fs::read(&result_path).unwrap();
     let manifest = store.load_manifest(&run_id).unwrap();
-    assert_eq!(manifest.result_sha256.as_deref(), Some(sha256_file(&result_path).unwrap().as_str()));
-    assert!(run::verify_result_integrity(&store, &run_id).unwrap().is_some());
+    assert_eq!(
+        manifest.result_sha256.as_deref(),
+        Some(sha256_file(&result_path).unwrap().as_str())
+    );
+    assert!(
+        run::verify_result_integrity(&store, &run_id)
+            .unwrap()
+            .is_some()
+    );
 
     // Any rewrite is observed on the next call and cannot be paired with the
     // previous digest/parse operation.
