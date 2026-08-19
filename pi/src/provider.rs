@@ -1,6 +1,11 @@
-//! One OpenAI-compatible completion call, blocking, no retries. Retry
-//! policy belongs to the orchestrator; a seat that retries on its own
-//! would duplicate work and inflate cost without any epistemic gain.
+//! One OpenAI-compatible completion call, blocking. Only two failure
+//! classes retry in-seat, both provably work-free: transport errors
+//! (the request may never have left the machine) and HTTP 429 (the
+//! provider refused the request, so it never landed and retrying the
+//! idempotent call duplicates no billed work). Everything else fails
+//! closed — business-level retry policy belongs to the orchestrator;
+//! a seat that retried real work would duplicate it and inflate cost
+//! without any epistemic gain.
 
 use anyhow::{Context, Result, bail};
 use std::io::Read;
@@ -71,40 +76,70 @@ impl Provider {
             "temperature": 0.2,
         });
         let mut attempt = 0;
-        let mut response = loop {
-            match client
-                .post(format!("{}/chat/completions", self.base_url))
-                .header("Authorization", format!("Bearer {api_key}"))
-                .json(&body)
-                .send()
-            {
-                Ok(response) => break response,
-                Err(e) => {
-                    attempt += 1;
-                    if attempt >= 3 {
-                        return Err(anyhow::anyhow!(
-                            "provider request failed after {attempt} attempts: {e:?}"
-                        ));
+        let mut rate_limited_attempts = 0u32;
+        let body: Value = loop {
+            let mut response = loop {
+                match client
+                    .post(format!("{}/chat/completions", self.base_url))
+                    .header("Authorization", format!("Bearer {api_key}"))
+                    .json(&body)
+                    .send()
+                {
+                    Ok(response) => break response,
+                    Err(e) => {
+                        attempt += 1;
+                        if attempt >= 3 {
+                            return Err(anyhow::anyhow!(
+                                "provider request failed after {attempt} attempts: {e:?}"
+                            ));
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(attempt));
                     }
-                    std::thread::sleep(std::time::Duration::from_secs(attempt));
                 }
+            };
+            let status = response.status();
+            // Honor Retry-After when the provider sends one; otherwise
+            // back off 5s/10s/20s so a five-seat R1 fan-out staggers
+            // itself under the account's concurrency ceiling.
+            let retry_after = response
+                .headers()
+                .get("Retry-After")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok());
+            let mut bytes = Vec::new();
+            response
+                .read_to_end(&mut bytes)
+                .map_err(|e| anyhow::anyhow!("provider body read failed: {e:?}"))?;
+            let parsed: Value = serde_json::from_slice(&bytes)
+                .map_err(|e| anyhow::anyhow!("provider response is not JSON: {e:#}"))?;
+            if status.as_u16() == 429 {
+                rate_limited_attempts += 1;
+                let detail = parsed
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("rate limited");
+                if rate_limited_attempts >= 4 {
+                    bail!(
+                        "provider returned 429 after {rate_limited_attempts} attempts: {detail}"
+                    );
+                }
+                let wait = retry_after
+                    .unwrap_or_else(|| 5u64 * (1 << (rate_limited_attempts - 1)))
+                    .min(60);
+                std::thread::sleep(std::time::Duration::from_secs(wait));
+                continue;
             }
+            if !status.is_success() {
+                let detail = parsed
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("unspecified provider error");
+                bail!("provider returned {}: {detail}", status.as_u16());
+            }
+            break parsed;
         };
-        let status = response.status();
-        let mut bytes = Vec::new();
-        response
-            .read_to_end(&mut bytes)
-            .map_err(|e| anyhow::anyhow!("provider body read failed: {e:?}"))?;
-        let body: Value = serde_json::from_slice(&bytes)
-            .map_err(|e| anyhow::anyhow!("provider response is not JSON: {e:#}"))?;
-        if !status.is_success() {
-            let detail = body
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("unspecified provider error");
-            bail!("provider returned {}: {detail}", status.as_u16());
-        }
         let content = body
             .get("choices")
             .and_then(Value::as_array)
