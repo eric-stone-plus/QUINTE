@@ -104,10 +104,16 @@ After all five R1 outputs pass, the scheduler constructs a packet that labels
 them `Participant A` through `Participant E`. The label rotation is random per
 run and derived from nothing inside the packet (the run id is part of the
 payload, so a deterministic derivation would be invertible by every reader).
-Route identities are structurally absent from the packet — but lane prose is
-carried verbatim, so this is pseudonymity, not content anonymization; the
-trial_manifest declares it as `participant_label_rotation` with a matching
-contamination risk. The same five fixed routes review that packet.
+Route identities are structurally absent from the packet, and per-lane identity
+markers (route ids, party ids, perspective texts, model names from the live
+policy) are scrubbed from the lane prose before the packet is persisted —
+case-insensitively for ASCII tokens — and replaced with neutral `[route]`,
+`[party]`, `[model]`, and `[perspective]` markers. Lane prose is otherwise
+carried verbatim, so this remains pseudonymity plus marker scrubbing, not full
+content anonymization: stylistic tells can still correlate a participant with
+its R1 output. The trial_manifest declares `participant_label_rotation` and
+`identity_marker_scrubbing` with a matching contamination risk. The same five
+fixed routes review that packet.
 
 R2 supports two execution modes controlled by the `r2_parallel` policy flag:
 

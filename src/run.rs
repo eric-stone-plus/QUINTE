@@ -1373,7 +1373,7 @@ pub fn advance(store: &Store, run_id: &str) -> anyhow::Result<RunStatus> {
             {
                 return Ok(RunStatus::Cancelled);
             }
-            let packet = build_r2_packet(&manifest, &brief, &r1)?;
+            let packet = build_r2_packet(&manifest, &brief, &r1, &policy)?;
             write_json(&r2_packet_path, &packet)?;
         }
         if phase_complete(&run_dir, "R2", &policy) {
@@ -3847,10 +3847,95 @@ fn r1_contestation(r1: &[LaneAccepted]) -> Vec<usize> {
         .collect()
 }
 
+/// Per-lane identity tokens that must never survive into an R2 packet.
+/// Route ids, party ids, and perspective texts are unique per lane, so any
+/// of them appearing in lane-authored prose would undo the label rotation;
+/// model names are shared across the roster under the single-vendor
+/// doctrine but are withheld from the packet all the same. Shared tokens
+/// (adapter, executable, family, provider, seat) name the vendor, not a
+/// participant, and are left to the packet's structural omissions.
+fn r2_identity_replacements(policy: &Policy) -> Vec<(String, &'static str)> {
+    let mut tokens: Vec<(String, &'static str)> = Vec::new();
+    let mut routes: Vec<&crate::model::RoutePolicy> = policy.roster.iter().collect();
+    routes.push(&policy.counterpart_arbiter);
+    routes.push(&policy.primary_arbiter);
+    for route in routes {
+        tokens.push((route.route_id.clone(), "[route]"));
+        tokens.push((route.party_id.clone(), "[party]"));
+        if !route.perspective.is_empty() {
+            tokens.push((route.perspective.clone(), "[perspective]"));
+        }
+    }
+    tokens.push((policy.seat.text_model.clone(), "[model]"));
+    tokens.push((policy.seat.multimodal_model.clone(), "[model]"));
+    tokens.retain(|(token, _)| token.chars().count() >= 3);
+    tokens
+}
+
+/// Replace one identity token anywhere in the text, case-insensitively for
+/// ASCII tokens (ASCII lowercasing preserves byte offsets, so slicing stays
+/// valid inside prose of any language).
+fn replace_identity_token(text: &str, token: &str, replacement: &str) -> String {
+    if token.is_empty() {
+        return text.to_string();
+    }
+    if token.is_ascii() {
+        let token_lower = token.to_ascii_lowercase();
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(index) = rest.to_ascii_lowercase().find(&token_lower) {
+            out.push_str(&rest[..index]);
+            out.push_str(replacement);
+            rest = &rest[index + token.len()..];
+        }
+        out.push_str(rest);
+        out
+    } else {
+        text.replace(token, replacement)
+    }
+}
+
+/// Walk every string in a serialized lane output and scrub the identity
+/// tokens. Numeric and structural fields pass through unchanged.
+fn scrub_identity_markers(value: &Value, tokens: &[(String, &'static str)]) -> Value {
+    match value {
+        Value::String(text) => {
+            let mut scrubbed = text.clone();
+            for (token, replacement) in tokens {
+                scrubbed = replace_identity_token(&scrubbed, token, replacement);
+            }
+            Value::String(scrubbed)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| scrub_identity_markers(item, tokens))
+                .collect(),
+        ),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, item)| (key.clone(), scrub_identity_markers(item, tokens)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn scrub_lane_output(
+    output: &LaneOutput,
+    tokens: &[(String, &'static str)],
+) -> anyhow::Result<LaneOutput> {
+    let value = serde_json::to_value(output)?;
+    Ok(serde_json::from_value(scrub_identity_markers(
+        &value, tokens,
+    ))?)
+}
+
 fn build_r2_packet(
     manifest: &RunManifest,
     brief: &Brief,
     r1: &[LaneAccepted],
+    policy: &Policy,
 ) -> anyhow::Result<R2Packet> {
     let mut labels = vec![
         "Participant A",
@@ -3865,16 +3950,23 @@ fn build_r2_packet(
     // A random rotation is computed once here and the packet is persisted
     // (packets/r2.json) before any R2 lane starts, so restarts reuse it.
     // The rotation is pseudonymity, never content anonymization: lane
-    // prose is carried verbatim (see the trial_manifest controls below).
+    // prose is carried verbatim except for per-lane identity markers,
+    // which are scrubbed below (see the trial_manifest controls).
     let rotation = rand::rng().random_range(0..labels.len());
     labels.rotate_left(rotation);
     let contested = r1_contestation(r1);
+    let tokens = r2_identity_replacements(policy);
     let participants = labels
         .into_iter()
         .zip(r1.iter().enumerate())
         .filter(|(_, (index, _))| contested.contains(index))
-        .map(|(label, (_, lane))| (label.to_string(), lane.output.clone()))
-        .collect();
+        .map(|(label, (_, lane))| {
+            Ok::<(String, LaneOutput), anyhow::Error>((
+                label.to_string(),
+                scrub_lane_output(&lane.output, &tokens)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     Ok(R2Packet {
         packet_version: R2_PACKET_VERSION.into(),
         run_id: manifest.run_id.clone(),
@@ -4358,9 +4450,12 @@ counterpart arbiter: {}",
             ],
             independence_controls: vec![
                 "per_lane_workdir".into(),
-                // The R2 control in force is label rotation over verbatim
-                // lane output, not content anonymization; claim exactly that.
+                // The R2 controls in force are label rotation plus scrubbing
+                // of per-lane identity markers from the verbatim lane
+                // output; that is still not full content anonymization, so
+                // claim exactly that.
                 "participant_label_rotation".into(),
+                "identity_marker_scrubbing".into(),
                 "scheduler_captured_output".into(),
                 "closed_schema".into(),
             ],
@@ -6732,7 +6827,13 @@ mod retry_tests {
     #[test]
     fn r2_packet_labels_only_contested_lanes_with_canonical_names() {
         let lanes = contested_roster();
-        let packet = build_r2_packet(&sample_manifest(), &sample_brief(), &lanes).unwrap();
+        let packet = build_r2_packet(
+            &sample_manifest(),
+            &sample_brief(),
+            &lanes,
+            &default_policy(),
+        )
+        .unwrap();
         assert_eq!(packet.participants.len(), 2, "uncontested lanes stay out");
         let canonical = [
             "Participant A",
@@ -6769,7 +6870,7 @@ mod retry_tests {
         let brief = sample_brief();
         let mut mappings = std::collections::BTreeSet::new();
         for _ in 0..12 {
-            let packet = build_r2_packet(&manifest, &brief, &lanes).unwrap();
+            let packet = build_r2_packet(&manifest, &brief, &lanes, &default_policy()).unwrap();
             let mapping: Vec<(&String, &str)> = packet
                 .participants
                 .iter()
@@ -6780,6 +6881,70 @@ mod retry_tests {
         assert!(
             mappings.len() > 1,
             "label rotation must vary across runs, not follow the run_id"
+        );
+    }
+
+    #[test]
+    fn r2_packet_scrubs_identity_markers_from_lane_prose() {
+        let policy = default_policy();
+        let mut lanes = contested_roster();
+        let route_id = policy.roster[0].route_id.clone();
+        let party_id = policy.roster[1].party_id.clone();
+        let model = policy.seat.text_model.clone();
+        let perspective = policy.roster[2].perspective.clone();
+        lanes[0].output.task_restatement =
+            format!("As {route_id} analyzing alongside {party_id} on {model}: {perspective}");
+        lanes[1].output.task_restatement =
+            "clean prose with DEEPSEEK-A in shouting case".to_string();
+        let packet = build_r2_packet(&sample_manifest(), &sample_brief(), &lanes, &policy).unwrap();
+        let prose: Vec<&str> = packet
+            .participants
+            .values()
+            .map(|output| output.task_restatement.as_str())
+            .collect();
+        for text in &prose {
+            assert!(!text.contains(&route_id), "route id leaked: {text}");
+            assert!(!text.contains(&party_id), "party id leaked: {text}");
+            assert!(!text.contains(&model), "model name leaked: {text}");
+            assert!(
+                !text.contains(&perspective),
+                "perspective text leaked: {text}"
+            );
+        }
+        assert!(
+            prose.iter().any(|text| text.contains("[route]")
+                && text.contains("[party]")
+                && text.contains("[model]")
+                && text.contains("[perspective]")),
+            "scrubbed prose should carry the neutral markers: {prose:?}"
+        );
+        // Case-insensitive: the shouting-case route id must be scrubbed too.
+        assert!(
+            prose.iter().any(|text| !text.contains("DEEPSEEK-A")),
+            "uppercase route id must not survive: {prose:?}"
+        );
+    }
+
+    #[test]
+    fn r2_scrubbing_preserves_non_identity_prose_verbatim() {
+        let policy = default_policy();
+        let mut lanes = contested_roster();
+        lanes[0].output.task_restatement =
+            "通胀路径与估值压缩的交叉风险，以及对 2026 年下半年盈利预测的影响。".to_string();
+        lanes[1].output.task_restatement = "plain analysis with no markers".to_string();
+        let packet = build_r2_packet(&sample_manifest(), &sample_brief(), &lanes, &policy).unwrap();
+        let prose: Vec<&str> = packet
+            .participants
+            .values()
+            .map(|output| output.task_restatement.as_str())
+            .collect();
+        assert!(
+            prose.contains(&"通胀路径与估值压缩的交叉风险，以及对 2026 年下半年盈利预测的影响。"),
+            "non-identity prose must pass through verbatim: {prose:?}"
+        );
+        assert!(
+            prose.contains(&"plain analysis with no markers"),
+            "clean prose must be untouched: {prose:?}"
         );
     }
 }

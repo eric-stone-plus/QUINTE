@@ -467,10 +467,11 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
         }),
         "a skipped R2 must record accepted=0 in its R2Gate transition event"
     );
-    // Honest labeling: the R2 control in force is participant label
-    // rotation over verbatim lane output, so the trial_manifest must claim
-    // exactly that — never "anonymous_cross_review" — and must declare the
-    // content-anonymization gap as a contamination risk.
+    // Honest labeling: the R2 controls in force are participant label
+    // rotation plus identity-marker scrubbing over the verbatim lane
+    // output, so the trial_manifest must claim exactly those — never
+    // "anonymous_cross_review" — and must declare the content-anonymization
+    // gap as a contamination risk.
     let result: serde_json::Value = read_json(&run_dir.join("result.json")).unwrap();
     let controls = result["trial_manifest"]["independence_controls"]
         .as_array()
@@ -478,6 +479,10 @@ fn full_fake_run_reaches_primary_arbiter_then_completes() {
     assert!(
         controls.iter().any(|c| c == "participant_label_rotation"),
         "independence_controls must name the label-rotation control: {controls:?}"
+    );
+    assert!(
+        controls.iter().any(|c| c == "identity_marker_scrubbing"),
+        "independence_controls must name the identity-marker scrubbing control: {controls:?}"
     );
     assert!(
         !controls.iter().any(|c| c == "anonymous_cross_review"),
