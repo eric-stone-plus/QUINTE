@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -2611,17 +2611,18 @@ pub fn execute_a2a_call_signaled(
     max_output_bytes: usize,
     gate_acquired: Option<std::sync::mpsc::Sender<()>>,
 ) -> ChatCompletionsOutcome {
-    // External seats share one provider key; burst-sending five lanes at
-    // once trips the provider's per-key concurrency limit (observed as
-    // TLS handshake EOFs). Serialize A2A seat calls per process — lanes
-    // still run on their own threads, and each lane's timeout applies to
-    // its own seat round trip (after gate acquisition), so a queued lane
-    // does not burn its budget waiting for the others.
-    static A2A_GATE: Mutex<()> = Mutex::new(());
-    let _guard = match A2A_GATE.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    // External seats share one provider key: a full five-lane burst trips
+    // the provider's per-key concurrency limit (observed as TLS handshake
+    // EOFs and 429s), while strict serialization wastes wall-clock on
+    // reviews that could run side by side. A bounded gate admits a few
+    // concurrent seat calls — lanes still run on their own threads, and
+    // each lane's timeout budget starts when it acquires a slot (signal
+    // below), so a queued lane never burns its budget waiting.
+    static A2A_GATE: OnceLock<CountingGate> = OnceLock::new();
+    let gate = A2A_GATE.get_or_init(|| {
+        CountingGate::new(a2a_concurrency_limit())
+    });
+    let _slot = gate.acquire();
     if let Some(signal) = gate_acquired {
         let _ = signal.send(());
     }
@@ -2634,6 +2635,65 @@ pub fn execute_a2a_call_signaled(
             timed_out: false,
             output_limit_exceeded: false,
         },
+    }
+}
+
+/// Default concurrent A2A seat calls. Five at once trips the shared
+/// provider key's concurrency ceiling; two or three ride under it while
+/// cutting R1 wall-clock by more than half. `QUINTE_A2A_CONCURRENCY`
+/// overrides (clamped to 1..=8) for operators with a different ceiling.
+pub fn a2a_concurrency_limit() -> usize {
+    std::env::var("QUINTE_A2A_CONCURRENCY")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .map(|n| n.clamp(1, 8))
+        .unwrap_or(3)
+}
+
+/// std-only counting semaphore: at most `limit` holders at once.
+struct CountingGate {
+    held: Mutex<usize>,
+    released: Condvar,
+    limit: usize,
+}
+
+impl CountingGate {
+    fn new(limit: usize) -> Self {
+        Self {
+            held: Mutex::new(0),
+            released: Condvar::new(),
+            limit: limit.max(1),
+        }
+    }
+
+    fn acquire(&self) -> GateSlot<'_> {
+        let mut held = self.held.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *held >= self.limit {
+            held = self
+                .released
+                .wait(held)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        *held += 1;
+        GateSlot { gate: self }
+    }
+}
+
+/// Releases one slot on drop, waking one waiter.
+struct GateSlot<'a> {
+    gate: &'a CountingGate,
+}
+
+impl Drop for GateSlot<'_> {
+    fn drop(&mut self) {
+        let mut held = self
+            .gate
+            .held
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *held = held.saturating_sub(1);
+        drop(held);
+        self.gate.released.notify_one();
     }
 }
 
@@ -2934,6 +2994,46 @@ fn execute_chat_completions_inner(
 
 #[cfg(test)]
 mod tests {
+
+    use std::sync::mpsc;
+
+    use super::{CountingGate, a2a_concurrency_limit};
+
+    #[test]
+    fn a2a_concurrency_limit_defaults_within_bounds() {
+        let limit = a2a_concurrency_limit();
+        assert!((1..=8).contains(&limit), "default {limit} outside 1..=8");
+    }
+
+    #[test]
+    fn counting_gate_admits_the_limit_and_blocks_overflow() {
+        use std::thread;
+        use std::time::Duration;
+
+        let gate = CountingGate::new(2);
+        let first = gate.acquire();
+        let second = gate.acquire();
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let _slot = gate.acquire();
+                entered_tx.send(()).ok();
+            });
+            thread::sleep(Duration::from_millis(150));
+            assert!(
+                entered_rx.try_recv().is_err(),
+                "third acquire must block while both slots are held"
+            );
+            drop(second);
+            entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("release must wake the blocked waiter");
+        });
+        drop(first);
+    }
+
+
     use super::*;
     use std::sync::{Mutex, OnceLock};
     use uuid::Uuid;

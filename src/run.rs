@@ -3292,7 +3292,7 @@ fn execute_a2a_attempt(
 
 /// Wait loop shared by the A2A seat attempt: cancellation stays responsive,
 /// and the lane deadline starts only when the worker reports it acquired the
-/// process-wide seat gate — seat calls are serialized (one shared provider
+/// bounded process-wide seat gate — a few seat calls run concurrently (shared
 /// key), so a queued lane must not burn its timeout budget before its
 /// request is on the wire.
 #[allow(clippy::type_complexity)]
