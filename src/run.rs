@@ -3488,7 +3488,7 @@ fn envelope_completed_with_unusable_result(stdout: &[u8]) -> bool {
 }
 
 fn classify_rate_limit(adapter: &str, stdout: &[u8], stderr: &[u8]) -> Option<RateLimitSignal> {
-    let known_adapter = adapter == "deepseek";
+    let known_adapter = adapter == "deepseek" || adapter == "a2a";
     #[cfg(feature = "test-adapters")]
     let known_adapter = known_adapter || adapter == "fake";
     if !known_adapter {
@@ -3510,6 +3510,12 @@ fn classify_rate_limit(adapter: &str, stdout: &[u8], stderr: &[u8]) -> Option<Ra
         "status_code=429",
         "status code: 429",
         "too many requests",
+        // The A2A seat adapter surfaces the seat's provider verdict
+        // verbatim ("provider returned 429 after 5 attempts: ...",
+        // Chinese rate-limit wording included).
+        "provider returned 429",
+        "rate limit",
+        "速率限制",
     ]
     .iter()
     .any(|marker| normalized.contains(marker));
@@ -6775,6 +6781,29 @@ mod retry_tests {
             mappings.len() > 1,
             "label rotation must vary across runs, not follow the run_id"
         );
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_classification_tests {
+    use super::classify_rate_limit;
+
+    #[test]
+    fn a2a_seat_stderr_is_retryable_rate_limit() {
+        // Verbatim shape observed live: the seat's provider verdict
+        // surfaces on the adapter stderr after in-seat backoff exhausts.
+        let stderr = b"a2a seat transport failed: a2a seat task \
+01a01cc9-085a-7571-b0d9-269416ae044d failed: provider returned 429 after 5 attempts: \
+\xe6\x82\xa8\xe7\x9a\x84\xe8\xb4\xa6\xe6\x88\xb7\xe5\xb7\xb2\xe8\xbe\xbe\xe5\x88\xb0\xe9\x80\x9f\xe7\x8e\x87\xe9\x99\x90\xe5\x88\xb6";
+        let signal = classify_rate_limit("a2a", b"", stderr);
+        assert!(signal.is_some(), "a2a seat 429 must classify as rate limit");
+        let plain = b"... provider returned 429 after 5 attempts: too many requests";
+        assert!(classify_rate_limit("a2a", b"", plain).is_some());
+    }
+
+    #[test]
+    fn unknown_adapters_stay_non_retryable() {
+        assert!(classify_rate_limit("codewhale", b"", b"http 429").is_none());
     }
 }
 

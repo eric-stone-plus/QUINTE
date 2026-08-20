@@ -99,8 +99,11 @@ impl Provider {
             };
             let status = response.status();
             // Honor Retry-After when the provider sends one; otherwise
-            // back off 5s/10s/20s so a five-seat R1 fan-out staggers
-            // itself under the account's concurrency ceiling.
+            // back off 5s/15s/45s/90s. The schedule must outlive a
+            // per-minute rate window, not just a concurrency blip: a
+            // four-attempt/35s ceiling was observed exhausting three of
+            // five R1 lanes under a rate-limited shared key, while a
+            // ~155s tolerance converts the same collisions into delays.
             let retry_after = response
                 .headers()
                 .get("Retry-After")
@@ -119,14 +122,19 @@ impl Provider {
                     .and_then(|e| e.get("message"))
                     .and_then(Value::as_str)
                     .unwrap_or("rate limited");
-                if rate_limited_attempts >= 4 {
+                if rate_limited_attempts >= 5 {
                     bail!(
                         "provider returned 429 after {rate_limited_attempts} attempts: {detail}"
                     );
                 }
                 let wait = retry_after
-                    .unwrap_or_else(|| 5u64 * (1 << (rate_limited_attempts - 1)))
-                    .min(60);
+                    .unwrap_or_else(|| match rate_limited_attempts {
+                        1 => 5,
+                        2 => 15,
+                        3 => 45,
+                        _ => 90,
+                    })
+                    .min(120);
                 std::thread::sleep(std::time::Duration::from_secs(wait));
                 continue;
             }

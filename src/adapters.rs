@@ -2639,15 +2639,17 @@ pub fn execute_a2a_call_signaled(
 }
 
 /// Default concurrent A2A seat calls. Five at once trips the shared
-/// provider key's concurrency ceiling; two or three ride under it while
-/// cutting R1 wall-clock by more than half. `QUINTE_A2A_CONCURRENCY`
-/// overrides (clamped to 1..=8) for operators with a different ceiling.
+/// provider key's concurrency ceiling, and a live three-wide run lost
+/// three lanes to exhausted 429 backoff — the provider key tolerates
+/// exactly two in flight. Two halves five-lane wall-clock versus strict
+/// serialization. `QUINTE_A2A_CONCURRENCY` overrides (clamped 1..=8)
+/// for operators with a different ceiling.
 pub fn a2a_concurrency_limit() -> usize {
     std::env::var("QUINTE_A2A_CONCURRENCY")
         .ok()
         .and_then(|raw| raw.trim().parse::<usize>().ok())
         .map(|n| n.clamp(1, 8))
-        .unwrap_or(3)
+        .unwrap_or(2)
 }
 
 /// std-only counting semaphore: at most `limit` holders at once.
