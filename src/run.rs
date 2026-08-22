@@ -674,6 +674,15 @@ pub(crate) fn create_from_brief_bytes(
     }
     // New runs normalize legacy briefs to the current contract before hashing.
     brief.brief_version = BRIEF_VERSION.into();
+    // A brief without a binding (CLI wizard, handwritten, legacy) gets it
+    // derived at intake so brief, result, and residual trace stay bound to
+    // the same route request.
+    if brief.action_binding_sha256.is_none() {
+        brief.action_binding_sha256 = Some(crate::highball_carriers::intake_action_binding(
+            &brief.question,
+            &json!(brief.affected_paths),
+        ));
+    }
     let snapshot_ignore = snapshot_ignore_set(&brief.snapshot_ignore)?;
     policy::validate_for_runtime(policy)?;
     if !brief.attachments.is_empty() {

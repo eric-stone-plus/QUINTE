@@ -203,7 +203,25 @@ pub fn project_brief(candidate: &Value) -> Result<Value, A2aError> {
         validate_value(candidate, BRIEF_SCHEMA).map_err(|e| {
             A2aError::brief_invalid(format!("Brief violates the closed schema: {e:#}"))
         })?;
-        return Ok(candidate.clone());
+        // A native brief may arrive with a null binding; derive it at intake
+        // so brief, result, and residual trace bind the same route request.
+        let mut brief = candidate.clone();
+        if brief.get("action_binding_sha256").map_or(true, Value::is_null) {
+            let question = brief
+                .get("question")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let affected_paths = brief
+                .get("affected_paths")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            brief["action_binding_sha256"] =
+                json!(crate::highball_carriers::intake_action_binding(
+                    question,
+                    &affected_paths
+                ));
+        }
+        return Ok(brief);
     }
     let mapped = map_host_brief(candidate)?;
     validate_value(&mapped, BRIEF_SCHEMA).map_err(|e| {
@@ -267,6 +285,11 @@ fn map_host_brief(value: &Value) -> Result<Value, A2aError> {
                 .collect()
         })
         .unwrap_or_default();
+    let affected_paths = json!([]);
+    // Bind the brief at intake to the route request its result will emit;
+    // HIGHBALL product evidence rejects a null or drifting binding.
+    let action_binding =
+        crate::highball_carriers::intake_action_binding(&question, &affected_paths);
     Ok(json!({
         "brief_version": "1.1",
         "question": question,
@@ -275,8 +298,8 @@ fn map_host_brief(value: &Value) -> Result<Value, A2aError> {
         "snapshot_ignore": [],
         "attachments": [],
         "action_scope": action_scope,
-        "affected_paths": [],
-        "action_binding_sha256": Value::Null
+        "affected_paths": affected_paths,
+        "action_binding_sha256": action_binding
     }))
 }
 
@@ -346,6 +369,13 @@ mod tests {
                 .unwrap()
                 .contains("Daily quant research brief")
         );
+        assert_eq!(
+            extracted["action_binding_sha256"].as_str().unwrap(),
+            crate::highball_carriers::intake_action_binding(
+                extracted["question"].as_str().unwrap(),
+                &extracted["affected_paths"]
+            )
+        );
         validate_value(&extracted, BRIEF_SCHEMA).unwrap();
     }
 
@@ -382,7 +412,39 @@ mod tests {
             "action_binding_sha256": null
         });
         let extracted = extract_brief(&stammtisch_message(brief.clone())).unwrap();
-        assert_eq!(extracted, brief);
+        let mut expected = brief;
+        // A null binding is derived at intake, not carried through.
+        expected["action_binding_sha256"] =
+            json!(crate::highball_carriers::intake_action_binding(
+                "Which residuals remain?",
+                &json!([])
+            ));
+        assert_eq!(extracted, expected);
+    }
+
+    #[test]
+    fn intake_binding_matches_the_emitted_route_request() {
+        // HIGHBALL product evidence: brief and result must both carry the
+        // binding of the route request derived from that result.
+        let brief = json!({
+            "schema": "galahad.brief.v0",
+            "title": "Daily quant research brief",
+            "objectives": ["Evaluate one candidate strategy"]
+        });
+        let extracted = extract_brief(&stammtisch_message(brief)).unwrap();
+        // run.rs copies question, affected_paths, and the binding from brief
+        // to result unchanged.
+        let result = json!({
+            "question": extracted["question"].clone(),
+            "affected_paths": extracted["affected_paths"].clone(),
+            "action_binding_sha256": extracted["action_binding_sha256"].clone(),
+        });
+        assert_eq!(
+            crate::highball_carriers::action_binding_sha256(
+                &crate::highball_carriers::route_request(&result)
+            ),
+            extracted["action_binding_sha256"].as_str().unwrap()
+        );
     }
 
     #[test]

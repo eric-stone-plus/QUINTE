@@ -14,7 +14,13 @@ use sha2::{Digest, Sha256};
 const ACTION_BINDING_FIELDS: [&str; 4] =
     ["question", "action_boundary", "change_class", "affected_paths"];
 
-fn action_binding_sha256(route_request: &Value) -> String {
+/// QUINTE never routes protected writes or code changes. These defaults are
+/// the single source of truth for the route request and for the binding a
+/// brief carries from intake on.
+const DEFAULT_ACTION_BOUNDARY: &str = "none";
+const DEFAULT_CHANGE_CLASS: &str = "claim";
+
+pub(crate) fn action_binding_sha256(route_request: &Value) -> String {
     let mut payload = serde_json::Map::new();
     for field in ACTION_BINDING_FIELDS {
         payload.insert(
@@ -25,6 +31,18 @@ fn action_binding_sha256(route_request: &Value) -> String {
     let bytes = crate::finance::canonical_json(&Value::Object(payload))
         .expect("action binding payload is finite JSON");
     format!("sha256:{:x}", Sha256::digest(&bytes))
+}
+
+/// The action binding fixed at brief intake: the digest HIGHBALL recomputes
+/// over the route request this brief's result will later emit. Deriving it
+/// here keeps brief, result, and residual trace bound to the same request.
+pub fn intake_action_binding(question: &str, affected_paths: &Value) -> String {
+    action_binding_sha256(&json!({
+        "question": question,
+        "action_boundary": DEFAULT_ACTION_BOUNDARY,
+        "change_class": DEFAULT_CHANGE_CLASS,
+        "affected_paths": affected_paths,
+    }))
 }
 
 /// HIGHBALL's residual trace expects `required_closure` from a closed enum
@@ -156,8 +174,8 @@ pub fn route_request(result: &Value) -> Value {
         .count() as i64;
     json!({
         "question": result.get("question").cloned().unwrap_or(json!("review verdict")),
-        "action_boundary": "none",
-        "change_class": "claim",
+        "action_boundary": DEFAULT_ACTION_BOUNDARY,
+        "change_class": DEFAULT_CHANGE_CLASS,
         "affected_paths": result.get("affected_paths").cloned().unwrap_or_else(|| json!([])),
         "action_scope": result.get("action_scope").cloned().unwrap_or(Value::Null),
         "executable": false,
@@ -202,7 +220,7 @@ pub fn residual_trace(result: &Value) -> Value {
         "question": result.get("question").cloned().unwrap_or(json!("review verdict")),
         "instrument": "QUINTE",
         "residuals": residuals,
-        "action_boundary": "none",
+        "action_boundary": DEFAULT_ACTION_BOUNDARY,
         "highball_decision": decision(result),
         "action_binding_sha256": action_binding_sha256(&route_request(result)),
     })
@@ -301,6 +319,21 @@ mod tests {
         let trace = residual_trace(&result);
         assert_eq!(
             trace["action_binding_sha256"].as_str().unwrap(),
+            action_binding_sha256(&route_request(&result))
+        );
+    }
+
+    #[test]
+    fn intake_binding_matches_route_request_defaults() {
+        // The intake helper and route_request share the none/claim defaults;
+        // this pins them against silent drift.
+        let result = json!({
+            "question": "Adopt the proposal?",
+            "affected_paths": ["a/b.py"],
+            "residuals": []
+        });
+        assert_eq!(
+            intake_action_binding("Adopt the proposal?", &json!(["a/b.py"])),
             action_binding_sha256(&route_request(&result))
         );
     }
