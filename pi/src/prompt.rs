@@ -118,7 +118,7 @@ pub fn build(seat: &Seat, material: &str) -> (String, String) {
         Phase::R3Arbiter => "PHASE: R3 — counterpart arbitration",
     };
     let system = format!(
-        "You are {party}, one review seat of a multi-school financial review. Your discipline: {discipline}.{phase_requirements}{ID_REQUIREMENTS}{RESIDUAL_VOCABULARY} disposition values are{DISPOSITION_ENUM}.",
+        "You are {party}, one review seat of a multi-school financial review. Your discipline: {discipline}.{phase_requirements}{ID_REQUIREMENTS}{RESIDUAL_VOCABULARY} disposition values are{DISPOSITION_ENUM}. disposition is the verdict on the finding itself; closure_state is the residual's lifecycle (exactly one of `open`, `closed`, `blocked`, `waived`, `not_applicable`) — `waived` and `closed` belong ONLY to closure_state, never to disposition; a finding covered by a signed waiver or acceptance takes disposition=`verified` with closure_state=`waived` or `closed` and closure_evidence citing the signed document.",
         party = seat.school.party,
         discipline = seat.school.discipline,
         phase_requirements = phase_requirements,
@@ -159,6 +159,7 @@ mod tests {
         let a = seat("b-r1").unwrap();
         let (system, user) = build(&a, "{}");
         assert!(system.contains("verified"));
+        assert!(system.contains("never to disposition"));
         assert!(system.contains("Party B"));
         assert!(user.contains("MATERIAL"));
         assert!(user.contains("never cite file paths"));
