@@ -3442,15 +3442,15 @@ fn evaluate_attempt_output(
                 RetryClass::RateLimited(signal),
             )
         } else {
-            // A seat whose model output violates the lane contract has
-            // produced no evidence; regeneration faces the same
-            // closed-schema acceptance, so a bounded retry weakens
-            // nothing. (Same philosophy as the truncated-completion
-            // retry below.) Any other non-zero exit stays fail-closed.
-            let seat_contract_violation = std::str::from_utf8(stderr)
-                .map(|s| s.contains("contract violated by seat"))
+            // A failed a2a seat task — contract violation, provider
+            // transport blip, seat-side error — has produced no evidence;
+            // regeneration faces the same closed-schema acceptance, so a
+            // bounded retry weakens nothing. Any other non-zero exit
+            // stays fail-closed.
+            let seat_task_failed = std::str::from_utf8(stderr)
+                .map(|s| s.contains("a2a seat task"))
                 .unwrap_or(false);
-            let retry = if seat_contract_violation {
+            let retry = if seat_task_failed {
                 RetryClass::TransientAdapter
             } else {
                 RetryClass::Never
@@ -6344,6 +6344,21 @@ mod retry_tests {
             1024,
         );
         assert!(error.unwrap().contains("adapter exited"));
+        assert_eq!(retry, RetryClass::TransientAdapter);
+
+        // A provider transport blip inside the seat task retries too.
+        let (_, _, retry) = evaluate_attempt_output(
+            "a2a",
+            OutputKind::DirectJson,
+            adapters::OutputContract::Lane,
+            b"",
+            b"a2a seat transport failed: a2a seat task t-2 failed: provider body read failed",
+            Some(1),
+            false,
+            false,
+            false,
+            1024,
+        );
         assert_eq!(retry, RetryClass::TransientAdapter);
 
         // Any other non-zero adapter exit stays fail-closed.
