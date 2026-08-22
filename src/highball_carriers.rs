@@ -84,6 +84,11 @@ fn map_required_closure(text: &str) -> &'static str {
 
 /// HIGHBALL expects `evidence` as a single string or null; QUINTE seats
 /// emit a list of refs. Join them so no reference is silently dropped.
+/// For a closed/waived/not_applicable residual whose evidence_refs came
+/// back empty, fall back to its closure evidence: for a closed residual
+/// the signed disposition IS the evidence the trace entry rests on. An
+/// open residual without evidence stays null and still trips the
+/// coverage warning.
 fn evidence_string(refs: Option<&Value>) -> Value {
     let joined: Vec<&str> = refs
         .and_then(Value::as_array)
@@ -93,6 +98,22 @@ fn evidence_string(refs: Option<&Value>) -> Value {
         Value::Null
     } else {
         json!(joined.join(", "))
+    }
+}
+
+fn trace_evidence(residual: &Value) -> Value {
+    let direct = evidence_string(residual.get("evidence_refs"));
+    if !direct.is_null() {
+        return direct;
+    }
+    let closed = matches!(
+        residual.get("closure_state").and_then(Value::as_str),
+        Some("closed") | Some("waived") | Some("not_applicable")
+    );
+    if closed {
+        evidence_string(residual.get("closure_evidence"))
+    } else {
+        Value::Null
     }
 }
 
@@ -206,7 +227,7 @@ pub fn residual_trace(result: &Value) -> Value {
                 "finding": r.get("finding").cloned().unwrap_or(json!("")),
                 "affected_paths": r.get("affected_paths").cloned().unwrap_or_else(|| json!([])),
                 "error_signature": r.get("error_signature").cloned().unwrap_or(Value::Null),
-                "evidence": evidence_string(r.get("evidence_refs")),
+                "evidence": trace_evidence(r),
                 "disposition": r.get("disposition").cloned().unwrap_or(json!("unresolved")),
                 "required_closure": map_required_closure(closure_text),
                 "closure_state": r.get("closure_state").cloned().unwrap_or(json!("open")),
@@ -361,6 +382,26 @@ mod tests {
             evidence_string(Some(&json!(["snapshot://root-0/a.json", "snapshot://root-0/b.csv"]))),
             json!("snapshot://root-0/a.json, snapshot://root-0/b.csv")
         );
+    }
+
+    #[test]
+    fn closed_residual_falls_back_to_closure_evidence() {
+        // The live seat dropped evidence_refs on a waived residual; the
+        // signed waiver is the evidence the trace entry rests on.
+        let r = json!({
+            "id": "event-audit", "severity": "LOW", "residual_type": "compliance-risk",
+            "source": "lane-b", "finding": "no event audit",
+            "evidence_refs": [], "disposition": "verified",
+            "required_closure": "none", "closure_state": "waived",
+            "closure_evidence": ["snapshot://root-0/waiver.md"], "scope": "paper"
+        });
+        assert_eq!(trace_evidence(&r), json!("snapshot://root-0/waiver.md"));
+
+        // An open residual without evidence stays null (warning still fires).
+        let open = json!({
+            "id": "gap", "evidence_refs": [], "closure_state": "open", "closure_evidence": []
+        });
+        assert_eq!(trace_evidence(&open), Value::Null);
     }
 
     #[test]
