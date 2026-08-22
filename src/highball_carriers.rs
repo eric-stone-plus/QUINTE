@@ -6,6 +6,77 @@
 //! never a model call.
 
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+/// HIGHBALL's action binding is the sha256 of the canonical JSON of exactly
+/// these route-request fields (contracts.rs ACTION_BINDING_FIELDS); the
+/// delivered trace must bind to the route request we actually emit.
+const ACTION_BINDING_FIELDS: [&str; 4] =
+    ["question", "action_boundary", "change_class", "affected_paths"];
+
+fn action_binding_sha256(route_request: &Value) -> String {
+    let mut payload = serde_json::Map::new();
+    for field in ACTION_BINDING_FIELDS {
+        payload.insert(
+            field.to_string(),
+            route_request.get(field).cloned().unwrap_or(Value::Null),
+        );
+    }
+    let bytes = crate::finance::canonical_json(&Value::Object(payload))
+        .expect("action binding payload is finite JSON");
+    format!("sha256:{:x}", Sha256::digest(&bytes))
+}
+
+/// HIGHBALL's residual trace expects `required_closure` from a closed enum
+/// (none|edit|test|command|block|waiver|human_review) while QUINTE seats
+/// write a free-text sentence. Classify deterministically, most binding
+/// outcome first; anything unrecognized escalates to human_review rather
+/// than guessing a weaker closure. The original sentence stays available in
+/// review.result; the trace is a projection, not the record of it.
+fn map_required_closure(text: &str) -> &'static str {
+    // Already-enum values (older fixtures, disciplined seats) pass through.
+    for value in ["none", "edit", "test", "command", "block", "waiver", "human_review"] {
+        if text == value {
+            return value;
+        }
+    }
+    let lower = text.to_lowercase();
+    if lower.contains("waiv") {
+        "waiver"
+    } else if lower.contains("human") {
+        "human_review"
+    } else if lower.contains("block") || lower.contains("reject") || lower.contains("do not") {
+        "block"
+    } else if lower.contains("test") || lower.contains("verify") || lower.contains("validate") {
+        "test"
+    } else if lower.contains("command") || lower.contains("re-run") || lower.contains("rerun") {
+        "command"
+    } else if lower.contains("edit")
+        || lower.contains("fix")
+        || lower.contains("supply")
+        || lower.contains("provide")
+        || lower.contains("attach")
+        || lower.contains("add ")
+    {
+        "edit"
+    } else {
+        "human_review"
+    }
+}
+
+/// HIGHBALL expects `evidence` as a single string or null; QUINTE seats
+/// emit a list of refs. Join them so no reference is silently dropped.
+fn evidence_string(refs: Option<&Value>) -> Value {
+    let joined: Vec<&str> = refs
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if joined.is_empty() {
+        Value::Null
+    } else {
+        json!(joined.join(", "))
+    }
+}
 
 /// Map a QUINTE residual_type onto HIGHBALL's closed type vocabulary. The
 /// vocabularies overlap imperfectly; the mapping picks the closest
@@ -105,6 +176,10 @@ pub fn residual_trace(result: &Value) -> Value {
                 .get("residual_type")
                 .and_then(Value::as_str)
                 .unwrap_or("scope-limitation");
+            let closure_text = r
+                .get("required_closure")
+                .and_then(Value::as_str)
+                .unwrap_or("none");
             json!({
                 "id": r.get("id").cloned().unwrap_or(Value::Null),
                 "severity": r.get("severity").cloned().unwrap_or(json!("LOW")),
@@ -113,9 +188,9 @@ pub fn residual_trace(result: &Value) -> Value {
                 "finding": r.get("finding").cloned().unwrap_or(json!("")),
                 "affected_paths": r.get("affected_paths").cloned().unwrap_or_else(|| json!([])),
                 "error_signature": r.get("error_signature").cloned().unwrap_or(Value::Null),
-                "evidence": r.get("evidence_refs").cloned().unwrap_or_else(|| json!([])),
+                "evidence": evidence_string(r.get("evidence_refs")),
                 "disposition": r.get("disposition").cloned().unwrap_or(json!("unresolved")),
-                "required_closure": r.get("required_closure").cloned().unwrap_or(json!("none")),
+                "required_closure": map_required_closure(closure_text),
                 "closure_state": r.get("closure_state").cloned().unwrap_or(json!("open")),
                 "closure_evidence": r.get("closure_evidence").cloned().unwrap_or_else(|| json!([])),
                 "scope": r.get("scope").cloned().unwrap_or(json!("")),
@@ -129,7 +204,7 @@ pub fn residual_trace(result: &Value) -> Value {
         "residuals": residuals,
         "action_boundary": "none",
         "highball_decision": decision(result),
-        "action_binding_sha256": result.get("action_binding_sha256").cloned().unwrap_or(Value::Null),
+        "action_binding_sha256": action_binding_sha256(&route_request(result)),
     })
 }
 
@@ -183,6 +258,76 @@ mod tests {
         assert_eq!(residuals[0]["type"], "evidence_gap");
         assert_eq!(residuals[1]["type"], "contradiction");
         assert!(residuals[0].get("error_signature").is_some());
+    }
+
+    #[test]
+    fn trace_matches_highball_contract_shape() {
+        // Regression: the live trace failed HIGHBALL validation on all three
+        // projections below (array evidence, free-text closure, null binding).
+        let trace = residual_trace(&sample_result());
+        let binding = trace["action_binding_sha256"].as_str().unwrap();
+        assert!(binding.starts_with("sha256:") && binding.len() == 7 + 64);
+        for residual in trace["residuals"].as_array().unwrap() {
+            let evidence = &residual["evidence"];
+            assert!(evidence.is_null() || evidence.is_string());
+            let closure = residual["required_closure"].as_str().unwrap();
+            assert!(
+                ["none", "edit", "test", "command", "block", "waiver", "human_review"]
+                    .contains(&closure),
+                "unexpected required_closure {closure}"
+            );
+        }
+    }
+
+    #[test]
+    fn action_binding_matches_highball_golden_vector() {
+        // Golden vector from HIGHBALL contracts.rs: the canonicalization and
+        // digest must agree byte-for-byte across the two repositories.
+        let request = json!({
+            "action_boundary": "protected_write",
+            "affected_paths": ["HIGHBALL\\bin\\tool.py", "a/b.py"],
+            "change_class": "code",
+            "question": "May this change proceed?"
+        });
+        assert_eq!(
+            action_binding_sha256(&request),
+            "sha256:05f2997ec8dfce94e74fb15b12a6901ac34b7265905cbca8ce5dc35cad110c9e"
+        );
+    }
+
+    #[test]
+    fn trace_binds_to_the_emitted_route_request() {
+        let result = sample_result();
+        let trace = residual_trace(&result);
+        assert_eq!(
+            trace["action_binding_sha256"].as_str().unwrap(),
+            action_binding_sha256(&route_request(&result))
+        );
+    }
+
+    #[test]
+    fn required_closure_free_text_maps_conservatively() {
+        assert_eq!(map_required_closure("edit"), "edit");
+        assert_eq!(
+            map_required_closure("Supply an event calendar or explicitly waive it"),
+            "waiver"
+        );
+        assert_eq!(
+            map_required_closure("Escalate to the desk head for a ruling"),
+            "human_review"
+        );
+        assert_eq!(map_required_closure("Rerun the intake command"), "command");
+        assert_eq!(map_required_closure("Fix the walkforward window"), "edit");
+    }
+
+    #[test]
+    fn evidence_refs_join_into_one_string() {
+        assert_eq!(evidence_string(None), Value::Null);
+        assert_eq!(evidence_string(Some(&json!([]))), Value::Null);
+        assert_eq!(
+            evidence_string(Some(&json!(["snapshot://root-0/a.json", "snapshot://root-0/b.csv"]))),
+            json!("snapshot://root-0/a.json, snapshot://root-0/b.csv")
+        );
     }
 
     #[test]
