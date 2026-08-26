@@ -2497,10 +2497,9 @@ pub fn validate_finance_policy(policy: &FinancePolicy) -> anyhow::Result<()> {
     if policy.policy_version != FINANCE_POLICY_VERSION
         || policy.protocol_version != FINANCE_PROTOCOL_VERSION
         || policy.isolation_backend != "process_information_flow_v1"
-        || !policy.same_family_required
     {
         bail!(
-            "finance policy must select Policy 3.0, Protocol 2.0, process information-flow isolation, and one family"
+            "finance policy must select Policy 3.0, Protocol 2.0, and process information-flow isolation"
         );
     }
     if policy.school_bindings.len() != 5 {
@@ -2528,9 +2527,17 @@ pub fn validate_finance_policy(policy: &FinancePolicy) -> anyhow::Result<()> {
         }
         families.insert((&route.family, &route.provider, &route.model));
     }
-    if families.len() != 1 {
+    if policy.same_family_required && families.len() != 1 {
         bail!(
             "finance policy must keep all five schools and two arbiters on one model family binding"
+        );
+    }
+    if !policy.same_family_required && families.len() > 3 {
+        // Mixed-vendor rosters are allowed (same_family_required=false),
+        // bounded so a typo'd policy cannot produce a five-way split.
+        bail!(
+            "mixed-family finance policy binds {} families; keep it to at most 3",
+            families.len()
         );
     }
     Ok(())

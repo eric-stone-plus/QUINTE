@@ -4363,6 +4363,33 @@ fn merge_verdicts(
     primary_arbiter: &ArbiterVerdict,
     counterpart_arbiter: &ArbiterVerdict,
 ) -> ResultEnvelope {
+    // Model-relation derivation from the actual roster: one model
+    // everywhere = same_model; one family = same_family; anything
+    // wider = different_family (the honest label for mixed-vendor
+    // deployments — HIGHBALL treats it as strong evidence).
+    let mut roster_families = std::collections::BTreeSet::new();
+    let mut roster_models = std::collections::BTreeSet::new();
+    for route in policy
+        .roster
+        .iter()
+        .chain(std::iter::once(&policy.counterpart_arbiter))
+        .chain(std::iter::once(&policy.primary_arbiter))
+    {
+        roster_families.insert(route.family.as_str());
+        roster_models.insert(route.text_model.as_str());
+    }
+    let base_model_relation: &str = if roster_models.len() == 1 {
+        "same_model"
+    } else if roster_families.len() == 1 {
+        "same_family"
+    } else {
+        "different_family"
+    };
+    let correlation_risk = if roster_models.len() == 1 {
+        "same_model_error_correlation"
+    } else {
+        "cross_family_residual_correlation"
+    };
     let mut residuals = BTreeMap::<String, Residual>::new();
     let mut dissent = Vec::new();
     for residual in primary_arbiter
@@ -4462,7 +4489,7 @@ counterpart arbiter: {}",
         residuals: residuals.into_values().collect(),
         trial_manifest: TrialManifest {
             manifest_version: TRIAL_MANIFEST_VERSION.into(),
-            base_model_relation: "same_model".into(),
+            base_model_relation: base_model_relation.into(),
             perspective_count: 5,
             perspectives,
             perturbation_axes: vec![
@@ -4482,7 +4509,7 @@ counterpart arbiter: {}",
                 "closed_schema".into(),
             ],
             contamination_risks: vec![
-                "same_model_error_correlation".into(),
+                correlation_risk.into(),
                 "process_isolation_is_not_an_os_sandbox".into(),
                 "label_rotation_is_not_content_anonymization".into(),
             ],
