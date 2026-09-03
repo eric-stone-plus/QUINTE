@@ -9,3 +9,4 @@
 0.2.0 attempted-cancelled-prepublish-doc-fix
 0.2.1 attempted-windows-native-test-failed
 0.2.2 attempted-windows-native-test-failed
+0.2.5 attempted-validate-jq-syntax
