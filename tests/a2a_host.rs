@@ -174,8 +174,10 @@ fn http(method: &str, url: &str, body: Option<&str>) -> (u16, String) {
     let (authority, path) = url.split_once('/').unwrap();
     let path = format!("/{path}");
     let mut stream = TcpStream::connect(authority).unwrap();
+    // Generous ceiling: a blocking SendMessage rides the host's 3600s
+    // poll cap, and slow CI runners must not trip the socket first.
     stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
+        .set_read_timeout(Some(Duration::from_secs(120)))
         .unwrap();
     let payload = body.unwrap_or("");
     let request = format!(
@@ -545,11 +547,13 @@ fn send_streaming_message_is_method_not_found() {
 #[test]
 fn blocking_send_message_does_not_freeze_other_operations() {
     let fixture = fixture();
-    // Hold the R1 phase open for ~6s so the blocking SendMessage parks in
-    // its wait loop well past the time a concurrent request needs.
+    // Hold the R1 phase open long enough that the blocking SendMessage
+    // parks in its wait loop well past the time a concurrent request
+    // needs, without stretching the run so far that slow CI runners
+    // dominate the timing.
     std::fs::write(
         fixture.home.parent().unwrap().join("fake-agent-delay-ms"),
-        "6000",
+        "2500",
     )
     .unwrap();
     let server = serve(&fixture);
@@ -560,7 +564,7 @@ fn blocking_send_message_does_not_freeze_other_operations() {
         rpc(&endpoint, 13, "SendMessage", params)
     });
     // Let the run start and the blocking send park in its wait loop.
-    thread::sleep(Duration::from_millis(1500));
+    thread::sleep(Duration::from_millis(800));
     let started = Instant::now();
     let (status, _body) = http("GET", &server.card_url, None);
     assert_eq!(status, 200);

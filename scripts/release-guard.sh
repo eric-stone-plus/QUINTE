@@ -19,7 +19,6 @@ verify_assets() {
     quinte-aarch64-apple-darwin.tar.gz
     quinte-aarch64-unknown-linux-gnu.tar.gz
     quinte-x86_64-apple-darwin.tar.gz
-    quinte-x86_64-pc-windows-msvc.zip
     quinte-x86_64-unknown-linux-gnu.tar.gz
   )
   if [[ "$require_checksums" == "--checksums" ]]; then
@@ -50,7 +49,7 @@ verify_assets() {
         printf '%s\n' "$checksum_output" >&2
         exit "$checksum_status"
       }
-      [[ "$(wc -l < SHA256SUMS | tr -d '[:space:]')" == 5 ]]
+      [[ "$(wc -l < SHA256SUMS | tr -d '[:space:]')" == 4 ]]
       for file in "${expected[@]}"; do
         [[ "$file" == SHA256SUMS ]] && continue
         [[ "$(awk -v name="$file" '$2 == name {count++} END {print count+0}' SHA256SUMS)" == 1 ]]

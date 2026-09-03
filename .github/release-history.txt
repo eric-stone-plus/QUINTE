@@ -10,3 +10,4 @@
 0.2.1 attempted-windows-native-test-failed
 0.2.2 attempted-windows-native-test-failed
 0.2.5 attempted-validate-jq-syntax
+0.2.6 attempted-ci-arm-timing-windows-dirfsync
