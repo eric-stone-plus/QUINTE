@@ -6,12 +6,15 @@
 
 ## 1. Decision
 
-The seat roster runs on **one model family** (DeepSeek, official direct
-API). There is no budget for a second vendor, now or planned. The D2
-pillar "cross-vendor agreement is real confirmation" is therefore
-unattainable and is **replaced, not weakened**: the epistemic weight
-moves from *who* reviews to *how* the review is framed and *what is
-verified deterministically*.
+The seat roster runs on **one model family per run**. The family is a
+declared binding of the run policy; the bound families are `deepseek`
+(official direct API) and `qwen` (token-plan gateway, chat-completions
+or Anthropic Messages face per base URL). Mixing families inside one
+run is forbidden, and there is no budget for cross-vendor agreement
+inside a run. The D2 pillar "cross-vendor agreement is real
+confirmation" is therefore unattainable and is **replaced, not
+weakened**: the epistemic weight moves from *who* reviews to *how* the
+review is framed and *what is verified deterministically*.
 
 ## 2. The three-layer redesign
 
@@ -129,8 +132,10 @@ confirmation.
 
 ## 5. Unchanged
 
-- PI seat agent: `--role` already selects the school; provider stays
-  OpenAI-compatible (DeepSeek). No PI changes.
+- PI seat agent: `--role` already selects the school; the provider
+  face follows the run's family binding (OpenAI-compatible chat
+  completions, or Anthropic Messages when the bound base URL advertises
+  it). No PI changes.
 - Round structure, cost profile (7 common / 12 worst), merge rules,
   fail-closed discipline, event ledger, offline verification.
 - Host-side contract: STAMMTISCH's A2A adapter and Result 2.1 surface

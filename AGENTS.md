@@ -9,11 +9,13 @@
 QUINTE is a generic multi-agent review orchestrator (specs/PROTOCOL-REDESIGN.md):
 an A2A v1.0 server to hosts and an A2A v1.0 client to its seats. Rounds, seat
 count, domain schemas, gates, and merge rules are policy — a doctrine pack; the
-quant review slice is the first pack. The seat roster runs on one model family
-(DeepSeek official direct API, specs/SINGLE-VENDOR-DOCTRINE.md): five distinct
-schools carry the diversity, the round discipline stays adversarial, and
-deterministic gates (evidence_grounding, cross_seat_reconciliation) carry the
-verification weight a same-family roster cannot delegate to the model. The
+quant review slice is the first pack. The seat roster runs on one model
+family per run — a declared policy binding (`deepseek` or `qwen`; the qwen
+face is chat-completions or Anthropic Messages per base URL,
+specs/SINGLE-VENDOR-DOCTRINE.md). Five distinct schools carry the diversity,
+the round discipline stays adversarial, and deterministic gates
+(evidence_grounding, cross_seat_reconciliation) carry the verification
+weight a same-family roster cannot delegate to the model. The
 public contract is Result 2.1 (with the same-model trial_manifest caveat) and
 Manifest 2.0.
 

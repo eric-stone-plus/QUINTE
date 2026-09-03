@@ -23,9 +23,13 @@ const MAX_ADAPTER_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const PROVIDER_KEY_SELECTOR: &str = "QUINTE_PROVIDER_KEY_ENV";
 const PROVIDER_BASE_URL_SELECTOR: &str = "QUINTE_PROVIDER_BASE_URL_ENV";
 const PROVIDER_PROXY_MODE_SELECTOR: &str = "QUINTE_PROVIDER_PROXY_MODE";
-const PROVIDER_KEY_ENVS: &[&str] = &["DEEPSEEK_API_KEY"];
-const PROVIDER_BASE_URL_ENVS: &[&str] = &["DEEPSEEK_BASE_URL"];
+const PROVIDER_KEY_ENVS: &[&str] = &["DEEPSEEK_API_KEY", "QIANWEN_TP_PERSONAL_KEY"];
+const PROVIDER_BASE_URL_ENVS: &[&str] = &["DEEPSEEK_BASE_URL", "QIANWEN_TP_PERSONAL_BASE_URL"];
 const ATTACHMENT_MEDIA_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+// Anthropic Messages requires an explicit generation budget; the lane
+// contract caps output at 16 MiB, far above what one seat turn emits.
+const ANTHROPIC_MAX_TOKENS: u64 = 32_768;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AttachmentCapability {
@@ -239,6 +243,22 @@ fn attachment_capability(route: &RoutePolicy) -> AttachmentCapability {
             supported: true,
             transport: Some("chat-completions-image-part"),
         },
+        "qwen" => {
+            // The protocol face follows the bound base URL; an unbound
+            // route reports the chat-completions default and the doctor
+            // flags the missing binding separately.
+            let anthropic = provider_binding(route)
+                .map(|binding| is_anthropic_endpoint(&binding.base_url))
+                .unwrap_or(false);
+            AttachmentCapability {
+                supported: true,
+                transport: Some(if anthropic {
+                    "anthropic-messages-image-block"
+                } else {
+                    "chat-completions-image-part"
+                }),
+            }
+        }
         _ => AttachmentCapability {
             supported: false,
             transport: None,
@@ -266,7 +286,7 @@ pub fn validate_attachment_capability(policy: &Policy) -> anyhow::Result<()> {
 
 /// (available, message, isolated)
 fn provider_credential_status(route: &RoutePolicy) -> Option<(bool, String, bool)> {
-    if route.adapter == "deepseek" {
+    if matches!(route.adapter.as_str(), "deepseek" | "qwen") {
         return Some(match provider_binding(route) {
             Ok(binding) => (
                 true,
@@ -372,7 +392,10 @@ pub fn build(
     }
 
     let mut invocation = match route.adapter.as_str() {
-        "deepseek" => {
+        // In-process chat families: the route policy names the family, the
+        // provider selectors bind key/base URL, and the base URL path picks
+        // the protocol face (chat completions or Anthropic Messages).
+        "deepseek" | "qwen" => {
             let binding = provider_binding(route)?;
             import_provider_binding(&mut env, &binding)?;
             let images = encode_chat_images(&attachment_paths)?;
@@ -2214,6 +2237,9 @@ fn selected_environment_name(selector: &str, allowed: &[&str]) -> anyhow::Result
 fn expected_provider_environment(family: &str) -> anyhow::Result<(&'static str, &'static str)> {
     match family {
         "deepseek" => Ok(("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL")),
+        // Qwen token-plan personal seat: one shared key, the gateway base
+        // URL decides the protocol face (see is_anthropic_endpoint).
+        "qwen" => Ok(("QIANWEN_TP_PERSONAL_KEY", "QIANWEN_TP_PERSONAL_BASE_URL")),
         other => bail!("unsupported provider family {other}"),
     }
 }
@@ -2392,7 +2418,7 @@ fn resolve_route_program(route: &RoutePolicy) -> Option<ResolvedCommand> {
             launcher: CommandLauncher::Native,
         });
     }
-    if route.adapter == "deepseek" {
+    if matches!(route.adapter.as_str(), "deepseek" | "qwen") {
         // The native adapter executes inside this process; resolve to the
         // running binary so doctor output and invocation records stay honest.
         let program = std::env::current_exe().ok()?;
@@ -2431,7 +2457,7 @@ fn diagnose_route_program(route: &RoutePolicy) -> CommandResolution {
             },
         }
     }
-    if route.adapter == "deepseek" {
+    if matches!(route.adapter.as_str(), "deepseek" | "qwen") {
         return match resolve_route_program(route) {
             Some(command) => CommandResolution {
                 command: Some(command),
@@ -2525,6 +2551,82 @@ fn chat_completion_request(call: &ChatCompletionsCall) -> Value {
         "temperature": 0.0,
         "messages": [{"role": "user", "content": content}],
     })
+}
+
+/// Anthropic Messages gateways advertise themselves in the base URL path
+/// (e.g. a token-plan ``/apps/anthropic`` face); every other base URL
+/// speaks OpenAI chat completions.
+fn is_anthropic_endpoint(base_url: &str) -> bool {
+    let trimmed = base_url.trim_end_matches('/');
+    trimmed.ends_with("/anthropic") || trimmed.ends_with("/anthropic/v1")
+}
+
+fn anthropic_messages_request(call: &ChatCompletionsCall) -> Value {
+    let content = if call.images.is_empty() {
+        json!(call.prompt)
+    } else {
+        let mut parts = vec![json!({"type": "text", "text": call.prompt})];
+        for image in &call.images {
+            parts.push(json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image.media_type,
+                    "data": image.data_base64,
+                },
+            }));
+        }
+        json!(parts)
+    };
+    json!({
+        "model": call.model,
+        "temperature": 0.0,
+        "max_tokens": ANTHROPIC_MAX_TOKENS,
+        "messages": [{"role": "user", "content": content}],
+    })
+}
+
+/// Reshape one Anthropic Messages envelope into the OpenAI chat-completion
+/// shape the downstream parsers expect. Provider error envelopes become the
+/// generic ``{"error": ...}`` form so ``chat_completion_content`` reports
+/// them the same way across vendors.
+fn anthropic_envelope_to_openai(body: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let envelope: Value = serde_json::from_slice(body)
+        .context("invalid Anthropic Messages response JSON")?;
+    if envelope.get("error").is_some() {
+        let detail = envelope
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("unspecified provider error");
+        let error_type = envelope
+            .pointer("/error/type")
+            .and_then(Value::as_str)
+            .unwrap_or("api_error");
+        return Ok(serde_json::to_vec(&json!({
+            "error": {"type": error_type, "message": detail},
+        }))?);
+    }
+    let mut text = String::new();
+    if let Some(blocks) = envelope.get("content").and_then(Value::as_array) {
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) == Some("text") {
+                if let Some(piece) = block.get("text").and_then(Value::as_str) {
+                    text.push_str(piece);
+                }
+            }
+        }
+    }
+    let finish_reason = match envelope.get("stop_reason").and_then(Value::as_str) {
+        Some("max_tokens") => "length",
+        _ => "stop",
+    };
+    Ok(serde_json::to_vec(&json!({
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": finish_reason,
+        }],
+    }))?)
 }
 
 fn chat_completion_content(stdout: &[u8]) -> anyhow::Result<String> {
@@ -2857,7 +2959,7 @@ pub fn execute_chat_completions(
         Ok(outcome) => outcome,
         Err(error) => ChatCompletionsOutcome {
             stdout: Vec::new(),
-            stderr: format!("deepseek adapter transport failed: {error:#}").into_bytes(),
+            stderr: format!("provider adapter transport failed: {error:#}").into_bytes(),
             exit_code: Some(1),
             timed_out: false,
             output_limit_exceeded: false,
@@ -2911,21 +3013,39 @@ fn execute_chat_completions_inner(
         .build()
         .context("cannot build the in-process HTTP client")?;
 
-    let url = format!("{}/chat/completions", call.base_url.trim_end_matches('/'));
-    let body = serde_json::to_vec(&chat_completion_request(call))?;
-    let response = client
+    let anthropic = is_anthropic_endpoint(&call.base_url);
+    // A gateway base URL may already carry the API version segment; the
+    // Messages path is always assembled with exactly one ``/v1``.
+    let url = if anthropic {
+        let base = call.base_url.trim_end_matches('/');
+        let base = base.strip_suffix("/v1").unwrap_or(base);
+        format!("{base}/v1/messages")
+    } else {
+        format!("{}/chat/completions", call.base_url.trim_end_matches('/'))
+    };
+    let body = if anthropic {
+        serde_json::to_vec(&anthropic_messages_request(call))?
+    } else {
+        serde_json::to_vec(&chat_completion_request(call))?
+    };
+    let mut request = client
         .post(&url)
-        .bearer_auth(&call.key)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body)
-        .send();
+        .header(reqwest::header::CONTENT_TYPE, "application/json");
+    request = if anthropic {
+        request
+            .header("x-api-key", &call.key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+    } else {
+        request.bearer_auth(&call.key)
+    };
+    let response = request.body(body).send();
     let mut response = match response {
         Ok(response) => response,
         Err(error) => {
             let timed_out = error.is_timeout();
             return Ok(ChatCompletionsOutcome {
                 stdout: Vec::new(),
-                stderr: format!("deepseek adapter transport failed: {error}").into_bytes(),
+                stderr: format!("provider adapter transport failed: {error}").into_bytes(),
                 exit_code: Some(1),
                 timed_out,
                 output_limit_exceeded: false,
@@ -2949,7 +3069,7 @@ fn execute_chat_completions_inner(
     let output_limit_exceeded = body.len() as u64 > cap;
 
     if !status.is_success() {
-        let mut stderr = format!("deepseek adapter HTTP {status}");
+        let mut stderr = format!("provider adapter HTTP {status}");
         if let Some(seconds) = retry_after {
             stderr.push_str(&format!("\nRetry-After: {seconds}"));
         }
@@ -2985,8 +3105,13 @@ fn execute_chat_completions_inner(
         });
     }
 
+    let stdout = if anthropic {
+        anthropic_envelope_to_openai(&body)?
+    } else {
+        body
+    };
     Ok(ChatCompletionsOutcome {
-        stdout: body,
+        stdout,
         stderr: Vec::new(),
         exit_code: Some(0),
         timed_out: false,

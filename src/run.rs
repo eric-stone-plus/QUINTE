@@ -3510,7 +3510,7 @@ fn envelope_completed_with_unusable_result(stdout: &[u8]) -> bool {
 }
 
 fn classify_rate_limit(adapter: &str, stdout: &[u8], stderr: &[u8]) -> Option<RateLimitSignal> {
-    let known_adapter = adapter == "deepseek" || adapter == "a2a";
+    let known_adapter = adapter == "deepseek" || adapter == "qwen" || adapter == "a2a";
     #[cfg(feature = "test-adapters")]
     let known_adapter = known_adapter || adapter == "fake";
     if !known_adapter {

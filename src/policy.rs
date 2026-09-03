@@ -483,7 +483,10 @@ fn validate_route_binding(
     if route.executable.trim().is_empty() || route.adapter.trim().is_empty() {
         bail!("{} has an empty adapter or executable", route.party_id);
     }
-    if !fake && !legacy_v1_source && !matches!(route.adapter.as_str(), "deepseek" | "a2a") {
+    if !fake
+        && !legacy_v1_source
+        && !matches!(route.adapter.as_str(), "deepseek" | "qwen" | "a2a")
+    {
         bail!(
             "{} uses unsupported adapter {}",
             route.party_id,
@@ -541,6 +544,9 @@ fn validate_adapter_capability(
         // DeepSeek runs through the in-process adapter: no host CLI is
         // involved, so there is no host-managed state to isolate.
         "deepseek" => ("deepseek", "deepseek"),
+        // Qwen token-plan seats use the same in-process adapter; the base
+        // URL picks the protocol face (chat completions or Anthropic).
+        "qwen" => ("qwen", "qwen"),
         // PI seats are external A2A v1.0 endpoints; the adapter is the
         // wire protocol, never a subprocess.
         "pi" => ("pi", "a2a"),
