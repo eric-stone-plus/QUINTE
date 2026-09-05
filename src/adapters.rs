@@ -37,7 +37,6 @@ struct AttachmentCapability {
     transport: Option<&'static str>,
 }
 
-#[derive(Debug)]
 pub struct Invocation {
     pub program: String,
     pub args: Vec<String>,
@@ -47,6 +46,24 @@ pub struct Invocation {
     pub contract: OutputContract,
     pub sensitive_paths: Vec<PathBuf>,
     pub execution: Execution,
+}
+
+impl std::fmt::Debug for Invocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The env map and the in-process execution carry the provider API
+        // key; show env names only and let the redacted execution impl mask
+        // its key.
+        f.debug_struct("Invocation")
+            .field("program", &self.program)
+            .field("args", &self.args)
+            .field("env_keys", &self.env.keys().collect::<Vec<_>>())
+            .field("cwd", &self.cwd)
+            .field("output_kind", &self.output_kind)
+            .field("contract", &self.contract)
+            .field("sensitive_paths", &self.sensitive_paths)
+            .field("execution", &self.execution)
+            .finish()
+    }
 }
 
 /// How an invocation produces adapter output. `Process` spawns
@@ -71,7 +88,7 @@ pub struct A2aCall {
     pub timeout_seconds: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ChatCompletionsCall {
     pub base_url: String,
     pub key: String,
@@ -80,6 +97,20 @@ pub struct ChatCompletionsCall {
     pub images: Vec<ChatCompletionsImage>,
     pub proxy: ChatProxy,
     pub timeout_seconds: u64,
+}
+
+impl std::fmt::Debug for ChatCompletionsCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChatCompletionsCall")
+            .field("base_url", &self.base_url)
+            .field("key", &"<redacted>")
+            .field("model", &self.model)
+            .field("prompt", &self.prompt)
+            .field("images", &self.images)
+            .field("proxy", &self.proxy)
+            .field("timeout_seconds", &self.timeout_seconds)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -3164,6 +3195,33 @@ mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
     use uuid::Uuid;
+
+    #[test]
+    fn debug_masks_the_provider_key() {
+        let mut env = BTreeMap::new();
+        env.insert("DEEPSEEK_API_KEY".to_string(), "sk-test-secret".to_string());
+        let invocation = Invocation {
+            program: "provider".into(),
+            args: Vec::new(),
+            env,
+            cwd: PathBuf::from("/tmp/lane"),
+            output_kind: OutputKind::ChatCompletions,
+            contract: OutputContract::Lane,
+            sensitive_paths: Vec::new(),
+            execution: Execution::ChatCompletions(Box::new(ChatCompletionsCall {
+                base_url: "https://provider.example/v1".into(),
+                key: "sk-test-secret".into(),
+                model: "model".into(),
+                prompt: "prompt".into(),
+                images: Vec::new(),
+                proxy: ChatProxy::Direct,
+                timeout_seconds: 30,
+            })),
+        };
+        let rendered = format!("{invocation:?}");
+        assert!(!rendered.contains("sk-test-secret"), "{rendered}");
+        assert!(rendered.contains("DEEPSEEK_API_KEY"), "{rendered}");
+    }
 
     fn environment_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

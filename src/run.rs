@@ -3470,6 +3470,23 @@ fn evaluate_attempt_output(
     ) {
         Ok(output) => (Some(output), None, RetryClass::Never),
         Err(parse_error) => {
+            // An in-process provider call can carry a rate-limit verdict in
+            // a 200-wrapped error envelope: exit 0 with {"error": ...} on
+            // stdout, surfacing only as this parse failure. Classify it as
+            // rate limited instead of burning the lane attempt; any other
+            // envelope stays fail-closed.
+            if output_kind == adapters::OutputKind::ChatCompletions
+                && let Some(signal) = classify_rate_limit(adapter, stdout, stderr)
+            {
+                return (
+                    None,
+                    Some(format!(
+                        "adapter transport was rate limited ({})",
+                        signal.source
+                    )),
+                    RetryClass::RateLimited(signal),
+                );
+            }
             let event_stream_unusable = output_kind == adapters::OutputKind::JsonEvents
                 && adapters::events_completed_with_unusable_final_candidate(stdout);
             let envelope_unusable = output_kind == adapters::OutputKind::EnvelopeJson
@@ -3573,7 +3590,11 @@ fn find_structured_rate_limit(value: &Value) -> Option<Option<u64>> {
         .any(|code| {
             matches!(
                 code,
-                "rate_limit_error" | "rate_limited" | "too_many_requests" | "resource_exhausted"
+                "rate_limit_error"
+                    | "rate_limited"
+                    | "too_many_requests"
+                    | "resource_exhausted"
+                    | "overloaded_error"
             )
         });
     if numeric_429 || typed_429 {
@@ -6744,6 +6765,71 @@ mod retry_tests {
             None
         );
         assert_eq!(classify_rate_limit("omp", structured, b""), None);
+    }
+
+    #[test]
+    fn chat_completions_error_envelope_classifies_despite_success_exit() {
+        // The Anthropic face reshapes a 200-carried provider error into
+        // {"error": ...} on stdout with exit 0, so the exit-code gate alone
+        // would burn the lane attempt as non-retryable; the structured body
+        // must still classify it as rate limited.
+        let rate_limited =
+            br#"{"error":{"type":"rate_limit_error","message":"quota exhausted","retry_after":7}}"#;
+        let (output, error, retry) = evaluate_attempt_output(
+            "qwen",
+            OutputKind::ChatCompletions,
+            adapters::OutputContract::Lane,
+            rate_limited,
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert!(error.unwrap().contains("rate limited"));
+        assert_eq!(
+            retry,
+            RetryClass::RateLimited(RateLimitSignal {
+                source: "adapter_structured_error",
+                retry_after_seconds: Some(7),
+            })
+        );
+
+        let overloaded = br#"{"error":{"type":"overloaded_error","message":"provider overloaded"}}"#;
+        let (output, _, retry) = evaluate_attempt_output(
+            "qwen",
+            OutputKind::ChatCompletions,
+            adapters::OutputContract::Lane,
+            overloaded,
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert!(matches!(retry, RetryClass::RateLimited(_)));
+
+        // Any other 200-wrapped provider error stays fail-closed.
+        let other = br#"{"error":{"type":"invalid_request_error","message":"bad request"}}"#;
+        let (output, error, retry) = evaluate_attempt_output(
+            "qwen",
+            OutputKind::ChatCompletions,
+            adapters::OutputContract::Lane,
+            other,
+            b"",
+            Some(0),
+            false,
+            false,
+            false,
+            4096,
+        );
+        assert!(output.is_none());
+        assert!(error.unwrap().contains("carries an error"));
+        assert_eq!(retry, RetryClass::Never);
     }
 
     #[test]
