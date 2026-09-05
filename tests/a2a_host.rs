@@ -550,10 +550,12 @@ fn blocking_send_message_does_not_freeze_other_operations() {
     // Hold the R1 phase open long enough that the blocking SendMessage
     // parks in its wait loop well past the time a concurrent request
     // needs, without stretching the run so far that slow CI runners
-    // dominate the timing.
+    // dominate the timing. The residual parked window after the probe
+    // below starts (~3.2s) must exceed the assertion bound (2s) with
+    // margin, or a full front-door freeze would slip under it.
     std::fs::write(
         fixture.home.parent().unwrap().join("fake-agent-delay-ms"),
-        "2500",
+        "4000",
     )
     .unwrap();
     let server = serve(&fixture);
@@ -571,7 +573,7 @@ fn blocking_send_message_does_not_freeze_other_operations() {
     let listed = rpc(&server.endpoint, 14, "ListTasks", json!({}));
     assert!(listed["result"]["tasks"].is_array(), "{listed}");
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < Duration::from_secs(2),
         "card + ListTasks took {:?} while a blocking SendMessage was parked; \
          the front door froze",
         started.elapsed()
