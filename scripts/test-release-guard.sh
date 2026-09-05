@@ -214,11 +214,10 @@ assets=(
   quinte-aarch64-apple-darwin.tar.gz
   quinte-aarch64-unknown-linux-gnu.tar.gz
   quinte-x86_64-apple-darwin.tar.gz
-  quinte-x86_64-pc-windows-msvc.zip
   quinte-x86_64-unknown-linux-gnu.tar.gz
 )
 for asset in "${assets[@]}"; do printf '%s\n' "$asset" >"$asset_dir/$asset"; done
-expect_pass 'exact five-archive set passes' "$guard" --assets "$asset_dir"
+expect_pass 'exact four-archive set passes' "$guard" --assets "$asset_dir"
 rm "$asset_dir/${assets[0]}"
 expect_fail 'missing archive fails' "$guard" --assets "$asset_dir"
 printf '%s\n' "${assets[0]}" >"$asset_dir/${assets[0]}"
@@ -229,7 +228,7 @@ rm "$asset_dir/quinte-extra.tar.gz"
   cd "$asset_dir"
   LC_ALL=C sha256sum "${assets[@]}" > SHA256SUMS
 )
-expect_pass 'six-file checksummed set passes' "$guard" --assets "$asset_dir" --checksums
+expect_pass 'five-file checksummed set passes' "$guard" --assets "$asset_dir" --checksums
 printf 'bad line\n' >>"$asset_dir/SHA256SUMS"
 expect_fail 'malformed checksum set fails' "$guard" --assets "$asset_dir" --checksums
 
